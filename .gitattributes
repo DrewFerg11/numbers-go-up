@@ -1,0 +1,18 @@
+# Normalize to LF in the repository. Development happens on Windows; CI, the
+# container image, and the NAS are all Linux. Without this, a CRLF shell script
+# or entrypoint fails in the image with a confusing "not found" error.
+* text=auto eol=lf
+
+*.sh      text eol=lf
+*.py      text eol=lf
+*.sql     text eol=lf
+*.yml     text eol=lf
+*.yaml    text eol=lf
+*.md      text eol=lf
+Dockerfile text eol=lf
+
+*.png     binary
+*.jpg     binary
+*.ico     binary
+*.woff2   binary
+*.db      binary

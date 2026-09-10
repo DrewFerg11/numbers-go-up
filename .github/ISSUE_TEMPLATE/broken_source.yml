@@ -1,0 +1,67 @@
+name: Broken data source
+description: A plugin stopped returning correct data because the upstream source changed shape, walled, or blocked it.
+title: "Source broken: "
+labels: ["canary", "area:plugins"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        This is the expected failure mode for every source except GitHub — they
+        are unofficial endpoints and they change without notice. It is a
+        maintenance problem, not an emergency.
+
+        **Before filing:** confirm it fails from your own network. The daily
+        `sources-canary.yml` job runs from GitHub's Azure IP ranges, and
+        MakerWorld and TikTok may return 403 there while working fine from a
+        residential connection.
+
+  - type: dropdown
+    id: plugin
+    attributes:
+      label: Plugin
+      options: [makerworld, github, youtube, tiktok, user-supplied plugin, other]
+    validations:
+      required: true
+
+  - type: dropdown
+    id: symptom
+    attributes:
+      label: Symptom
+      options:
+        - HTTP error (403, 404, 5xx)
+        - Rate limited (429)
+        - Response shape changed — parse/KeyError
+        - Values returned but wrong
+        - Values frozen / no new samples
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Evidence
+      description: >
+        The `plugin_runs` error text, relevant log lines, and ideally a `curl` of the
+        endpoint. **Scrub your user ID, handle, and any cookies or tokens.**
+      render: shell
+    validations:
+      required: true
+
+  - type: input
+    id: network
+    attributes:
+      label: Where did you verify this?
+      placeholder: Home connection (residential IP), Sep 10 2026 ~14:00 ET
+    validations:
+      required: true
+
+  - type: textarea
+    id: canary
+    attributes:
+      label: Upstream canary check
+      description: >
+        `docs/research.md` → Canary summary lists a reference repo per source. Has
+        theirs been updated recently? That is usually where the new shape shows up first.
+    validations:
+      required: false
