@@ -4,7 +4,7 @@
 
 `numbers-go-up` is a self-hosted service intended to run on a **trusted LAN**.
 It ships **no authentication** — that is a deliberate design decision, not an
-oversight, and it is documented in `docs/design.md` → Exposure.
+oversight.
 
 This means: **an unauthenticated endpoint reachable by anyone on the network
 that can reach it is expected behaviour, not a vulnerability.** If you want
@@ -38,6 +38,5 @@ The latest release only. There are no maintained release branches.
 ## What this project does with credentials
 
 Nothing — by design. No plugin requires a login, cookie, or session token, and
-none ever will (`docs/design.md` → Responsible Use). Plugins read public data
-about your own accounts. If a plugin ever asks you for a password, that is the
+none ever will. Plugins read public data about your own accounts. If a plugin ever asks you for a password, that is the
 bug.

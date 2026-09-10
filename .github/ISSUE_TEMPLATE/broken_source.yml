@@ -61,7 +61,8 @@ body:
     attributes:
       label: Upstream canary check
       description: >
-        `docs/research.md` → Canary summary lists a reference repo per source. Has
-        theirs been updated recently? That is usually where the new shape shows up first.
+        Most sources have a reference project that reads the same endpoint. If
+        theirs was updated recently, that is usually where the new shape shows up
+        first. Link it if you find one.
     validations:
       required: false
