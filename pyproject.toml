@@ -16,7 +16,7 @@ dependencies = [
 ]
 
 [tool.setuptools]
-packages = ["numbers_go_up", "numbers_go_up.migrations"]
+packages = ["numbers_go_up", "numbers_go_up.migrations", "numbers_go_up.plugins"]
 
 [tool.setuptools.package-data]
 "numbers_go_up.migrations" = ["*.sql"]
@@ -26,6 +26,9 @@ version = { attr = "numbers_go_up.__version__" }
 
 [tool.ruff]
 target-version = "py312"
+# Deliberately invalid syntax: proves discovery skips underscore-prefixed
+# plugin files without ever attempting to import them.
+extend-exclude = ["tests/fixtures/plugins/_underscored.py"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "UP", "B", "SIM"]
