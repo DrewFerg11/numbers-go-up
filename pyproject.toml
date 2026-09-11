@@ -16,7 +16,10 @@ dependencies = [
 ]
 
 [tool.setuptools]
-packages = ["numbers_go_up"]
+packages = ["numbers_go_up", "numbers_go_up.migrations"]
+
+[tool.setuptools.package-data]
+"numbers_go_up.migrations" = ["*.sql"]
 
 [tool.setuptools.dynamic]
 version = { attr = "numbers_go_up.__version__" }
