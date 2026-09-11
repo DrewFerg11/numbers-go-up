@@ -3,9 +3,10 @@
 Self-hosted, plugin-based tracker for the counters you care about — with
 history, rate-of-change, a REST API, and Home Assistant integration.
 
-> **Status: early. Nothing to install yet.**
-> The design is settled and the build is starting. This README will grow into
-> real setup instructions as the phases land.
+> **Status: early.** Phase 0 (scaffold + container) is landing. There's no
+> plugin, storage, or dashboard yet — just a service that builds, runs, and
+> answers `/health`. This README will grow into real setup instructions as the
+> phases land.
 
 ## The idea
 
@@ -39,6 +40,31 @@ so you can ask what changed, how fast, and since when.
 **Every plugin is opt-in and inert by default.** A fresh install makes zero
 outbound requests to any platform until you configure one. There are no default
 user IDs or handles baked into the image.
+
+## Running it
+
+Everything persistent lives outside the image — the container itself is
+disposable.
+
+```sh
+mkdir -p data config user-plugins
+chown -R 1000:1000 data config user-plugins   # match the container's non-root user
+docker compose up -d
+curl localhost:8080/health
+```
+
+- `./data` — the SQLite DB and migration backups. **Must be local disk, never
+  an NFS/SMB share** — SQLite's WAL locking is unreliable over network
+  filesystems.
+- `./config` — drop a `config.yaml` here (see
+  [`config.yaml.example`](config.yaml.example)). If it's missing, the service
+  writes a commented example next to where it looked and starts with defaults
+  and zero plugins enabled.
+- `./user-plugins` — optional plugins of your own. Named `user-plugins` on the
+  host (not `plugins`, which is the repo's own built-in-plugin source
+  directory) so a bind mount from a clone doesn't shadow the built-ins.
+
+`docker rm` the container any time — none of the above lives inside it.
 
 ## Roadmap
 
