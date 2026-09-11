@@ -66,6 +66,13 @@ curl localhost:8080/health
 
 `docker rm` the container any time — none of the above lives inside it.
 
+### Timezone
+
+`TZ` is **not set by default** — the container falls back to UTC. Set it to
+your own zone in `docker-compose.yml` (e.g. `TZ=America/New_York`), because it
+affects timestamp correctness in the SQLite history and the daily heartbeat
+boundary.
+
 ## Roadmap
 
 MVP is a service that builds and runs in Docker, collects from one real source,
