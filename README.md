@@ -53,6 +53,11 @@ docker compose up -d
 curl localhost:8080/health
 ```
 
+> **Heads-up:** if you skip the `chown` step, Docker creates `./data`,
+> `./config`, and `./user-plugins` as root-owned, and the container (running as
+> UID 1000) can't write to them — you'll hit permission errors once
+> storage/config land.
+
 - `./data` — the SQLite DB and migration backups. **Must be local disk, never
   an NFS/SMB share** — SQLite's WAL locking is unreliable over network
   filesystems.
