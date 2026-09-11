@@ -38,3 +38,26 @@ def test_lifespan_runs_migrations_before_serving(tmp_path, monkeypatch):
         conn.close()
 
     assert "metric_series" in tables
+
+
+def test_service_starts_with_every_plugin_broken(tmp_path, monkeypatch):
+    monkeypatch.setenv("NGU_DATA_DIR", str(tmp_path / "data"))
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    plugin_dir = tmp_path / "user-plugins"
+    plugin_dir.mkdir()
+    (plugin_dir / "broken.py").write_text(
+        "METRICS = {'broken.x': {'kind': 'gauge', 'label': 'X', 'unit': ''}}\n"
+        "def collect(config, http):\n"
+        "    raise RuntimeError('always broken')\n"
+    )
+    (config_dir / "config.yaml").write_text(
+        "poll:\n  default_interval: 300\nplugins:\n  broken:\n    enabled: true\n"
+    )
+    monkeypatch.setenv("NGU_CONFIG_FILE", str(config_dir / "config.yaml"))
+    monkeypatch.setenv("NGU_PLUGIN_DIR", str(plugin_dir))
+
+    with TestClient(app) as scoped_client:
+        response = scoped_client.get("/health")
+
+    assert response.status_code == 200

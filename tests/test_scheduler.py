@@ -1,8 +1,12 @@
 import sqlite3
+import time
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import ModuleType
 
 import pytest
+from apscheduler.executors.pool import ThreadPoolExecutor
+from apscheduler.schedulers.background import BackgroundScheduler
 
 from numbers_go_up import migrate, plugins, scheduler, storage
 
@@ -279,3 +283,102 @@ class TestConsecutiveFailures:
 
     def test_unknown_plugin_has_zero_consecutive_failures(self, db_path):
         assert storage.consecutive_failures(db_path, "never-ran") == 0
+
+
+class TestBuildScheduler:
+    def _config(self, tmp_path, plugins_config=None, jitter_fraction=0.2):
+        db_path = tmp_path / "stats.db"
+        migrate.run_migrations(db_path)
+        return {
+            "storage": {"path": str(db_path), "heartbeat_seconds": 86400},
+            "poll": {"default_interval": 1800, "jitter_fraction": jitter_fraction},
+            "plugins": plugins_config or {},
+            "plugin_dir": str(FIXTURES_DIR),
+        }
+
+    def test_zero_plugins_enabled_has_no_jobs(self, tmp_path):
+        job_scheduler = scheduler.build_scheduler(self._config(tmp_path))
+
+        assert job_scheduler.get_jobs() == []
+
+    def test_only_enabled_plugins_get_jobs(self, tmp_path):
+        config = self._config(tmp_path, plugins_config={"valid": {"enabled": True}})
+
+        job_scheduler = scheduler.build_scheduler(config)
+
+        assert [job.id for job in job_scheduler.get_jobs()] == ["plugin:valid"]
+
+    def test_job_has_max_instances_1_and_coalesce_true(self, tmp_path):
+        config = self._config(tmp_path, plugins_config={"valid": {"enabled": True}})
+
+        job_scheduler = scheduler.build_scheduler(config)
+
+        job = job_scheduler.get_job("plugin:valid")
+        assert job.max_instances == 1
+        assert job.coalesce is True
+
+    def test_job_interval_matches_the_plugins_resolved_seconds(self, tmp_path):
+        config = self._config(
+            tmp_path, plugins_config={"valid": {"enabled": True, "poll_interval": 900}}
+        )
+
+        job_scheduler = scheduler.build_scheduler(config)
+
+        job = job_scheduler.get_job("plugin:valid")
+        assert job.trigger.interval.total_seconds() == 900
+
+    def test_first_run_happens_within_the_random_delay_window(self, tmp_path):
+        config = self._config(tmp_path, plugins_config={"valid": {"enabled": True}})
+        before = datetime.now(UTC)
+
+        job_scheduler = scheduler.build_scheduler(config)
+
+        after = datetime.now(UTC)
+        job = job_scheduler.get_job("plugin:valid")
+        next_run = job.next_run_time.astimezone(UTC)
+
+        assert (
+            before
+            <= next_run
+            <= after + timedelta(seconds=scheduler.FIRST_RUN_MAX_DELAY_SECONDS)
+        )
+
+
+def test_shutdown_wait_false_does_not_block_on_a_slow_job(tmp_path):
+    db_path = tmp_path / "stats.db"
+    migrate.run_migrations(db_path)
+
+    module = ModuleType("slow")
+    module.METRICS = {"slow.x": {"kind": "gauge", "label": "X", "unit": ""}}
+
+    def collect(config, http):
+        time.sleep(2)
+        return {}
+
+    module.collect = collect
+    plugin = plugins.LoadedPlugin(
+        name="slow",
+        module=module,
+        metrics=module.METRICS,
+        interval_seconds=300,
+        config={},
+        source="user",
+    )
+
+    job_scheduler = BackgroundScheduler(executors={"default": ThreadPoolExecutor(1)})
+    job_scheduler.add_job(
+        scheduler._run_scheduled_plugin,
+        trigger="interval",
+        seconds=300,
+        max_instances=1,
+        coalesce=True,
+        args=[db_path, plugin, None, 86400],
+    )
+    job_scheduler.start()
+    time.sleep(0.2)  # let the job actually start running
+
+    started = time.perf_counter()
+    job_scheduler.shutdown(wait=False)
+    elapsed = time.perf_counter() - started
+
+    assert elapsed < 1.0

@@ -14,12 +14,27 @@ threaded through here too.
 from __future__ import annotations
 
 import dataclasses
+import logging
+import random
+import time
 import traceback
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from apscheduler.executors.pool import ThreadPoolExecutor
+from apscheduler.schedulers.background import BackgroundScheduler
+
 from numbers_go_up import storage
-from numbers_go_up.plugins import LoadedPlugin
+from numbers_go_up.plugins import LoadedPlugin, discover_plugins
+
+logger = logging.getLogger(__name__)
+
+# APScheduler's own jitter only ever delays a run (0..N seconds), so a
+# ±20% "jitter_fraction" is implemented here as a plain interval jitter in
+# seconds, matching the "delay-only" behaviour Responsible Use #3 accepts.
+DEFAULT_JITTER_FRACTION = 0.2
+FIRST_RUN_MAX_DELAY_SECONDS = 60
 
 
 @dataclasses.dataclass(frozen=True)
@@ -105,3 +120,59 @@ def run_plugin_once(
     return RunResult(
         run_id=run_id, status="ok", samples_written=samples_written, error=None
     )
+
+
+def _run_scheduled_plugin(
+    db_path: str | Path, plugin: LoadedPlugin, http: Any, heartbeat_seconds: int
+) -> None:
+    run_plugin_once(db_path, plugin, http, int(time.time()), heartbeat_seconds)
+
+
+def build_scheduler(config: dict[str, Any], http: Any = None) -> BackgroundScheduler:
+    """Build (but don't start) one interval job per enabled plugin.
+
+    ``http`` is ``None`` here: Phase 2 ships no real plugin yet, and the
+    shared client with 429-aware backoff is #21's job. The scheduler wiring
+    doesn't change when that lands — only what gets passed as ``http``.
+
+    A single-threaded executor is deliberate: it makes ``max_instances=1``
+    meaningful per job (APScheduler enforces it per job regardless, but a
+    single worker keeps polls serialized against the one SQLite writer
+    rather than relying on ``busy_timeout`` to paper over concurrent
+    writes). Every job also sets ``coalesce=True`` so a missed run (e.g.
+    the container was asleep) doesn't fire a pile of catch-up runs.
+
+    One uvicorn worker, always: multiple workers would mean multiple
+    schedulers polling the same sources and writing the same SQLite file
+    from separate processes. The Dockerfile's CMD has no ``--workers``
+    flag — never add one.
+    """
+    db_path = config["storage"]["path"]
+    heartbeat_seconds = config["storage"]["heartbeat_seconds"]
+    jitter_fraction = config.get("poll", {}).get(
+        "jitter_fraction", DEFAULT_JITTER_FRACTION
+    )
+
+    scheduler = BackgroundScheduler(executors={"default": ThreadPoolExecutor(10)})
+
+    for plugin in discover_plugins(config):
+        first_run_delay = random.uniform(0, FIRST_RUN_MAX_DELAY_SECONDS)
+        scheduler.add_job(
+            _run_scheduled_plugin,
+            trigger="interval",
+            seconds=plugin.interval_seconds,
+            jitter=plugin.interval_seconds * jitter_fraction,
+            next_run_time=datetime.now() + timedelta(seconds=first_run_delay),
+            max_instances=1,
+            coalesce=True,
+            id=f"plugin:{plugin.name}",
+            args=[db_path, plugin, http, heartbeat_seconds],
+        )
+        logger.info(
+            "Scheduled plugin %s every %ss (source=%s)",
+            plugin.name,
+            plugin.interval_seconds,
+            plugin.source,
+        )
+
+    return scheduler
