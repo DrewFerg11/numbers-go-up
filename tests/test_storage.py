@@ -102,6 +102,17 @@ class TestGetOrCreateSeries:
         assert row[4] == "new"
         assert row[5] == "mdi:new"
 
+    def test_updates_plugin_name_on_sight(self, db_path):
+        series_id = storage.get_or_create_series(
+            db_path, "demo.thing.count", "demo", "cumulative", "Count", "", "", 1000
+        )
+        storage.get_or_create_series(
+            db_path, "demo.thing.count", "renamed", "cumulative", "Count", "", "", 2000
+        )
+
+        row = _series_row(db_path, series_id)
+        assert row[1] == "renamed"
+
     def test_kind_mismatch_keeps_the_stored_kind(self, db_path, caplog):
         series_id = storage.get_or_create_series(
             db_path, "demo.thing.count", "demo", "cumulative", "Count", "", "", 1000
