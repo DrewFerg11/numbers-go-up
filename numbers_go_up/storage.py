@@ -45,31 +45,29 @@ def get_or_create_series(
 ) -> int:
     """Return the series id for ``metric_key``, creating it if needed.
 
-    ``label``/``unit``/``icon`` are refreshed on every call — a plugin's
-    ``METRICS`` entry is allowed to drift between releases. ``kind`` is not:
-    flipping cumulative <-> gauge changes Home Assistant's downstream
-    statistics, so a mismatch is logged and the originally stored kind wins.
+    ``plugin_name``/``label``/``unit``/``icon`` are refreshed on every call —
+    a plugin's ``METRICS`` entry is allowed to drift between releases.
+    ``kind`` is not: flipping cumulative <-> gauge changes Home Assistant's
+    downstream statistics, so a mismatch is logged and the originally stored
+    kind wins.
     """
     if kind not in VALID_KINDS:
         raise ValueError(f"kind must be one of {sorted(VALID_KINDS)}, got {kind!r}")
 
     with contextlib.closing(connect(db_path)) as conn:
+        conn.execute(
+            "INSERT INTO metric_series "
+            "(metric_key, plugin_name, kind, label, unit, icon, first_seen) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT (metric_key) DO NOTHING",
+            (metric_key, plugin_name, kind, label, unit, icon, now),
+        )
         row = conn.execute(
             "SELECT id, kind FROM metric_series WHERE metric_key = ?",
             (metric_key,),
         ).fetchone()
-
-        if row is None:
-            cursor = conn.execute(
-                "INSERT INTO metric_series "
-                "(metric_key, plugin_name, kind, label, unit, icon, first_seen) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (metric_key, plugin_name, kind, label, unit, icon, now),
-            )
-            conn.commit()
-            return cursor.lastrowid
-
         series_id, stored_kind = row
+
         if stored_kind != kind:
             logger.warning(
                 "Series %s: plugin reports kind=%r but stored kind is %r; "
@@ -80,8 +78,9 @@ def get_or_create_series(
             )
 
         conn.execute(
-            "UPDATE metric_series SET label = ?, unit = ?, icon = ? WHERE id = ?",
-            (label, unit, icon, series_id),
+            "UPDATE metric_series SET plugin_name = ?, label = ?, unit = ?, "
+            "icon = ? WHERE id = ?",
+            (plugin_name, label, unit, icon, series_id),
         )
         conn.commit()
         return series_id
@@ -97,18 +96,21 @@ def record_sample(
     """Store-on-change: write a sample only if the value changed or the
     heartbeat interval has elapsed since the last written sample.
 
-    Returns whether a row was written. The sample insert and the
-    ``metric_series`` last-value/last-seen update happen in one
-    transaction, so a crash between them can't leave the two disagreeing.
-    A second write in the same second as an existing sample overwrites it
-    (last write wins).
+    Returns whether a row was written. The store-on-change check, the sample
+    insert, and the ``metric_series`` last-value/last-seen update all happen
+    in one ``BEGIN IMMEDIATE`` transaction, so concurrent callers can't both
+    read a stale last-value and write a redundant sample, and a crash can't
+    leave the sample and the last-value disagreeing. A second write in the
+    same second as an existing sample overwrites it (last write wins).
     """
     with contextlib.closing(connect(db_path)) as conn:
+        conn.execute("BEGIN IMMEDIATE")
         row = conn.execute(
             "SELECT last_value, last_seen FROM metric_series WHERE id = ?",
             (series_id,),
         ).fetchone()
         if row is None:
+            conn.rollback()
             raise ValueError(f"No series with id {series_id}")
         last_value, last_seen = row
 
@@ -119,6 +121,7 @@ def record_sample(
             or ts - last_seen >= heartbeat_seconds
         )
         if not should_write:
+            conn.rollback()
             return False
 
         conn.execute(
