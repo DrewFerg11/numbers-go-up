@@ -72,7 +72,7 @@ honest User-Agent, conservative intervals, one request per poll, and real
 backoff when asked to slow down.
 
 You are responsible for complying with the terms of any service you point this
-at.
+at. See [NOTICE.md](NOTICE.md) for the full statement.
 
 ## License
 
