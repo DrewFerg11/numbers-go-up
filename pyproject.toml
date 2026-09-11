@@ -7,8 +7,12 @@ name = "numbers-go-up"
 dynamic = ["version"]
 description = "Self-hosted, plugin-based tracker for the counters you care about."
 readme = "README.md"
-license = { text = "MIT" }
+license = "MIT"
 requires-python = ">=3.12"
+dependencies = [
+    "fastapi",
+    "uvicorn[standard]",
+]
 
 [tool.setuptools]
 packages = ["numbers_go_up"]
