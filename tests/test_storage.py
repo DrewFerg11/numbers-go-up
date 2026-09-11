@@ -328,6 +328,15 @@ class TestPrunePluginRuns:
         assert _run_row(db_path, old_run) is None
         assert _run_row(db_path, recent_run) is not None
 
+    def test_boundary_row_exactly_days_old_is_kept(self, db_path):
+        now = 30 * 86400
+        boundary_run = storage.start_run(db_path, "demo", now - 30 * 86400)
+
+        deleted = storage.prune_plugin_runs(db_path, days=30, now=now)
+
+        assert deleted == 0
+        assert _run_row(db_path, boundary_run) is not None
+
     def test_returns_the_number_of_rows_deleted(self, db_path):
         now = 30 * 86400
         for _ in range(3):

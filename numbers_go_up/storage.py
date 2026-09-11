@@ -193,6 +193,9 @@ def finish_run(
         if row is None:
             raise ValueError(f"No run with id {run_id}")
         started_at = row[0]
+        # started_at/finished_at are unix seconds, so duration_ms is only ever
+        # a multiple of 1000 and sub-second polls round to 0 ms. That's fine
+        # here: plugin_runs is a liveness record, not a profiler.
         duration_ms = (finished_at - started_at) * 1000
 
         conn.execute(
@@ -206,8 +209,9 @@ def finish_run(
 def prune_plugin_runs(db_path: str | Path, days: int, now: int) -> int:
     """Delete plugin_runs rows older than ``days`` days before ``now``.
 
-    Never touches samples, metric_series, or state. Returns the number of
-    rows deleted.
+    The boundary is exclusive: a row exactly ``days`` days old is kept, so
+    the last ``days`` days of runs are always retained. Never touches
+    samples, metric_series, or state. Returns the number of rows deleted.
     """
     cutoff = now - days * 86400
     with contextlib.closing(connect(db_path)) as conn:
