@@ -2,8 +2,9 @@
 
 Each migration ships as a ``NNNN_name.sql`` file. The runner reads
 ``schema_migrations`` to find the current version, then applies every
-pending file in its own transaction. See ``numbers_go_up/migrations/`` for
-the shipped migrations.
+pending file inside a single ``BEGIN IMMEDIATE`` transaction so that
+concurrent worker processes serialise rather than racing to create the
+same tables. See ``numbers_go_up/migrations/`` for the shipped migrations.
 """
 
 from __future__ import annotations
@@ -13,6 +14,7 @@ import importlib.resources
 import logging
 import re
 import sqlite3
+from collections.abc import Iterator
 from pathlib import Path
 
 from numbers_go_up import storage
@@ -33,10 +35,13 @@ def _builtin_migrations_dir() -> Path:
 
 def _discover_migrations(migrations_dir: Path) -> list[tuple[int, str, Path]]:
     found = []
-    for path in Path(migrations_dir).glob("*.sql"):
+    for path in sorted(Path(migrations_dir).glob("*.sql")):
         match = _MIGRATION_RE.match(path.name)
         if not match:
-            continue
+            raise ValueError(
+                f"Migration file {path.name!r} does not match the expected "
+                f"NNNN_name.sql pattern. Refusing to silently skip it."
+            )
         found.append((int(match.group(1)), match.group(2), path))
     found.sort(key=lambda item: item[0])
     return found
@@ -78,6 +83,28 @@ def _prune_backups(backups_dir: Path, keep: int = _BACKUP_KEEP) -> None:
         stale.unlink()
 
 
+def _iter_sql_statements(sql: str) -> Iterator[str]:
+    """Yield each complete SQL statement from a migration file.
+
+    ``executescript()`` auto-commits any surrounding transaction, which
+    would release our ``BEGIN IMMEDIATE`` lock mid-migration and re-open
+    the very race we are guarding against. Instead, split the file into
+    individual statements with ``sqlite3.complete_statement`` and execute
+    each one inside the same explicit transaction.
+    """
+    pending = ""
+    for line in sql.splitlines(keepends=True):
+        pending += line
+        if sqlite3.complete_statement(pending):
+            statement = pending.strip()
+            if statement:
+                yield statement
+            pending = ""
+    tail = pending.strip()
+    if tail:
+        yield tail
+
+
 def run_migrations(db_path: str | Path, migrations_dir: Path | None = None) -> None:
     """Bring the database at ``db_path`` up to the latest schema version.
 
@@ -97,37 +124,43 @@ def run_migrations(db_path: str | Path, migrations_dir: Path | None = None) -> N
 
     conn = storage.connect(db_path)
     try:
-        current = _current_version(conn)
+        # Take the write lock up front. With ``uvicorn --workers N`` (or two
+        # containers / a restart race), every process runs migrations on
+        # startup; ``BEGIN IMMEDIATE`` makes the read-then-apply atomic so a
+        # second process blocks here (up to ``busy_timeout``) until the first
+        # commits, then reads ``current`` already advanced and applies nothing.
+        conn.isolation_level = None
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            current = _current_version(conn)
 
-        if current > latest_known:
-            raise DowngradeError(
-                f"Database schema is at version {current}, but this build only "
-                f"knows migrations up to version {latest_known}. Refusing to "
-                "start against a database newer than the code."
-            )
-
-        pending = [m for m in migrations if m[0] > current]
-        if pending:
-            if current > 0:
-                _backup(db_path, current)
-
-            conn.isolation_level = None
-            for version, name, path in pending:
-                sql = path.read_text(encoding="utf-8")
-                name_escaped = name.replace("'", "''")
-                script = (
-                    "BEGIN;\n"
-                    + sql
-                    + "\nINSERT INTO schema_migrations (version, name, applied_at) "
-                    f"VALUES ({version}, '{name_escaped}', strftime('%s', 'now'));\n"
-                    "COMMIT;\n"
+            if current > latest_known:
+                raise DowngradeError(
+                    f"Database schema is at version {current}, but this build only "
+                    f"knows migrations up to version {latest_known}. Refusing to "
+                    "start against a database newer than the code."
                 )
-                try:
-                    conn.executescript(script)
-                except Exception:
-                    conn.execute("ROLLBACK")
-                    raise
-                logger.info("Applied migration %04d_%s", version, name)
+
+            pending = [m for m in migrations if m[0] > current]
+            if pending:
+                if current > 0:
+                    _backup(db_path, current)
+
+                for version, name, path in pending:
+                    sql = path.read_text(encoding="utf-8")
+                    name_escaped = name.replace("'", "''")
+                    for statement in _iter_sql_statements(sql):
+                        conn.execute(statement)
+                    conn.execute(
+                        "INSERT INTO schema_migrations (version, name, applied_at) "
+                        f"VALUES ({version}, '{name_escaped}', strftime('%s', 'now'))"
+                    )
+                    logger.info("Applied migration %04d_%s", version, name)
+
+            conn.execute("COMMIT")
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
 
         conn.execute("PRAGMA optimize")
     finally:
