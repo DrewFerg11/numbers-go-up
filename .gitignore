@@ -1,0 +1,34 @@
+# Runtime state — bind-mounted from the host, never committed.
+# See docs/implementation-guide.md → Phase 0 volume layout.
+# NOTE: built-in plugins under plugins/ ARE tracked source and are not ignored.
+# Only a deployment host's user-plugin directory is runtime state, and that
+# lives next to docker-compose.yml on the host, not in a clone of this repo.
+/data/
+/config/
+config.yaml
+*.db
+*.db-wal
+*.db-shm
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+env/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+
+# Editors / OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db

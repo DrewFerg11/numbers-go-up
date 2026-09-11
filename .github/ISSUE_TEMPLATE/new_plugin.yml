@@ -1,0 +1,66 @@
+name: New plugin / data source
+description: Propose tracking counters from a source that has no plugin yet.
+title: "Plugin: "
+labels: ["enhancement", "area:plugins"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Plugins are the extension point — a new source should be one file and no
+        changes anywhere else. If it can't be, say so; that's useful signal about
+        the plugin contract.
+
+  - type: input
+    id: source
+    attributes:
+      label: Source
+      placeholder: e.g. Printables, Ko-fi, Mastodon
+    validations:
+      required: true
+
+  - type: textarea
+    id: metrics
+    attributes:
+      label: Metrics it would expose
+      description: One per line, with `kind` — `cumulative` for counters that only rise, `gauge` for values that can fall.
+      placeholder: |
+        printables.profile.downloads — cumulative
+        printables.profile.likes — gauge
+    validations:
+      required: true
+
+  - type: dropdown
+    id: official
+    attributes:
+      label: Is there an official, documented API?
+      options:
+        - Yes — official API, no auth
+        - Yes — official API, requires an API key the user supplies
+        - No — undocumented endpoint returning JSON
+        - No — requires parsing HTML
+    validations:
+      required: true
+
+  - type: textarea
+    id: endpoint
+    attributes:
+      label: Endpoint and response shape
+      description: The request, and where in the response the numbers actually live. Scrub your own IDs.
+      render: shell
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: responsible-use
+    attributes:
+      label: Responsible Use
+      description: "These are normative — see the plugin rules in [CONTRIBUTING.md](https://github.com/DrewFerg11/numbers-go-up/blob/main/CONTRIBUTING.md). A plugin that can't meet them won't be merged."
+      options:
+        - label: It reads **public** data about the user's **own** account.
+          required: true
+        - label: It needs no login, cookies, session reuse, or auth bypass.
+          required: true
+        - label: One request per poll — no proxy rotation, no CAPTCHA solving.
+          required: true
+        - label: It can ship disabled, inert until the user configures it, with no default IDs or handles baked in.
+          required: true

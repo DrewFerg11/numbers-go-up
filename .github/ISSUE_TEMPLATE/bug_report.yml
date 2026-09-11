@@ -1,0 +1,54 @@
+name: Bug report
+description: The service itself misbehaves — crash, wrong API response, migration failure, container problem.
+title: "Bug: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        If a *data source* stopped working, use the "Broken data source" template instead.
+
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: Expected vs. actual.
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: "`docker logs numbers-go-up`. Scrub user IDs, handles, and tokens."
+      render: shell
+    validations:
+      required: false
+
+  - type: textarea
+    id: env
+    attributes:
+      label: Environment
+      value: |
+        - Image tag:
+        - Architecture (amd64/arm64):
+        - Host (NAS model / distro):
+        - `./data` on local disk, not NFS/SMB:  yes / no
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: storage-check
+    attributes:
+      label: Storage sanity check
+      description: SQLite WAL locking is unreliable over network filesystems — this is the one deployment mistake that corrupts the database.
+      options:
+        - label: My `./data` directory is on local disk, not an NFS or SMB share.
+          required: false

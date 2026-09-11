@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Contributing guide
+    url: https://github.com/DrewFerg11/numbers-go-up/blob/main/CONTRIBUTING.md
+    about: How plugins work, what gets merged, and the rules this project holds to. Read this before proposing a change to how the project works.
+  - name: Report a security vulnerability
+    url: https://github.com/DrewFerg11/numbers-go-up/security/advisories/new
+    about: Please report privately, not as a public issue.
