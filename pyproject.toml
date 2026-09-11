@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "numbers-go-up"
+dynamic = ["version"]
+description = "Self-hosted, plugin-based tracker for the counters you care about."
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.12"
+
+[tool.setuptools]
+packages = ["numbers_go_up"]
+
+[tool.setuptools.dynamic]
+version = { attr = "numbers_go_up.__version__" }
+
+[tool.ruff]
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM"]
+
+[tool.pytest.ini_options]
+markers = [
+    "live: hits real network endpoints; excluded from CI by default",
+]
