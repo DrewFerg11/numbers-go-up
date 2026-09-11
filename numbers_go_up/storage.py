@@ -16,6 +16,17 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 VALID_KINDS = {"gauge", "cumulative"}
+VALID_RUN_STATUSES = {"ok", "error"}
+
+# plugin_runs.status has NOT NULL + CHECK(status IN ('ok', 'error')), so
+# there's no schema-level "running" state. start_run() inserts this sentinel
+# into `error` and status='error'; finish_run() overwrites both. The nice
+# side effect: a run that crashes mid-flight, and is never finished, already
+# reads as a failure. #19's consecutive_failures and the /api/plugins
+# endpoint both rely on this convention.
+_RUN_IN_PROGRESS = "run in progress"
+
+_ERROR_TAIL_CHARS = 500
 
 
 def connect(db_path: str | Path) -> sqlite3.Connection:
@@ -132,3 +143,71 @@ def record_sample(
         )
         conn.commit()
         return True
+
+
+def start_run(db_path: str | Path, plugin_name: str, started_at: int) -> int:
+    """Record that ``plugin_name`` started a poll. Returns the run id.
+
+    The row is inserted as an in-progress failure (see ``_RUN_IN_PROGRESS``)
+    and ``finish_run`` overwrites it with the real outcome.
+    """
+    with contextlib.closing(connect(db_path)) as conn:
+        cursor = conn.execute(
+            "INSERT INTO plugin_runs "
+            "(plugin_name, started_at, status, error, samples_written) "
+            "VALUES (?, ?, 'error', ?, 0)",
+            (plugin_name, started_at, _RUN_IN_PROGRESS),
+        )
+        conn.commit()
+        return cursor.lastrowid
+
+
+def finish_run(
+    db_path: str | Path,
+    run_id: int,
+    status: str,
+    error: str | None,
+    samples_written: int,
+    finished_at: int,
+) -> None:
+    """Record the outcome of a run started by :func:`start_run`.
+
+    ``error`` is truncated to its last ~500 characters — the tail of a
+    traceback, where the actual exception is, not the head.
+    """
+    if status not in VALID_RUN_STATUSES:
+        raise ValueError(
+            f"status must be one of {sorted(VALID_RUN_STATUSES)}, got {status!r}"
+        )
+
+    if error is not None and len(error) > _ERROR_TAIL_CHARS:
+        error = error[-_ERROR_TAIL_CHARS:]
+
+    with contextlib.closing(connect(db_path)) as conn:
+        row = conn.execute(
+            "SELECT started_at FROM plugin_runs WHERE id = ?", (run_id,)
+        ).fetchone()
+        if row is None:
+            raise ValueError(f"No run with id {run_id}")
+        started_at = row[0]
+        duration_ms = (finished_at - started_at) * 1000
+
+        conn.execute(
+            "UPDATE plugin_runs SET finished_at = ?, status = ?, error = ?, "
+            "duration_ms = ?, samples_written = ? WHERE id = ?",
+            (finished_at, status, error, duration_ms, samples_written, run_id),
+        )
+        conn.commit()
+
+
+def prune_plugin_runs(db_path: str | Path, days: int, now: int) -> int:
+    """Delete plugin_runs rows older than ``days`` days before ``now``.
+
+    Never touches samples, metric_series, or state. Returns the number of
+    rows deleted.
+    """
+    cutoff = now - days * 86400
+    with contextlib.closing(connect(db_path)) as conn:
+        cursor = conn.execute("DELETE FROM plugin_runs WHERE started_at < ?", (cutoff,))
+        conn.commit()
+        return cursor.rowcount

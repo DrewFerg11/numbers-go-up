@@ -231,3 +231,122 @@ class TestRecordSample:
     def test_raises_for_unknown_series(self, db_path):
         with pytest.raises(ValueError):
             storage.record_sample(db_path, 999, 1000, 5, heartbeat_seconds=86400)
+
+
+def _run_row(db_path, run_id):
+    conn = sqlite3.connect(str(db_path))
+    try:
+        return conn.execute(
+            "SELECT plugin_name, started_at, finished_at, status, error, "
+            "duration_ms, samples_written FROM plugin_runs WHERE id = ?",
+            (run_id,),
+        ).fetchone()
+    finally:
+        conn.close()
+
+
+class TestRunLedger:
+    def test_start_run_returns_a_run_id_and_records_started_at(self, db_path):
+        run_id = storage.start_run(db_path, "demo", 1000)
+
+        row = _run_row(db_path, run_id)
+        assert row[0] == "demo"
+        assert row[1] == 1000
+
+    def test_in_progress_run_reads_as_a_failure(self, db_path):
+        run_id = storage.start_run(db_path, "demo", 1000)
+
+        row = _run_row(db_path, run_id)
+        assert row[3] == "error"
+
+    def test_finish_run_records_outcome(self, db_path):
+        run_id = storage.start_run(db_path, "demo", 1000)
+
+        storage.finish_run(
+            db_path, run_id, "ok", None, samples_written=3, finished_at=1002
+        )
+
+        row = _run_row(db_path, run_id)
+        assert row[2] == 1002  # finished_at
+        assert row[3] == "ok"
+        assert row[4] is None
+        assert row[5] == 2000  # duration_ms
+        assert row[6] == 3
+
+    def test_error_is_capped_at_last_500_characters(self, db_path):
+        run_id = storage.start_run(db_path, "demo", 1000)
+        traceback_text = ("x" * 600) + "ValueError: boom"
+
+        storage.finish_run(
+            db_path,
+            run_id,
+            "error",
+            traceback_text,
+            samples_written=0,
+            finished_at=1001,
+        )
+
+        row = _run_row(db_path, run_id)
+        assert len(row[4]) == 500
+        assert row[4].endswith("ValueError: boom")
+
+    def test_status_outside_ok_or_error_is_rejected(self, db_path):
+        run_id = storage.start_run(db_path, "demo", 1000)
+
+        with pytest.raises(ValueError):
+            storage.finish_run(
+                db_path, run_id, "running", None, samples_written=0, finished_at=1001
+            )
+
+    def test_finish_run_raises_for_unknown_run(self, db_path):
+        with pytest.raises(ValueError):
+            storage.finish_run(
+                db_path, 999, "ok", None, samples_written=0, finished_at=1001
+            )
+
+
+class TestPrunePluginRuns:
+    def test_deletes_only_rows_past_the_cutoff(self, db_path):
+        now = 30 * 86400
+        old_run = storage.start_run(db_path, "demo", now - 31 * 86400)
+        recent_run = storage.start_run(db_path, "demo", now - 1 * 86400)
+
+        deleted = storage.prune_plugin_runs(db_path, days=30, now=now)
+
+        assert deleted == 1
+        assert _run_row(db_path, old_run) is None
+        assert _run_row(db_path, recent_run) is not None
+
+    def test_returns_the_number_of_rows_deleted(self, db_path):
+        now = 30 * 86400
+        for _ in range(3):
+            storage.start_run(db_path, "demo", now - 40 * 86400)
+
+        deleted = storage.prune_plugin_runs(db_path, days=30, now=now)
+
+        assert deleted == 3
+
+    def test_never_touches_samples_series_or_state(self, db_path):
+        series_id = storage.get_or_create_series(
+            db_path, "demo.thing.count", "demo", "cumulative", "Count", "", "", 1000
+        )
+        storage.record_sample(db_path, series_id, 1000, 5, heartbeat_seconds=86400)
+        now = 30 * 86400
+        storage.start_run(db_path, "demo", now - 40 * 86400)
+
+        conn = sqlite3.connect(str(db_path))
+        try:
+            conn.execute("INSERT INTO state (key, value) VALUES ('k', 'v')")
+            conn.commit()
+        finally:
+            conn.close()
+
+        storage.prune_plugin_runs(db_path, days=30, now=now)
+
+        conn = sqlite3.connect(str(db_path))
+        try:
+            assert conn.execute("SELECT COUNT(*) FROM samples").fetchone()[0] == 1
+            assert conn.execute("SELECT COUNT(*) FROM metric_series").fetchone()[0] == 1
+            assert conn.execute("SELECT COUNT(*) FROM state").fetchone()[0] == 1
+        finally:
+            conn.close()
