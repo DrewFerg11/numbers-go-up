@@ -218,3 +218,26 @@ def prune_plugin_runs(db_path: str | Path, days: int, now: int) -> int:
         cursor = conn.execute("DELETE FROM plugin_runs WHERE started_at < ?", (cutoff,))
         conn.commit()
         return cursor.rowcount
+
+
+def consecutive_failures(db_path: str | Path, plugin_name: str) -> int:
+    """Count of the most recent runs for ``plugin_name`` that errored,
+    counting back until (and not including) the last success.
+
+    Derived from ``plugin_runs`` via ``idx_runs_plugin_time``; no new
+    column. A plugin with no runs at all has 0 consecutive failures.
+    """
+    with contextlib.closing(connect(db_path)) as conn:
+        rows = conn.execute(
+            "SELECT status FROM plugin_runs WHERE plugin_name = ? "
+            "ORDER BY started_at DESC",
+            (plugin_name,),
+        ).fetchall()
+
+    count = 0
+    for (status,) in rows:
+        if status != "ok":
+            count += 1
+        else:
+            break
+    return count
