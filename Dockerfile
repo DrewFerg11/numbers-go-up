@@ -21,4 +21,7 @@ USER 1000:1000
 
 EXPOSE 8080
 
+# No --workers flag: multiple uvicorn workers would mean multiple
+# APScheduler instances polling the same sources and writing the same
+# SQLite file from separate processes. Never add one.
 CMD ["uvicorn", "numbers_go_up.main:app", "--host", "0.0.0.0", "--port", "8080"]

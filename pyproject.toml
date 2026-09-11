@@ -13,6 +13,7 @@ dependencies = [
     "fastapi",
     "uvicorn[standard]",
     "pyyaml",
+    "apscheduler>=3.11,<4",
 ]
 
 [tool.setuptools]
