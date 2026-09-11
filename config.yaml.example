@@ -1,0 +1,25 @@
+# numbers-go-up configuration.
+#
+# This file is optional. If it's missing, the service starts with the
+# built-in defaults below and zero plugins enabled -- no default user IDs,
+# handles, or repos ever ship in the image.
+#
+# All intervals are in seconds.
+
+# poll:
+#   default_interval: 1800      # 30 min
+#   jitter_fraction: 0.2        # +/-20%
+#
+# storage:
+#   heartbeat_seconds: 86400    # force one sample/day even if unchanged
+#   plugin_runs_retention_days: 30
+#
+# server:
+#   host: 0.0.0.0
+#   port: 8080
+#
+# plugins:
+#   makerworld:
+#     enabled: true              # every plugin is OFF until explicitly enabled
+#     user_id: "your-makerworld-user-id"
+#     poll_interval: 1800
