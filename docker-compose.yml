@@ -1,0 +1,20 @@
+services:
+  numbers-go-up:
+    build: .
+    image: ghcr.io/drewferg11/numbers-go-up:latest
+    container_name: numbers-go-up
+    restart: unless-stopped
+    user: "1000:1000"
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./data:/data # SQLite DB + migration backups
+      - ./config:/config # config.yaml -- edit on the host, no rebuild
+      - ./user-plugins:/plugins # optional user-supplied plugins
+    environment:
+      - NGU_DATA_DIR=/data
+      - NGU_CONFIG_FILE=/config/config.yaml
+      - NGU_PLUGIN_DIR=/plugins
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }

@@ -88,8 +88,7 @@ def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any
         if isinstance(merged.get(key), dict):
             if not isinstance(value, dict):
                 raise ConfigError(
-                    f"Config key {key!r} must be a mapping, got "
-                    f"{type(value).__name__}"
+                    f"Config key {key!r} must be a mapping, got {type(value).__name__}"
                 )
             merged[key] = _deep_merge(merged[key], value)
         else:
