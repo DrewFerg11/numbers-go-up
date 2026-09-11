@@ -136,3 +136,15 @@ def test_non_mapping_yaml_raises_config_error(tmp_path):
         load_config(env=_env(tmp_path, NGU_CONFIG_FILE=str(config_file)))
 
     assert str(config_file) in str(exc_info.value)
+
+
+def test_scalar_section_raises_config_error_naming_key(tmp_path):
+    config_dir = tmp_path / "config"
+    config_dir.mkdir(parents=True)
+    config_file = config_dir / "config.yaml"
+    config_file.write_text("poll: 1800\n")
+
+    with pytest.raises(ConfigError) as exc_info:
+        load_config(env=_env(tmp_path, NGU_CONFIG_FILE=str(config_file)))
+
+    assert "poll" in str(exc_info.value)

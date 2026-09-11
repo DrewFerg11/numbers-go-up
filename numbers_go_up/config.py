@@ -8,11 +8,14 @@ the scheduler — gets its settings from the dict this module returns.
 from __future__ import annotations
 
 import copy
+import logging
 import os
 from pathlib import Path
 from typing import Any
 
 import yaml
+
+logger = logging.getLogger(__name__)
 
 ENV_DATA_DIR = "NGU_DATA_DIR"
 ENV_CONFIG_FILE = "NGU_CONFIG_FILE"
@@ -82,7 +85,11 @@ def _defaults(data_dir: str) -> dict[str, Any]:
 def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
     merged = copy.deepcopy(base)
     for key, value in override.items():
-        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+        if isinstance(merged.get(key), dict):
+            if not isinstance(value, dict):
+                raise ConfigError(
+                    f"Config key {key!r} must be a mapping, got {type(value).__name__}"
+                )
             merged[key] = _deep_merge(merged[key], value)
         else:
             merged[key] = value
@@ -91,8 +98,15 @@ def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any
 
 def _write_example(config_file: Path) -> None:
     example_path = config_file.parent / EXAMPLE_CONFIG_FILENAME
-    example_path.parent.mkdir(parents=True, exist_ok=True)
-    example_path.write_text(EXAMPLE_CONFIG)
+    try:
+        example_path.parent.mkdir(parents=True, exist_ok=True)
+        example_path.write_text(EXAMPLE_CONFIG)
+    except OSError as exc:
+        logger.warning(
+            "Could not write example config %s: %s; continuing with defaults",
+            example_path,
+            exc,
+        )
 
 
 def load_config(env: dict[str, str] | None = None) -> dict[str, Any]:
@@ -115,10 +129,14 @@ def load_config(env: dict[str, str] | None = None) -> dict[str, Any]:
         user_config: dict[str, Any] = {}
     else:
         try:
-            loaded = yaml.safe_load(config_file.read_text())
+            loaded = yaml.safe_load(config_file.read_text(encoding="utf-8-sig"))
         except yaml.YAMLError as exc:
             raise ConfigError(
                 f"Could not parse config file {config_file}: {exc}"
+            ) from exc
+        except UnicodeDecodeError as exc:
+            raise ConfigError(
+                f"Config file {config_file} is not valid UTF-8: {exc}"
             ) from exc
 
         if loaded is None:
