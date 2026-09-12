@@ -103,7 +103,11 @@ class TestRunPluginOnceHappyPath:
 
         for tick in range(5):
             scheduler.run_plugin_once(
-                db_path, plugin, http=None, now=1000 + tick * 300, heartbeat_seconds=86400
+                db_path,
+                plugin,
+                http=None,
+                now=1000 + tick * 300,
+                heartbeat_seconds=86400,
             )
 
         series_id = storage.get_or_create_series(
