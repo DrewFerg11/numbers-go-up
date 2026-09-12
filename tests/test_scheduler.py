@@ -1,6 +1,7 @@
 import sqlite3
 from pathlib import Path
 from types import ModuleType
+from unittest.mock import patch
 
 import pytest
 
@@ -279,3 +280,170 @@ class TestConsecutiveFailures:
 
     def test_unknown_plugin_has_zero_consecutive_failures(self, db_path):
         assert storage.consecutive_failures(db_path, "never-ran") == 0
+
+
+class TestReviewFixes:
+    def test_nan_value_is_rejected_and_run_marked_error(self, db_path):
+        # A NaN passes isinstance(value, int | float), and sqlite3 binds it
+        # as NULL, which violates samples.value REAL NOT NULL.
+        module = ModuleType("nan_plugin")
+        module.METRICS = {
+            "nan_plugin.value": {"kind": "gauge", "label": "Value", "unit": ""}
+        }
+
+        def collect(config, http):
+            return {"nan_plugin.value": float("nan")}
+
+        module.collect = collect
+        plugin = _plugin_from_module("nan_plugin", module, module.METRICS)
+
+        result = scheduler.run_plugin_once(
+            db_path, plugin, http=None, now=1000, heartbeat_seconds=86400
+        )
+
+        assert result.status == "error"
+        assert result.samples_written == 0
+        assert "nan_plugin.value" in result.error
+
+    def test_infinite_value_is_rejected_and_run_marked_error(self, db_path):
+        module = ModuleType("inf_plugin")
+        module.METRICS = {
+            "inf_plugin.value": {"kind": "gauge", "label": "Value", "unit": ""}
+        }
+
+        def collect(config, http):
+            return {"inf_plugin.value": float("inf")}
+
+        module.collect = collect
+        plugin = _plugin_from_module("inf_plugin", module, module.METRICS)
+
+        result = scheduler.run_plugin_once(
+            db_path, plugin, http=None, now=1000, heartbeat_seconds=86400
+        )
+
+        assert result.status == "error"
+        assert result.samples_written == 0
+        assert "inf_plugin.value" in result.error
+
+    def test_non_dict_result_does_not_crash_the_service(self, db_path):
+        module = ModuleType("list_plugin")
+        module.METRICS = {
+            "list_plugin.value": {"kind": "gauge", "label": "Value", "unit": ""}
+        }
+
+        def collect(config, http):
+            return ["not", "a", "dict"]
+
+        module.collect = collect
+        plugin = _plugin_from_module("list_plugin", module, module.METRICS)
+
+        result = scheduler.run_plugin_once(
+            db_path, plugin, http=None, now=1000, heartbeat_seconds=86400
+        )
+
+        assert result.status == "error"
+        assert result.samples_written == 0
+        assert result.error is not None
+        assert "AttributeError" in result.error
+
+    def test_none_result_does_not_crash_the_service(self, db_path):
+        module = ModuleType("none_plugin")
+        module.METRICS = {
+            "none_plugin.value": {"kind": "gauge", "label": "Value", "unit": ""}
+        }
+
+        def collect(config, http):
+            return None
+
+        module.collect = collect
+        plugin = _plugin_from_module("none_plugin", module, module.METRICS)
+
+        result = scheduler.run_plugin_once(
+            db_path, plugin, http=None, now=1000, heartbeat_seconds=86400
+        )
+
+        assert result.status == "error"
+        assert result.samples_written == 0
+
+    def test_storage_failure_mid_loop_is_contained_and_samples_stay_honest(
+        self, db_path
+    ):
+        module = ModuleType("flaky_storage")
+        module.METRICS = {
+            "flaky_storage.a": {"kind": "gauge", "label": "A", "unit": ""},
+            "flaky_storage.b": {"kind": "gauge", "label": "B", "unit": ""},
+        }
+        order = iter(["a", "b"])
+
+        real_get_or_create = storage.get_or_create_series
+        real_record_sample = storage.record_sample
+
+        def flaky_record_sample(db, series_id, ts, value, heartbeat_seconds):
+            # The first write succeeds; the second blows up, simulating
+            # sqlite contention (busy_timeout expiry) or a full disk.
+            if next(order) == "b":
+                raise sqlite3.OperationalError("database is locked")
+            return real_record_sample(db, series_id, ts, value, heartbeat_seconds)
+
+        def collect(config, http):
+            return {"flaky_storage.a": 1, "flaky_storage.b": 2}
+
+        module.collect = collect
+        plugin = _plugin_from_module("flaky_storage", module, module.METRICS)
+
+        with (
+            patch.object(storage, "record_sample", flaky_record_sample),
+            patch.object(storage, "get_or_create_series", real_get_or_create),
+        ):
+            result = scheduler.run_plugin_once(
+                db_path, plugin, http=None, now=1000, heartbeat_seconds=86400
+            )
+
+        # The run is finished and marked error...
+        assert result.status == "error"
+        assert "database is locked" in result.error
+        # ...and samples_written is honest: the row written before the
+        # crash is still counted.
+        assert result.samples_written == 1
+
+        conn = sqlite3.connect(str(db_path))
+        try:
+            row = conn.execute(
+                "SELECT status, error, samples_written, finished_at "
+                "FROM plugin_runs WHERE id = ?",
+                (result.run_id,),
+            ).fetchone()
+            samples = conn.execute("SELECT COUNT(*) FROM samples").fetchone()[0]
+        finally:
+            conn.close()
+
+        assert row[0] == "error"
+        assert row[1] is not None
+        assert row[2] == 1
+        assert row[3] == 1000  # finished_at
+        assert samples == 1
+
+    def test_dict_like_result_is_iterated_normally(self, db_path):
+        class Mapping:
+            def items(self):
+                return iter({"dictlike.value": 7}.items())
+
+        module = ModuleType("dictlike_plugin")
+        module.METRICS = {
+            "dictlike.value": {"kind": "gauge", "label": "Value", "unit": ""}
+        }
+
+        def collect(config, http):
+            return Mapping()
+
+        module.collect = collect
+        plugin = _plugin_from_module("dictlike", module, module.METRICS)
+
+        result = scheduler.run_plugin_once(
+            db_path, plugin, http=None, now=1000, heartbeat_seconds=86400
+        )
+
+        # No isinstance(result, dict) check was added: anything iterable
+        # via .items() still works.
+        assert result.status == "ok"
+        assert result.samples_written == 1

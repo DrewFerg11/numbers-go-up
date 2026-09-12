@@ -14,6 +14,7 @@ threaded through here too.
 from __future__ import annotations
 
 import dataclasses
+import math
 import traceback
 from pathlib import Path
 from typing import Any
@@ -40,7 +41,7 @@ def run_plugin_once(
     """Run ``plugin.module.collect()`` once, in isolation.
 
     Every step from Failure Handling #1: start a plugin_runs row, call
-    collect() inside try/except (catching Exception only —
+    collect() inside try/except (catching Exception only -
     KeyboardInterrupt/SystemExit must propagate so the container stays
     stoppable), validate and store whatever came back, then finish the
     run either way. A raising plugin, or one that returns bad data, never
@@ -60,27 +61,50 @@ def run_plugin_once(
     samples_written = 0
     violations: list[str] = []
 
-    for key, value in result.items():
-        if key not in plugin.metrics:
-            violations.append(f"{key!r} is not declared in this plugin's METRICS")
-            continue
-        if isinstance(value, bool) or not isinstance(value, int | float):
-            violations.append(f"{key!r} value {value!r} is not int or float")
-            continue
+    try:
+        for key, value in result.items():
+            if key not in plugin.metrics:
+                violations.append(f"{key!r} is not declared in this plugin's METRICS")
+                continue
+            if isinstance(value, bool) or not isinstance(value, int | float):
+                violations.append(f"{key!r} value {value!r} is not int or float")
+                continue
+            if math.isnan(value) or math.isinf(value):
+                violations.append(f"{key!r} value {value!r} is not finite")
+                continue
 
-        meta = plugin.metrics[key]
-        series_id = storage.get_or_create_series(
+            meta = plugin.metrics[key]
+            series_id = storage.get_or_create_series(
+                db_path,
+                key,
+                plugin.name,
+                meta["kind"],
+                meta.get("label"),
+                meta.get("unit"),
+                meta.get("icon"),
+                now,
+            )
+            if storage.record_sample(db_path, series_id, now, value, heartbeat_seconds):
+                samples_written += 1
+    except Exception:
+        # collect() succeeded but validate/store blew up (a non-dict
+        # result, sqlite contention, a full disk...). Finish the run and
+        # swallow, exactly like the collect() guard above: a plugin that
+        # breaks after collect() still never stops another plugin's poll
+        # or crashes the service. samples_written stays honest -- rows
+        # written before the crash are counted.
+        error = traceback.format_exc()
+        storage.finish_run(
             db_path,
-            key,
-            plugin.name,
-            meta["kind"],
-            meta.get("label"),
-            meta.get("unit"),
-            meta.get("icon"),
-            now,
+            run_id,
+            "error",
+            error,
+            samples_written=samples_written,
+            finished_at=now,
         )
-        if storage.record_sample(db_path, series_id, now, value, heartbeat_seconds):
-            samples_written += 1
+        return RunResult(
+            run_id=run_id, status="error", samples_written=samples_written, error=error
+        )
 
     if violations:
         # Write the valid metrics and report the offenders: a status of
