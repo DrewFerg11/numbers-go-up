@@ -1,0 +1,54 @@
+{
+  "uid": 0,
+  "name": "Scrubbed Name",
+  "handle": "",
+  "avatar": "https://makerworld.bblmw.com/makerworld/user/scrubbed/scrubbed.png",
+  "fanCount": 18,
+  "followCount": 3,
+  "isFollowed": false,
+  "likeCount": 149,
+  "collectionCount": 448,
+  "downloadCount": 1121,
+  "setting": {
+    "isLikeOpen": 1,
+    "isFollowOpen": 1,
+    "isFanOpen": 1,
+    "isFirmwareBetaOpen": false,
+    "recommendStatus": 0
+  },
+  "personal": {
+    "bio": "scrubbed",
+    "links": [],
+    "backgroundUrl": "https://public-cdn.bblmw.com/default/background.png",
+    "designsInfo": [
+      {
+        "id": 0,
+        "title": "Scrubbed Design",
+        "cover": "https://makerworld.bblmw.com/makerworld/model/scrubbed/design/scrubbed.jpg",
+        "status": 1,
+        "nsfw": false
+      }
+    ],
+    "userLevel": {
+      "level": 17,
+      "gradeType": 2
+    }
+  },
+  "favoritesCount": 5,
+  "publicInstanceUploadCount": 0,
+  "isDelete": false,
+  "bannedPermission": {
+    "whole": false,
+    "comment": false,
+    "upload": false,
+    "redeem": false
+  },
+  "MWCount": {
+    "myDesignDownloadCount": 354,
+    "myInstanceDownloadCount": 495,
+    "designCount": 6,
+    "myDesignPrintCount": 277,
+    "myInstancePrintCount": 278
+  },
+  "certificated": false
+}

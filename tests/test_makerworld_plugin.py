@@ -1,14 +1,17 @@
 """Offline tests for numbers_go_up/plugins/makerworld.py.
 
-No real MakerWorld user id was available in this environment to capture
-tests/fixtures/makerworld_profile.json (the real-capture fixture the
-issue's acceptance criteria calls for) -- see the PR description. The
-bodies built here are synthetic, following the corrected schema quoted in
-issue #26, and exist only to exercise this plugin's own parsing and
-validation logic -- they are not a substitute for that fixture.
+tests/fixtures/makerworld_profile.json is a real captured profile response
+(captured Sep 12 2026 from a home connection with the project User-Agent,
+per issue #26), with the uid, name, avatar, bio, links and designsInfo
+scrubbed. The TestRealCaptureFixture class runs the plugin against that
+fixture; everything else uses synthetic bodies built to the corrected
+schema quoted in issue #26, which exist to exercise the plugin's own
+validation and error paths.
 """
 
+import json
 import os
+import pathlib
 
 import httpx
 import pytest
@@ -98,6 +101,57 @@ class TestFieldMapping:
         assert set(result) == set(makerworld.METRICS)
         # downloadCount (1067, inflated) must never appear as a value.
         assert 1067 not in result.values()
+
+
+class TestRealCaptureFixture:
+    """Run the plugin against the committed real-capture fixture.
+
+    Expected values are read from the fixture JSON itself, so a re-capture
+    doesn't stale these tests -- what's under test is that the plugin reads
+    the right paths of a *real* response, not that it agrees with itself.
+    """
+
+    @staticmethod
+    def _fixture() -> dict:
+        path = pathlib.Path(__file__).parent / "fixtures" / "makerworld_profile.json"
+        return json.loads(path.read_text(encoding="utf-8"))
+
+    def test_mapping_against_the_real_capture(self):
+        body = self._fixture()
+        client = _client(lambda r: httpx.Response(200, json=body))
+
+        result = makerworld.collect({"user_id": "0000000000"}, client)
+
+        mw = body["MWCount"]
+        assert result == {
+            "makerworld.profile.design_downloads": mw["myDesignDownloadCount"],
+            "makerworld.profile.instance_downloads": mw["myInstanceDownloadCount"],
+            "makerworld.profile.design_prints": mw["myDesignPrintCount"],
+            "makerworld.profile.instance_prints": mw["myInstancePrintCount"],
+            "makerworld.profile.likes": body["likeCount"],
+            "makerworld.profile.collections": body["collectionCount"],
+            "makerworld.profile.followers": body["fanCount"],
+            "makerworld.profile.level": body["personal"]["userLevel"]["level"],
+        }
+        assert set(result) == set(makerworld.METRICS)
+        # The real inflated top-level downloadCount must never be used.
+        assert body["downloadCount"] not in result.values()
+
+    def test_fixture_missing_mwcount_is_a_clean_error(self):
+        body = self._fixture()
+        del body["MWCount"]
+        client = _client(lambda r: httpx.Response(200, json=body))
+
+        with pytest.raises(ValueError, match="MWCount"):
+            makerworld.collect({"user_id": "0000000000"}, client)
+
+    def test_fixture_missing_likecount_is_a_clean_error(self):
+        body = self._fixture()
+        del body["likeCount"]
+        client = _client(lambda r: httpx.Response(200, json=body))
+
+        with pytest.raises(ValueError, match="likeCount"):
+            makerworld.collect({"user_id": "0000000000"}, client)
 
 
 class TestMalformedResponses:
