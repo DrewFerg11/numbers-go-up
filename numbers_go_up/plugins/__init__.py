@@ -207,6 +207,13 @@ def discover_plugins(
             continue
 
         plugin_config = plugins_config.get(name) or {}
+        if not isinstance(plugin_config, dict):
+            logger.warning(
+                "Plugin %s: config entry must be a mapping; "
+                "treating plugin as disabled",
+                name,
+            )
+            continue
         if not plugin_config.get("enabled"):
             continue
 

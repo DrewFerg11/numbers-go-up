@@ -339,7 +339,7 @@ class TestDiscoverPlugins:
             plugins_config={"valid": {"enabled": True, "poll_interval": True}}
         )
 
-        with caplog.at_level(logging.WARNING):
+        with caplog.at_level("WARNING"):
             loaded = plugins.discover_plugins(config, builtin_dir=FIXTURES_DIR)
 
         assert loaded[0].interval_seconds == 1800
@@ -360,3 +360,65 @@ class TestDiscoverPlugins:
         loaded = plugins.discover_plugins(_config())
 
         assert loaded == []
+
+
+class TestNonMappingPluginConfigEntry:
+    # _deep_merge only type-checks the top-level keys, so a per-plugin
+    # entry that isn't a mapping (e.g. plugins: {ticker: "on"} — a quoted
+    # value or a flat string) reaches discover_plugins untouched. The
+    # loader then calls .get("enabled") on a str and raises AttributeError
+    # inside discover_plugins — and since the FastAPI lifespan calls
+    # discover_plugins on startup (this PR), one malformed entry refused
+    # the whole service startup. A broken entry must degrade to
+    # "plugin disabled" instead, the same behavior the issue specifies
+    # for broken plugins.
+
+    @staticmethod
+    def _user_dir_with_ticker_plugin(tmp_path):
+        # A real contract-passing plugin so the crash path (the config
+        # lookup for a discovered module) is genuinely reached.
+        user_dir = tmp_path / "user-plugins"
+        user_dir.mkdir()
+        (user_dir / "ticker.py").write_text(
+            'METRICS = {"ticker.thing.count": '
+            '{"kind": "gauge", "label": "Thing", "unit": ""}}\n'
+            "def collect(config, http): return {}\n"
+        )
+        return user_dir
+
+    def test_a_non_mapping_entry_degrades_to_plugin_disabled(self, tmp_path, caplog):
+        # Before the guard this raised AttributeError: 'str' object has no
+        # attribute 'get' — aborting discovery inside the lifespan and
+        # refusing the whole service startup.
+        user_dir = self._user_dir_with_ticker_plugin(tmp_path)
+        config = _config(
+            plugin_dir=str(user_dir),
+            plugins_config={"ticker": "on"},
+        )
+
+        with caplog.at_level(logging.WARNING):
+            loaded = plugins.discover_plugins(config, builtin_dir=FIXTURES_DIR)
+
+        assert loaded == []
+        assert "must be a mapping" in caplog.text
+        assert "ticker" in caplog.text
+
+    def test_other_plugins_still_load_when_one_entry_is_a_non_mapping(
+        self, tmp_path, caplog
+    ):
+        # A malformed entry must not stop discovery of every other plugin
+        # (the same containment the non-integer poll_interval guard gives).
+        user_dir = self._user_dir_with_ticker_plugin(tmp_path)
+        config = _config(
+            plugin_dir=str(user_dir),
+            plugins_config={
+                "ticker": "on",
+                "valid": {"enabled": True},
+            },
+        )
+
+        with caplog.at_level(logging.WARNING):
+            loaded = plugins.discover_plugins(config, builtin_dir=FIXTURES_DIR)
+
+        assert [p.name for p in loaded] == ["valid"]
+        assert "must be a mapping" in caplog.text
