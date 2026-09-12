@@ -58,6 +58,17 @@ class TestUserIdValidation:
         with pytest.raises(ValueError, match="numeric"):
             makerworld.collect({"user_id": "abc123"}, _client(handler))
 
+    def test_non_ascii_digit_user_id_is_rejected_without_a_request(self):
+        def handler(request: httpx.Request) -> httpx.Response:
+            raise AssertionError("no request should be made with a bad user_id")
+
+        # "\u00b2".isdigit(), "\u0661\u0662\u0663".isdigit() and
+        # "\uff11\uff12\uff13".isdigit() are all True, so a bare isdigit()
+        # lets them through to the profile URL.
+        for bad in ["\u00b2", "\u0661\u0662\u0663", "\uff11\uff12\uff13", "12\u00b33"]:
+            with pytest.raises(ValueError, match="numeric"):
+                makerworld.collect({"user_id": bad}, _client(handler))
+
     def test_integer_user_id_is_accepted(self):
         def handler(request: httpx.Request) -> httpx.Response:
             assert request.url.path.endswith("/123456")
@@ -129,6 +140,12 @@ class TestMalformedResponses:
         client = _client(lambda r: httpx.Response(200, json=["not", "a", "dict"]))
 
         with pytest.raises(ValueError):
+            makerworld.collect({"user_id": "123"}, client)
+
+    def test_html_200_page_is_a_clean_error(self):
+        client = _client(lambda r: httpx.Response(200, text="<html>challenge</html>"))
+
+        with pytest.raises(ValueError, match="not valid JSON"):
             makerworld.collect({"user_id": "123"}, client)
 
 

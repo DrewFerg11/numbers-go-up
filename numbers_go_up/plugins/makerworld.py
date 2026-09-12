@@ -7,6 +7,8 @@ inside it. Top-level ``downloadCount`` exists but is inflated relative to
 the real per-type counts inside ``MWCount`` -- never use it.
 """
 
+import json
+
 POLL_INTERVAL_SECONDS = 1800  # 30 min -- these move a few times a day
 
 METRICS = {
@@ -67,12 +69,22 @@ def collect(config: dict, http) -> dict[str, int | float]:
         raise ValueError("user_id is not configured")
 
     user_id = str(user_id)
-    if not user_id.isdigit():
+    # isascii() first: isdigit() is True for Unicode digit characters
+    # (superscript two, Arabic-Indic, full-width) that would otherwise be
+    # percent-encoded into the profile URL. Same guard http.py's
+    # parse_retry_after uses for the same reason.
+    if not (user_id.isascii() and user_id.isdigit()):
         raise ValueError(f"user_id must be numeric, got {user_id!r}")
 
     response = http.get(_PROFILE_URL.format(uid=user_id), timeout=15)
     response.raise_for_status()
-    body = response.json()
+    try:
+        body = response.json()
+    except json.JSONDecodeError as exc:
+        raise ValueError(
+            "MakerWorld response is not valid JSON "
+            "(Cloudflare challenge/maintenance page?)"
+        ) from exc
 
     try:
         mw = body["MWCount"]
