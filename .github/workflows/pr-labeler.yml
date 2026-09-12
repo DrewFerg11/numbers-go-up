@@ -1,0 +1,114 @@
+# Labels PRs from their Conventional-Commit title prefix so GitHub's
+# auto-generated release notes (generate_release_notes) can group them by
+# category via .github/release.yml, without anyone hand-labeling.
+#
+# Purely additive: it never removes labels, so a manual label always wins.
+#
+# Improvements over the Split-Flap-Display version:
+# - Full Conventional Commit type coverage (feat/fix/docs/style/refactor/perf/
+#   test/build/ci/chore/revert), not just feat/fix/docs/deps.
+# - Handles the `(deps)` scope, not only a bare `deps:` type, so Dependabot's
+#   `chore(deps):` / `build(deps):` titles map to `dependencies`.
+# - Detects breaking changes (`feat!:` / `fix!:` / a `BREAKING CHANGE` footer)
+#   and adds a `breaking` label alongside the type label.
+#
+# Uses pull_request_target so PRs from forks still get a write-scoped token
+# (a plain pull_request token is read-only on forks). We only read the PR
+# title and body for string matching and never check out or run PR code,
+# so this is safe.
+
+name: CI / Labeler
+
+on:
+  pull_request_target:
+    types: [opened, edited, reopened, synchronize]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: pr-labeler-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  label:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Apply labels from title prefix
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7.1.0
+        with:
+          script: |
+            // Conventional Commit type -> label. `style` folds into `chore`
+            // (cosmetic/formatting), and `deps` is non-standard but kept for
+            // safety; the common Dependabot form `chore(deps):` is handled by
+            // the scope check below.
+            const TYPE_LABELS = {
+              feat: "enhancement",
+              fix: "bug",
+              docs: "documentation",
+              style: "chore",
+              refactor: "refactor",
+              perf: "performance",
+              test: "tests",
+              build: "build",
+              ci: "ci",
+              chore: "chore",
+              revert: "revert",
+              deps: "dependencies",
+            };
+
+            // A `(deps)` / `(dependencies)` scope means a dependency update and
+            // overrides the type, so `chore(deps):` and `build(deps):` both
+            // land on `dependencies`.
+            const DEPS_SCOPES = new Set(["deps", "dependencies"]);
+
+            const pr = context.payload.pull_request;
+            const title = pr.title || "";
+
+            // Match a leading "type" with optional "(scope)" and optional "!":
+            //   feat: ...  fix(api): ...  docs!: ...  chore(deps)!: ...
+            const m = title.match(/^\s*(\w+)(?:\(([^)]*)\))?(!)?:/);
+            if (!m) {
+              core.info(`No conventional prefix in title: "${title}"`);
+              return;
+            }
+
+            const type = m[1].toLowerCase();
+            const scope = (m[2] || "").toLowerCase();
+            const bang = !!m[3];
+
+            // Primary label: dependency scope wins, else the type mapping.
+            const primary = DEPS_SCOPES.has(scope) ? "dependencies" : TYPE_LABELS[type];
+            if (!primary) {
+              core.info(`Prefix "${type}" has no mapped label; skipping.`);
+              return;
+            }
+
+            const labels = [primary];
+
+            // Breaking change: `!` in the prefix, or a BREAKING CHANGE /
+            // BREAKING-CHANGE footer in the body.
+            const bangInTitle = bang;
+            const footerInBody = /^BREAKING[ -]CHANGE:/mi.test(pr.body || "");
+            if (bangInTitle || footerInBody) {
+              labels.push("breaking");
+            }
+
+            const { owner, repo } = context.repo;
+            const issue_number = pr.number;
+            const existing = pr.labels.map((l) => l.name);
+            const toAdd = labels.filter((l) => !existing.includes(l));
+
+            if (toAdd.length === 0) {
+              core.info(`All labels already present: ${labels.join(", ")}`);
+              return;
+            }
+
+            await github.rest.issues.addLabels({
+              owner,
+              repo,
+              issue_number,
+              labels: toAdd,
+            });
+            core.info(`Added labels: ${toAdd.join(", ")}`);
