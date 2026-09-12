@@ -257,7 +257,7 @@ class TestDiscoverPlugins:
             plugins_config={"valid": {"enabled": True, "poll_interval": 60}}
         )
 
-        with caplog.at_level(logging.WARNING):
+        with caplog.at_level("WARNING"):
             loaded = plugins.discover_plugins(config, builtin_dir=FIXTURES_DIR)
 
         assert loaded[0].interval_seconds == 300
@@ -339,7 +339,7 @@ class TestDiscoverPlugins:
             plugins_config={"valid": {"enabled": True, "poll_interval": True}}
         )
 
-        with caplog.at_level("WARNING"):
+        with caplog.at_level(logging.WARNING):
             loaded = plugins.discover_plugins(config, builtin_dir=FIXTURES_DIR)
 
         assert loaded[0].interval_seconds == 1800
