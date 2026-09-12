@@ -16,6 +16,19 @@ def _config(plugin_dir=None, plugins_config=None, poll=None):
     }
 
 
+def _user_dir_with_no_poll_plugin(tmp_path):
+    """A user plugin with no POLL_INTERVAL_SECONDS, so the configured
+    ``poll.default_interval`` is the only interval source available."""
+    user_dir = tmp_path / "user-plugins"
+    user_dir.mkdir()
+    (user_dir / "no_poll.py").write_text(
+        'METRICS = {"no_poll.thing.count": '
+        '{"kind": "gauge", "label": "Thing", "unit": ""}}\n'
+        "def collect(config, http): raise NotImplementedError\n"
+    )
+    return user_dir
+
+
 class TestLoadPluginFromPath:
     def test_loads_a_valid_module(self):
         module = plugins.load_plugin_from_path(FIXTURES_DIR / "valid.py")
@@ -110,7 +123,7 @@ class TestDiscoverPlugins:
 
         assert [p.name for p in loaded] == ["valid"]
 
-    def test_underscore_prefixed_files_are_never_discovered(self, tmp_path, caplog):
+    def test_underscore_prefixed_files_are_never_discovered(self, caplog):
         # Also proves discovery never even attempts to import it: the
         # fixture file has invalid syntax and would raise if imported.
         config = _config(plugins_config={"underscored": {"enabled": True}})
@@ -148,7 +161,10 @@ class TestDiscoverPlugins:
         (user_dir / "2024 stats.py").write_text("raise AssertionError\n")
         config = _config(
             plugin_dir=str(user_dir),
-            plugins_config={"bad-name": {"enabled": True}, "2024 stats": {"enabled": True}},
+            plugins_config={
+                "bad-name": {"enabled": True},
+                "2024 stats": {"enabled": True},
+            },
         )
 
         with caplog.at_level(logging.WARNING):
@@ -259,11 +275,16 @@ class TestDiscoverPlugins:
         assert "below the" in caplog.text
 
     def test_a_configured_default_interval_of_zero_is_raised_to_the_floor(
-        self, caplog
+        self, tmp_path, caplog
     ):
+        # Needs a plugin without POLL_INTERVAL_SECONDS so the configured
+        # default is the only interval source; with the valid fixture the
+        # module interval would win before the default is consulted.
+        user_dir = _user_dir_with_no_poll_plugin(tmp_path)
         config = _config(
+            plugin_dir=str(user_dir),
             poll={"default_interval": 0},
-            plugins_config={"valid": {"enabled": True}},
+            plugins_config={"no_poll": {"enabled": True}},
         )
 
         with caplog.at_level(logging.WARNING):
@@ -275,16 +296,10 @@ class TestDiscoverPlugins:
     def test_a_non_integer_poll_interval_falls_back_to_the_default(
         self, tmp_path, caplog
     ):
-        user_dir = tmp_path / "user-plugins"
-        user_dir.mkdir()
-        (user_dir / "no_poll.py").write_text(
-            'METRICS = {"no_poll.thing.count": '
-            '{"kind": "gauge", "label": "Thing", "unit": ""}}\n'
-            "def collect(config, http): raise NotImplementedError\n"
-        )
         # "30m" is an easy YAML quoting slip; without the type guard the
         # floor comparison raises TypeError and kills discovery of
         # every plugin.
+        user_dir = _user_dir_with_no_poll_plugin(tmp_path)
         config = _config(
             plugin_dir=str(user_dir),
             plugins_config={
@@ -300,10 +315,14 @@ class TestDiscoverPlugins:
         assert loaded[0].interval_seconds == 1800
         assert "is not an integer" in caplog.text
 
-    def test_a_non_integer_default_interval_falls_back_to_the_floor(self, caplog):
+    def test_a_non_integer_default_interval_falls_back_to_the_floor(
+        self, tmp_path, caplog
+    ):
+        user_dir = _user_dir_with_no_poll_plugin(tmp_path)
         config = _config(
+            plugin_dir=str(user_dir),
             poll={"default_interval": "30m"},
-            plugins_config={"valid": {"enabled": True}},
+            plugins_config={"no_poll": {"enabled": True}},
         )
 
         with caplog.at_level(logging.WARNING):
