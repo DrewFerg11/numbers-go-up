@@ -103,11 +103,7 @@ class TestRunPluginOnceHappyPath:
 
         for tick in range(5):
             scheduler.run_plugin_once(
-                db_path,
-                plugin,
-                http=None,
-                now=1000 + tick * 300,
-                heartbeat_seconds=86400,
+                db_path, plugin, http=None, now=1000 + tick * 300, heartbeat_seconds=86400
             )
 
         series_id = storage.get_or_create_series(
@@ -634,6 +630,111 @@ class TestMisfireGrace:
         assert storage.consecutive_failures(db_path, "late_plugin") == 0, (
             "late_plugin's late run should have finished 'ok'"
         )
+
+
+class TestJitterFraction:
+    def test_quoted_jitter_fraction_raises_config_error_at_build_time(self, tmp_path):
+        # A quoted "0.2" passes through as a str and previously reached
+        # IntervalTrigger unvalidated: interval_seconds * "0.2" makes a
+        # ~540-character string (str * int repetition, no TypeError), and
+        # random.uniform(0, <str>) raises inside the scheduler's main loop
+        # at the first fire -- every plugin stops polling while /health
+        # keeps serving 200. Now it fails startup with ConfigError.
+        config = _scheduler_config(
+            tmp_path, plugins_config={"valid": {"enabled": True}}, jitter_fraction="0.2"
+        )
+
+        with pytest.raises(scheduler.ConfigError):
+            scheduler.build_scheduler(config)
+
+    def test_negative_jitter_fraction_raises_config_error(self, tmp_path):
+        # Negative jitter would fire polls EARLY (uniform(0, -900)).
+        config = _scheduler_config(
+            tmp_path, plugins_config={"valid": {"enabled": True}}, jitter_fraction=-0.5
+        )
+
+        with pytest.raises(scheduler.ConfigError):
+            scheduler.build_scheduler(config)
+
+    def test_jitter_fraction_of_one_raises_config_error(self, tmp_path):
+        # 1.0 is excluded: jitter must not reach or exceed the interval.
+        config = _scheduler_config(
+            tmp_path, plugins_config={"valid": {"enabled": True}}, jitter_fraction=1.0
+        )
+
+        with pytest.raises(scheduler.ConfigError):
+            scheduler.build_scheduler(config)
+
+    def test_jitter_fraction_above_one_raises_config_error(self, tmp_path):
+        config = _scheduler_config(
+            tmp_path, plugins_config={"valid": {"enabled": True}}, jitter_fraction=1.5
+        )
+
+        with pytest.raises(scheduler.ConfigError):
+            scheduler.build_scheduler(config)
+
+    def test_nan_jitter_fraction_raises_config_error(self, tmp_path):
+        config = _scheduler_config(
+            tmp_path,
+            plugins_config={"valid": {"enabled": True}},
+            jitter_fraction=float("nan"),
+        )
+
+        with pytest.raises(scheduler.ConfigError):
+            scheduler.build_scheduler(config)
+
+    def test_infinite_jitter_fraction_raises_config_error(self, tmp_path):
+        config = _scheduler_config(
+            tmp_path,
+            plugins_config={"valid": {"enabled": True}},
+            jitter_fraction=float("inf"),
+        )
+
+        with pytest.raises(scheduler.ConfigError):
+            scheduler.build_scheduler(config)
+
+    def test_jitter_fraction_of_zero_is_valid(self, tmp_path):
+        # 0 is the inclusive lower bound: deterministic polling is allowed.
+        config = _scheduler_config(
+            tmp_path, plugins_config={"valid": {"enabled": True}}, jitter_fraction=0
+        )
+
+        job_scheduler = scheduler.build_scheduler(config)
+
+        job = job_scheduler.get_job("plugin:valid")
+        assert job.trigger.jitter == 0
+
+    def test_non_bool_numbers_are_coerced_to_float(self, tmp_path):
+        # A YAML 0.2 arrives as float, an int 1 arrives as int -- both fine.
+        config = _scheduler_config(
+            tmp_path, plugins_config={"valid": {"enabled": True}}, jitter_fraction=0.5
+        )
+
+        job_scheduler = scheduler.build_scheduler(config)
+
+        job = job_scheduler.get_job("plugin:valid")
+        assert job.trigger.jitter == 900  # interval 1800 * 0.5
+
+    def test_bool_jitter_fraction_raises_config_error(self, tmp_path):
+        # Bools are ints in Python; poll.jitter_fraction: true is a config
+        # mistake, not a number (same convention as
+        # plugins._is_valid_interval for poll_interval).
+        config = _scheduler_config(
+            tmp_path, plugins_config={"valid": {"enabled": True}}, jitter_fraction=True
+        )
+
+        with pytest.raises(scheduler.ConfigError):
+            scheduler.build_scheduler(config)
+
+    def test_valid_fraction_reaches_the_job_as_interval_times_fraction(self, tmp_path):
+        config = _scheduler_config(
+            tmp_path, plugins_config={"valid": {"enabled": True}}, jitter_fraction=0.2
+        )
+
+        job_scheduler = scheduler.build_scheduler(config)
+
+        job = job_scheduler.get_job("plugin:valid")
+        assert job.trigger.jitter == pytest.approx(1800 * 0.2)
 
 
 def test_shutdown_wait_false_does_not_block_on_a_slow_job(tmp_path):
