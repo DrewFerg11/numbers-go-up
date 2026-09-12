@@ -44,7 +44,10 @@ def parse_retry_after(value: str | None, now: datetime | None = None) -> float |
         return None
 
     value = value.strip()
-    if value.isdigit():
+    # isascii() first: isdigit() is True for Unicode digit characters
+    # (e.g. "²") that float() then rejects, raising instead of returning
+    # None as this function promises. ASCII-only keeps the contract.
+    if value.isascii() and value.isdigit():
         return float(value)
 
     try:

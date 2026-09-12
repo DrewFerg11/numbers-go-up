@@ -172,12 +172,14 @@ def compute_backoff_delay_seconds(
 
     - Success / ordinary error: not this function's job -- the caller
       simply doesn't reschedule, so the job's normal interval applies.
-    - 429 with Retry-After: ``max(Retry-After, interval)`` -- a short
-      Retry-After never makes the next poll sooner than normal.
+    - 429 with Retry-After: ``max(Retry-After, interval)``, capped — the
+      header is attacker-adjacent (any mirror/CDN/anti-bot layer in front
+      of the origin can set it), so an absurd value is trusted only up to
+      the cap; beyond that the plugin returns weekly instead of never.
     - 429 without Retry-After: ``interval * 2**consecutive_429s``, capped.
     """
     if retry_after is not None:
-        return max(retry_after, interval_seconds)
+        return min(max(retry_after, interval_seconds), cap_seconds)
     return min(interval_seconds * (2**consecutive_429s), cap_seconds)
 
 

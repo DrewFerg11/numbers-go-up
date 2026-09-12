@@ -104,6 +104,14 @@ class TestParseRetryAfter:
     def test_unparseable_value_returns_none(self):
         assert http.parse_retry_after("not a valid value") is None
 
+    def test_unicode_digit_characters_return_none_not_valueerror(self):
+        # str.isdigit() is True for Unicode digit characters that float()
+        # rejects, so a naive isdigit() check raises ValueError out of
+        # parse_retry_after -- and out of the response hook, mid-request.
+        # The contract is None for anything unparseable.
+        assert http.parse_retry_after("²") is None
+        assert http.parse_retry_after("١٢٣") is None
+
     def test_past_http_date_returns_zero_not_negative(self):
         now = datetime(2026, 1, 1, tzinfo=UTC)
         past = now - timedelta(seconds=60)

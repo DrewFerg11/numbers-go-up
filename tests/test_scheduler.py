@@ -840,6 +840,16 @@ class TestComputeBackoffDelaySeconds:
 
         assert delay == scheduler.MAX_BACKOFF_SECONDS
 
+        # The Retry-After branch is capped too: a hostile year-long value
+        # (RFC 9110 10.6.1.2 suggests receivers discard anything over a
+        # year) clamps to the same cap instead of taking the plugin
+        # offline until 2036.
+        retry_after_delay = scheduler.compute_backoff_delay_seconds(
+            1800, 365 * 86400, 1
+        )
+
+        assert retry_after_delay == scheduler.MAX_BACKOFF_SECONDS
+
 
 class _FakeSchedulerStub:
     def __init__(self):
