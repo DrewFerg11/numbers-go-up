@@ -11,6 +11,7 @@ from __future__ import annotations
 import contextlib
 import logging
 import sqlite3
+from collections.abc import Iterable
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -241,3 +242,71 @@ def consecutive_failures(db_path: str | Path, plugin_name: str) -> int:
         else:
             break
     return count
+
+
+def latest(db_path: str | Path, series_ids: Iterable[int]) -> dict[int, float]:
+    """Return the newest value for each of ``series_ids`` in one call.
+
+    Reads ``metric_series.last_value`` directly rather than querying
+    ``samples`` — correct as long as :func:`record_sample` keeps it
+    updated in the same transaction as the insert. Series with no samples
+    yet are omitted rather than reported as an error or a zero.
+    """
+    ids = list(series_ids)
+    if not ids:
+        return {}
+
+    placeholders = ",".join("?" for _ in ids)
+    with contextlib.closing(connect(db_path)) as conn:
+        rows = conn.execute(
+            f"SELECT id, last_value FROM metric_series "
+            f"WHERE id IN ({placeholders}) AND last_value IS NOT NULL",
+            ids,
+        ).fetchall()
+    return {row[0]: row[1] for row in rows}
+
+
+def value_as_of(db_path: str | Path, series_id: int, ts: int) -> float | None:
+    """Last-value-carried-forward: the newest sample with ``ts`` <= the given time.
+
+    Returns ``None`` if the series has no sample at or before ``ts``
+    (including an unknown series).
+    """
+    with contextlib.closing(connect(db_path)) as conn:
+        row = conn.execute(
+            "SELECT value FROM samples WHERE series_id = ? AND ts <= ? "
+            "ORDER BY ts DESC LIMIT 1",
+            (series_id, ts),
+        ).fetchone()
+    return row[0] if row is not None else None
+
+
+def history(
+    db_path: str | Path, series_id: int, start: int, end: int
+) -> list[tuple[int, float]]:
+    """Samples for ``series_id`` in ``(start, end]``, anchored at ``start``.
+
+    Under store-on-change a series flat across the whole window has no
+    samples inside it, so the first point is always the carried-forward
+    value as of ``start`` (i.e. ``value_as_of(series_id, start)``) when one
+    exists, followed by any literal samples strictly after ``start`` up to
+    and including ``end``. An unknown series, or one with nothing at or
+    before ``start`` and nothing in range, returns an empty list.
+    """
+    with contextlib.closing(connect(db_path)) as conn:
+        anchor = conn.execute(
+            "SELECT value FROM samples WHERE series_id = ? AND ts <= ? "
+            "ORDER BY ts DESC LIMIT 1",
+            (series_id, start),
+        ).fetchone()
+        rows = conn.execute(
+            "SELECT ts, value FROM samples WHERE series_id = ? AND ts > ? AND ts <= ? "
+            "ORDER BY ts ASC",
+            (series_id, start, end),
+        ).fetchall()
+
+    points: list[tuple[int, float]] = []
+    if anchor is not None:
+        points.append((start, anchor[0]))
+    points.extend((row[0], row[1]) for row in rows)
+    return points

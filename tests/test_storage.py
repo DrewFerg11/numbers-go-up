@@ -370,3 +370,130 @@ class TestPrunePluginRuns:
             assert conn.execute("SELECT COUNT(*) FROM state").fetchone()[0] == 1
         finally:
             conn.close()
+
+
+class TestValueAsOf:
+    def _series(self, db_path):
+        return storage.get_or_create_series(
+            db_path, "demo.thing.count", "demo", "cumulative", "Count", "", "", 1000
+        )
+
+    def test_returns_last_value_carried_forward_across_a_gap(self, db_path):
+        series_id = self._series(db_path)
+        storage.record_sample(db_path, series_id, 1000, 5, heartbeat_seconds=86400)
+        storage.record_sample(db_path, series_id, 2000, 9, heartbeat_seconds=86400)
+
+        # No sample at 1500; the value as of 1000 must carry forward.
+        assert storage.value_as_of(db_path, series_id, 1500) == 5
+
+    def test_before_first_sample_returns_none(self, db_path):
+        series_id = self._series(db_path)
+        storage.record_sample(db_path, series_id, 1000, 5, heartbeat_seconds=86400)
+
+        assert storage.value_as_of(db_path, series_id, 500) is None
+
+    def test_at_exactly_a_samples_ts_returns_that_sample(self, db_path):
+        series_id = self._series(db_path)
+        storage.record_sample(db_path, series_id, 1000, 5, heartbeat_seconds=86400)
+        storage.record_sample(db_path, series_id, 2000, 9, heartbeat_seconds=86400)
+
+        assert storage.value_as_of(db_path, series_id, 2000) == 9
+
+    def test_unknown_series_returns_none(self, db_path):
+        assert storage.value_as_of(db_path, 999, 1000) is None
+
+    def test_10000_samples_value_as_of_is_sub_millisecond(self, db_path):
+        import time
+
+        series_id = self._series(db_path)
+        conn = sqlite3.connect(str(db_path))
+        try:
+            conn.executemany(
+                "INSERT INTO samples (series_id, ts, value) VALUES (?, ?, ?)",
+                [(series_id, ts, float(ts)) for ts in range(1000, 1000 + 10_000)],
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        iterations = 200
+        started = time.perf_counter()
+        for _ in range(iterations):
+            storage.value_as_of(db_path, series_id, 5500)
+        elapsed = time.perf_counter() - started
+
+        # Measured figure in the issue is 0.018 ms/call; 1 ms leaves ~50x
+        # headroom so this doesn't flake on a slow CI runner.
+        assert (elapsed / iterations) < 0.001
+
+
+class TestLatest:
+    def test_returns_newest_value_for_every_requested_series_in_one_call(self, db_path):
+        series_a = storage.get_or_create_series(
+            db_path, "demo.a.count", "demo", "cumulative", "A", "", "", 1000
+        )
+        series_b = storage.get_or_create_series(
+            db_path, "demo.b.count", "demo", "cumulative", "B", "", "", 1000
+        )
+        storage.record_sample(db_path, series_a, 1000, 1, heartbeat_seconds=86400)
+        storage.record_sample(db_path, series_a, 2000, 2, heartbeat_seconds=86400)
+        storage.record_sample(db_path, series_b, 1000, 100, heartbeat_seconds=86400)
+
+        result = storage.latest(db_path, [series_a, series_b])
+
+        assert result == {series_a: 2, series_b: 100}
+
+    def test_omits_series_with_no_samples(self, db_path):
+        series_a = storage.get_or_create_series(
+            db_path, "demo.a.count", "demo", "cumulative", "A", "", "", 1000
+        )
+        series_b = storage.get_or_create_series(
+            db_path, "demo.b.count", "demo", "cumulative", "B", "", "", 1000
+        )
+        storage.record_sample(db_path, series_a, 1000, 1, heartbeat_seconds=86400)
+
+        result = storage.latest(db_path, [series_a, series_b])
+
+        assert result == {series_a: 1}
+
+    def test_empty_input_returns_empty_dict(self, db_path):
+        assert storage.latest(db_path, []) == {}
+
+
+class TestHistory:
+    def _series(self, db_path):
+        return storage.get_or_create_series(
+            db_path, "demo.thing.count", "demo", "cumulative", "Count", "", "", 1000
+        )
+
+    def test_unknown_series_returns_empty(self, db_path):
+        assert storage.history(db_path, 999, 0, 10_000) == []
+
+    def test_includes_carried_forward_anchor_when_series_is_flat_across_the_window(
+        self, db_path
+    ):
+        series_id = self._series(db_path)
+        storage.record_sample(db_path, series_id, 1000, 5, heartbeat_seconds=86400)
+
+        # No samples inside [2000, 3000] under store-on-change; the anchor
+        # carries the flat value forward instead of returning nothing.
+        points = storage.history(db_path, series_id, 2000, 3000)
+
+        assert points == [(2000, 5)]
+
+    def test_includes_literal_samples_after_the_anchor(self, db_path):
+        series_id = self._series(db_path)
+        storage.record_sample(db_path, series_id, 1000, 5, heartbeat_seconds=86400)
+        storage.record_sample(db_path, series_id, 2500, 9, heartbeat_seconds=86400)
+
+        points = storage.history(db_path, series_id, 2000, 3000)
+
+        assert points == [(2000, 5), (2500, 9)]
+
+    def test_no_anchor_when_nothing_exists_before_start(self, db_path):
+        series_id = self._series(db_path)
+        storage.record_sample(db_path, series_id, 5000, 5, heartbeat_seconds=86400)
+
+        points = storage.history(db_path, series_id, 0, 1000)
+
+        assert points == []
