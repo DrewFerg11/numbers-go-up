@@ -16,6 +16,12 @@ file path (rather than adding the directory to ``sys.path``) means a user
 file named e.g. ``json.py`` can't shadow the standard library for the
 whole process.
 
+A plugin's name is its filename stem, and the stem becomes the prefix of
+its published metric keys (``<stem>.<metric>``) and a Home-Assistant-facing
+entity-id fragment. Stems that are not lowercase identifiers
+(``bad-name.py``, ``2024 stats.py``) are logged and skipped at discovery,
+never imported.
+
 The loader imports modules but never calls ``collect()`` — importing a
 plugin must not make a network request.
 """
@@ -25,6 +31,7 @@ from __future__ import annotations
 import dataclasses
 import importlib.util
 import logging
+import re
 from pathlib import Path
 from types import ModuleType
 from typing import Any
@@ -33,6 +40,8 @@ logger = logging.getLogger(__name__)
 
 MIN_POLL_INTERVAL_SECONDS = 300
 VALID_METRIC_KINDS = {"gauge", "cumulative"}
+# Stems that are not lowercase identifiers are rejected in ``_discover_dir``.
+_VALID_PLUGIN_NAME = re.compile(r"^[a-z][a-z0-9_]*$")
 
 
 @dataclasses.dataclass(frozen=True)
@@ -112,11 +121,15 @@ def validate_plugin_contract(
 
 
 def _discover_dir(directory: Path | None) -> dict[str, ModuleType]:
-    """Import every non-underscore ``*.py`` file directly in ``directory``.
+    """Import every non-underscore, validly-named ``*.py`` file in ``directory``.
 
     A missing or empty directory is not an error. Filenames starting with
     ``_`` (this package's own ``__init__.py`` and ``_template.py`` included)
-    are never imported here.
+    are never imported here, and neither is a stem that is not a lowercase
+    identifier (``bad-name.py``, ``2024 stats.py``): the stem becomes the
+    plugin name and the prefix of its published metric keys, which must be
+    stable and Home-Assistant-safe, so those files are logged and skipped
+    without ever being imported.
     """
     found: dict[str, ModuleType] = {}
     if directory is None or not directory.is_dir():
@@ -125,10 +138,27 @@ def _discover_dir(directory: Path | None) -> dict[str, ModuleType]:
     for path in sorted(directory.glob("*.py")):
         if path.stem.startswith("_"):
             continue
+        if not _VALID_PLUGIN_NAME.fullmatch(path.stem):
+            logger.warning(
+                "Plugin file %s: name %r is not a valid plugin name "
+                "(lowercase letter, then letters, digits, or underscores); skipping",
+                path,
+                path.stem,
+            )
+            continue
         module = load_plugin_from_path(path)
         if module is not None:
             found[path.stem] = module
     return found
+
+
+def _is_valid_interval(value: Any) -> bool:
+    """A poll interval must be an int.
+
+    ``bool`` is an ``int`` subclass, but ``poll_interval: true`` is a
+    config mistake, not a number of seconds.
+    """
+    return isinstance(value, int) and not isinstance(value, bool)
 
 
 def discover_plugins(
@@ -157,6 +187,14 @@ def discover_plugins(
         name: (module, "built-in") for name, module in builtin_modules.items()
     }
     for name, module in user_modules.items():
+        if name in builtin_modules:
+            logger.warning(
+                "User plugin %s (%s) replaces the built-in plugin of the "
+                "same name (%s)",
+                name,
+                user_dir,
+                builtin_dir,
+            )
         combined[name] = (module, "user")
 
     plugins_config = config.get("plugins") or {}
@@ -172,11 +210,34 @@ def discover_plugins(
         if not plugin_config.get("enabled"):
             continue
 
-        interval = (
-            plugin_config.get("poll_interval")
-            or getattr(module, "POLL_INTERVAL_SECONDS", None)
-            or default_interval
-        )
+        # Explicit ``is not None`` checks rather than an ``or`` chain, so a
+        # configured falsy value such as ``poll_interval: 0`` is respected
+        # and reaches the floor check and its warning instead of being
+        # silently swallowed into the module or default interval.
+        interval = plugin_config.get("poll_interval")
+        if interval is None:
+            interval = getattr(module, "POLL_INTERVAL_SECONDS", None)
+        if interval is None:
+            interval = default_interval
+
+        # A non-integer interval (e.g. ``"30m"`` — an easy YAML quoting slip)
+        # would raise TypeError at the floor comparison below and abort
+        # discovery for every other plugin. Booleans are ints in Python, so
+        # ``poll_interval: true`` must be excluded explicitly.
+        if not _is_valid_interval(interval):
+            fallback = (
+                default_interval
+                if _is_valid_interval(default_interval)
+                else MIN_POLL_INTERVAL_SECONDS
+            )
+            logger.warning(
+                "Plugin %s: poll interval %r is not an integer; using %ss instead",
+                name,
+                interval,
+                fallback,
+            )
+            interval = fallback
+
         if interval < MIN_POLL_INTERVAL_SECONDS:
             logger.warning(
                 "Plugin %s: poll interval %ss is below the %ss floor; raising it",
