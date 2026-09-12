@@ -1,9 +1,14 @@
 import sqlite3
+import threading
+import time
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import ModuleType
 from unittest.mock import patch
 
 import pytest
+from apscheduler.executors.pool import ThreadPoolExecutor
+from apscheduler.schedulers.background import BackgroundScheduler
 
 from numbers_go_up import migrate, plugins, scheduler, storage
 
@@ -52,6 +57,17 @@ def _plugin_from_module(
         config={},
         source="user",
     )
+
+
+def _scheduler_config(tmp_path, plugins_config=None, jitter_fraction=0.2, db_path=None):
+    db_path = db_path or (tmp_path / "stats.db")
+    migrate.run_migrations(db_path)
+    return {
+        "storage": {"path": str(db_path), "heartbeat_seconds": 86400},
+        "poll": {"default_interval": 1800, "jitter_fraction": jitter_fraction},
+        "plugins": plugins_config or {},
+        "plugin_dir": str(FIXTURES_DIR),
+    }
 
 
 class TestRunPluginOnceHappyPath:
@@ -461,3 +477,305 @@ class TestReviewFixes:
         # via .items() still works.
         assert result.status == "ok"
         assert result.samples_written == 1
+
+
+class TestBuildScheduler:
+    def _config(self, tmp_path, plugins_config=None, jitter_fraction=0.2):
+        db_path = tmp_path / "stats.db"
+        migrate.run_migrations(db_path)
+        return {
+            "storage": {"path": str(db_path), "heartbeat_seconds": 86400},
+            "poll": {"default_interval": 1800, "jitter_fraction": jitter_fraction},
+            "plugins": plugins_config or {},
+            "plugin_dir": str(FIXTURES_DIR),
+        }
+
+    def test_zero_plugins_enabled_has_no_jobs(self, tmp_path):
+        job_scheduler = scheduler.build_scheduler(self._config(tmp_path))
+
+        assert job_scheduler.get_jobs() == []
+
+    def test_only_enabled_plugins_get_jobs(self, tmp_path):
+        config = self._config(tmp_path, plugins_config={"valid": {"enabled": True}})
+
+        job_scheduler = scheduler.build_scheduler(config)
+
+        assert [job.id for job in job_scheduler.get_jobs()] == ["plugin:valid"]
+
+    def test_job_has_max_instances_1_and_coalesce_true(self, tmp_path):
+        config = self._config(tmp_path, plugins_config={"valid": {"enabled": True}})
+
+        job_scheduler = scheduler.build_scheduler(config)
+
+        job = job_scheduler.get_job("plugin:valid")
+        assert job.max_instances == 1
+        assert job.coalesce is True
+
+    def test_job_interval_matches_the_plugins_resolved_seconds(self, tmp_path):
+        config = self._config(
+            tmp_path, plugins_config={"valid": {"enabled": True, "poll_interval": 900}}
+        )
+
+        job_scheduler = scheduler.build_scheduler(config)
+
+        job = job_scheduler.get_job("plugin:valid")
+        assert job.trigger.interval.total_seconds() == 900
+
+    def test_first_run_happens_within_the_random_delay_window(self, tmp_path):
+        config = self._config(tmp_path, plugins_config={"valid": {"enabled": True}})
+        before = datetime.now(UTC)
+
+        job_scheduler = scheduler.build_scheduler(config)
+
+        after = datetime.now(UTC)
+        job = job_scheduler.get_job("plugin:valid")
+        next_run = job.next_run_time.astimezone(UTC)
+
+        assert (
+            before
+            <= next_run
+            <= after + timedelta(seconds=scheduler.FIRST_RUN_MAX_DELAY_SECONDS)
+        )
+
+
+class TestMisfireGrace:
+    def test_job_is_created_with_misfire_grace_time_none(self, tmp_path):
+        config = _scheduler_config(
+            tmp_path, plugins_config={"valid": {"enabled": True}}
+        )
+
+        job_scheduler = scheduler.build_scheduler(config)
+
+        job = job_scheduler.get_job("plugin:valid")
+        assert job.misfire_grace_time is None
+
+    def test_a_job_submitted_late_to_a_busy_executor_still_runs(self, tmp_path):
+        # Without misfire_grace_time=None, APScheduler's 1-second default
+        # discards a run submitted late to a backed-up executor: the plugin
+        # would silently miss polls with no plugin_runs row. Block the
+        # single worker with a slow job, let the other plugin's fire time
+        # pass while the worker is busy, and prove collect() still runs.
+        module = ModuleType("late_sleeper")
+        module.METRICS = {"late_sleeper.x": {"kind": "gauge", "label": "X", "unit": ""}}
+
+        def slow_collect(config, http):
+            time.sleep(3)
+
+        module.collect = slow_collect
+
+        late_ran = threading.Event()
+
+        late_module = ModuleType("late_plugin")
+        late_module.METRICS = {
+            "late_plugin.x": {"kind": "gauge", "label": "X", "unit": ""}
+        }
+
+        def late_collect(config, http):
+            late_ran.set()
+            return {"late_plugin.x": 1}
+
+        late_module.collect = late_collect
+
+        slow_plugin = plugins.LoadedPlugin(
+            name="late_sleeper",
+            module=module,
+            metrics=module.METRICS,
+            interval_seconds=3600,
+            config={},
+            source="user",
+        )
+        late_plugin = plugins.LoadedPlugin(
+            name="late_plugin",
+            module=late_module,
+            metrics=late_module.METRICS,
+            interval_seconds=3600,
+            config={},
+            source="user",
+        )
+
+        config = _scheduler_config(tmp_path)
+        db_path = Path(config["storage"]["path"])
+
+        job_scheduler = BackgroundScheduler(
+            executors={"default": ThreadPoolExecutor(1)}
+        )
+        for job_plugin, run_time in ((slow_plugin, 0.0), (late_plugin, 0.5)):
+            job_scheduler.add_job(
+                scheduler._run_scheduled_plugin,
+                trigger="interval",
+                seconds=3600,
+                max_instances=1,
+                coalesce=True,
+                misfire_grace_time=None,
+                next_run_time=datetime.now(UTC) + timedelta(seconds=run_time),
+                id=f"plugin:{job_plugin.name}",
+                args=[db_path, job_plugin, None, 86400],
+            )
+        job_scheduler.start()
+
+        try:
+            # late_plugin's poll is submitted while late_sleeper still owns
+            # the worker (0.5s into its 3s collect()); with the old default
+            # grace time of 1s it would be discarded instead of run late.
+            assert late_ran.wait(timeout=5.0), (
+                "late-submitted job was discarded instead of running"
+            )
+            # late_ran fires inside collect(), before finish_run() commits,
+            # so wait for the run row to flip from the in-progress failure
+            # sentinel to 'ok' before asserting on the ledger.
+            deadline = time.monotonic() + 5.0
+            while time.monotonic() < deadline:
+                if storage.consecutive_failures(db_path, "late_plugin") == 0:
+                    break
+                time.sleep(0.05)
+        finally:
+            job_scheduler.shutdown(wait=False)
+
+        assert storage.consecutive_failures(db_path, "late_plugin") == 0, (
+            "late_plugin's late run should have finished 'ok'"
+        )
+
+
+class TestJitterFraction:
+    def test_quoted_jitter_fraction_raises_config_error_at_build_time(self, tmp_path):
+        # A quoted "0.2" passes through as a str and previously reached
+        # IntervalTrigger unvalidated: interval_seconds * "0.2" makes a
+        # ~540-character string (str * int repetition, no TypeError), and
+        # random.uniform(0, <str>) raises inside the scheduler's main loop
+        # at the first fire -- every plugin stops polling while /health
+        # keeps serving 200. Now it fails startup with ConfigError.
+        config = _scheduler_config(
+            tmp_path, plugins_config={"valid": {"enabled": True}}, jitter_fraction="0.2"
+        )
+
+        with pytest.raises(scheduler.ConfigError):
+            scheduler.build_scheduler(config)
+
+    def test_negative_jitter_fraction_raises_config_error(self, tmp_path):
+        # Negative jitter would fire polls EARLY (uniform(0, -900)).
+        config = _scheduler_config(
+            tmp_path, plugins_config={"valid": {"enabled": True}}, jitter_fraction=-0.5
+        )
+
+        with pytest.raises(scheduler.ConfigError):
+            scheduler.build_scheduler(config)
+
+    def test_jitter_fraction_of_one_raises_config_error(self, tmp_path):
+        # 1.0 is excluded: jitter must not reach or exceed the interval.
+        config = _scheduler_config(
+            tmp_path, plugins_config={"valid": {"enabled": True}}, jitter_fraction=1.0
+        )
+
+        with pytest.raises(scheduler.ConfigError):
+            scheduler.build_scheduler(config)
+
+    def test_jitter_fraction_above_one_raises_config_error(self, tmp_path):
+        config = _scheduler_config(
+            tmp_path, plugins_config={"valid": {"enabled": True}}, jitter_fraction=1.5
+        )
+
+        with pytest.raises(scheduler.ConfigError):
+            scheduler.build_scheduler(config)
+
+    def test_nan_jitter_fraction_raises_config_error(self, tmp_path):
+        config = _scheduler_config(
+            tmp_path,
+            plugins_config={"valid": {"enabled": True}},
+            jitter_fraction=float("nan"),
+        )
+
+        with pytest.raises(scheduler.ConfigError):
+            scheduler.build_scheduler(config)
+
+    def test_infinite_jitter_fraction_raises_config_error(self, tmp_path):
+        config = _scheduler_config(
+            tmp_path,
+            plugins_config={"valid": {"enabled": True}},
+            jitter_fraction=float("inf"),
+        )
+
+        with pytest.raises(scheduler.ConfigError):
+            scheduler.build_scheduler(config)
+
+    def test_jitter_fraction_of_zero_is_valid(self, tmp_path):
+        # 0 is the inclusive lower bound: deterministic polling is allowed.
+        config = _scheduler_config(
+            tmp_path, plugins_config={"valid": {"enabled": True}}, jitter_fraction=0
+        )
+
+        job_scheduler = scheduler.build_scheduler(config)
+
+        job = job_scheduler.get_job("plugin:valid")
+        assert job.trigger.jitter == 0
+
+    def test_non_bool_numbers_are_coerced_to_float(self, tmp_path):
+        # A YAML 0.2 arrives as float, an int 1 arrives as int -- both fine.
+        config = _scheduler_config(
+            tmp_path, plugins_config={"valid": {"enabled": True}}, jitter_fraction=0.5
+        )
+
+        job_scheduler = scheduler.build_scheduler(config)
+
+        job = job_scheduler.get_job("plugin:valid")
+        assert job.trigger.jitter == 900  # interval 1800 * 0.5
+
+    def test_bool_jitter_fraction_raises_config_error(self, tmp_path):
+        # Bools are ints in Python; poll.jitter_fraction: true is a config
+        # mistake, not a number (same convention as
+        # plugins._is_valid_interval for poll_interval).
+        config = _scheduler_config(
+            tmp_path, plugins_config={"valid": {"enabled": True}}, jitter_fraction=True
+        )
+
+        with pytest.raises(scheduler.ConfigError):
+            scheduler.build_scheduler(config)
+
+    def test_valid_fraction_reaches_the_job_as_interval_times_fraction(self, tmp_path):
+        config = _scheduler_config(
+            tmp_path, plugins_config={"valid": {"enabled": True}}, jitter_fraction=0.2
+        )
+
+        job_scheduler = scheduler.build_scheduler(config)
+
+        job = job_scheduler.get_job("plugin:valid")
+        assert job.trigger.jitter == pytest.approx(1800 * 0.2)
+
+
+def test_shutdown_wait_false_does_not_block_on_a_slow_job(tmp_path):
+    db_path = tmp_path / "stats.db"
+    migrate.run_migrations(db_path)
+
+    module = ModuleType("slow")
+    module.METRICS = {"slow.x": {"kind": "gauge", "label": "X", "unit": ""}}
+
+    def collect(config, http):
+        time.sleep(2)
+        return {}
+
+    module.collect = collect
+    plugin = plugins.LoadedPlugin(
+        name="slow",
+        module=module,
+        metrics=module.METRICS,
+        interval_seconds=300,
+        config={},
+        source="user",
+    )
+
+    job_scheduler = BackgroundScheduler(executors={"default": ThreadPoolExecutor(1)})
+    job_scheduler.add_job(
+        scheduler._run_scheduled_plugin,
+        trigger="interval",
+        seconds=300,
+        max_instances=1,
+        coalesce=True,
+        args=[db_path, plugin, None, 86400],
+    )
+    job_scheduler.start()
+    time.sleep(0.2)  # let the job actually start running
+
+    started = time.perf_counter()
+    job_scheduler.shutdown(wait=False)
+    elapsed = time.perf_counter() - started
+
+    assert elapsed < 1.0

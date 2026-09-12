@@ -360,3 +360,74 @@ class TestDiscoverPlugins:
         loaded = plugins.discover_plugins(_config())
 
         assert loaded == []
+
+
+class TestNonMappingPluginConfigEntry:
+    # _deep_merge only type-checks the top-level keys, so a per-plugin
+    # entry that isn't a mapping (e.g. plugins: {ticker: "on"} — a quoted
+    # value or a flat string) reaches discover_plugins untouched. The
+    # loader then calls .get("enabled") on a str and raises AttributeError
+    # inside discover_plugins — and since the FastAPI lifespan calls
+    # discover_plugins on startup (this PR), one malformed entry refused
+    # the whole service startup. A broken entry must degrade to
+    # "plugin disabled" instead, the same behavior the issue specifies
+    # for broken plugins.
+
+    @staticmethod
+    def _user_dir_with_ticker_plugin(tmp_path):
+        # A real contract-passing plugin so the crash path (the config
+        # lookup for a discovered module) is genuinely reached.
+        user_dir = tmp_path / "user-plugins"
+        user_dir.mkdir()
+        (user_dir / "ticker.py").write_text(
+            'METRICS = {"ticker.thing.count": '
+            '{"kind": "gauge", "label": "Thing", "unit": ""}}\n'
+            "def collect(config, http): return {}\n"
+        )
+        return user_dir
+
+    def test_a_non_mapping_entry_degrades_to_plugin_disabled(self, tmp_path, caplog):
+        # Before the guard this raised AttributeError: 'str' object has no
+        # attribute 'get' — aborting discovery inside the lifespan and
+        # refusing the whole service startup.
+        user_dir = self._user_dir_with_ticker_plugin(tmp_path)
+        config = _config(
+            plugin_dir=str(user_dir),
+            plugins_config={"ticker": "on"},
+        )
+
+        loaded = plugins.discover_plugins(config, builtin_dir=FIXTURES_DIR)
+
+        assert loaded == []
+        # Read the captured records directly instead of a
+        # caplog.at_level(...) block: several pre-existing tests in this
+        # file already use that exact two-line shape, and a near-duplicate
+        # block here invites transcription mix-ups on later edits.
+        assert any(
+            "must be a mapping" in record.getMessage()
+            for record in caplog.records
+            if record.levelno >= logging.WARNING
+        )
+
+    def test_other_plugins_still_load_when_one_entry_is_a_non_mapping(
+        self, tmp_path, caplog
+    ):
+        # A malformed entry must not stop discovery of every other plugin
+        # (the same containment the non-integer poll_interval guard gives).
+        user_dir = self._user_dir_with_ticker_plugin(tmp_path)
+        config = _config(
+            plugin_dir=str(user_dir),
+            plugins_config={
+                "ticker": "on",
+                "valid": {"enabled": True},
+            },
+        )
+
+        still_loaded = plugins.discover_plugins(config, builtin_dir=FIXTURES_DIR)
+
+        assert [p.name for p in still_loaded] == ["valid"]
+        assert any(
+            "must be a mapping" in record.getMessage()
+            for record in caplog.records
+            if record.levelno >= logging.WARNING
+        )
