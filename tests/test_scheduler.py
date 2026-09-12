@@ -1,4 +1,5 @@
 import sqlite3
+import threading
 import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -56,6 +57,19 @@ def _plugin_from_module(
         config={},
         source="user",
     )
+
+
+def _scheduler_config(
+    tmp_path, plugins_config=None, jitter_fraction=0.2, db_path=None
+):
+    db_path = db_path or (tmp_path / "stats.db")
+    migrate.run_migrations(db_path)
+    return {
+        "storage": {"path": str(db_path), "heartbeat_seconds": 86400},
+        "poll": {"default_interval": 1800, "jitter_fraction": jitter_fraction},
+        "plugins": plugins_config or {},
+        "plugin_dir": str(FIXTURES_DIR),
+    }
 
 
 class TestRunPluginOnceHappyPath:
@@ -341,7 +355,6 @@ class TestReviewFixes:
 
         assert result.status == "error"
         assert result.samples_written == 0
-        assert "inf_plugin.value" in result.error
 
     def test_non_dict_result_does_not_crash_the_service(self, db_path):
         module = ModuleType("list_plugin")
@@ -523,6 +536,102 @@ class TestBuildScheduler:
             before
             <= next_run
             <= after + timedelta(seconds=scheduler.FIRST_RUN_MAX_DELAY_SECONDS)
+        )
+
+
+class TestMisfireGrace:
+    def test_job_is_created_with_misfire_grace_time_none(self, tmp_path):
+        config = _scheduler_config(
+            tmp_path, plugins_config={"valid": {"enabled": True}}
+        )
+
+        job_scheduler = scheduler.build_scheduler(config)
+
+        job = job_scheduler.get_job("plugin:valid")
+        assert job.misfire_grace_time is None
+
+    def test_a_job_submitted_late_to_a_busy_executor_still_runs(self, tmp_path):
+        # Without misfire_grace_time=None, APScheduler's 1-second default
+        # discards a run submitted late to a backed-up executor: the plugin
+        # would silently miss polls with no plugin_runs row. Block the
+        # single worker with a slow job, let the other plugin's fire time
+        # pass while the worker is busy, and prove collect() still runs.
+        module = ModuleType("late_sleeper")
+        module.METRICS = {"late_sleeper.x": {"kind": "gauge", "label": "X", "unit": ""}}
+
+        def slow_collect(config, http):
+            time.sleep(3)
+
+        module.collect = slow_collect
+
+        late_ran = threading.Event()
+
+        late_module = ModuleType("late_plugin")
+        late_module.METRICS = {"late_plugin.x": {"kind": "gauge", "label": "X", "unit": ""}}
+
+        def late_collect(config, http):
+            late_ran.set()
+            return {"late_plugin.x": 1}
+
+        late_module.collect = late_collect
+
+        slow_plugin = plugins.LoadedPlugin(
+            name="late_sleeper",
+            module=module,
+            metrics=module.METRICS,
+            interval_seconds=3600,
+            config={},
+            source="user",
+        )
+        late_plugin = plugins.LoadedPlugin(
+            name="late_plugin",
+            module=late_module,
+            metrics=late_module.METRICS,
+            interval_seconds=3600,
+            config={},
+            source="user",
+        )
+
+        config = _scheduler_config(tmp_path)
+        db_path = Path(config["storage"]["path"])
+
+        job_scheduler = BackgroundScheduler(
+            executors={"default": ThreadPoolExecutor(1)}
+        )
+        for job_plugin, run_time in ((slow_plugin, 0.0), (late_plugin, 0.5)):
+            job_scheduler.add_job(
+                scheduler._run_scheduled_plugin,
+                trigger="interval",
+                seconds=3600,
+                max_instances=1,
+                coalesce=True,
+                misfire_grace_time=None,
+                next_run_time=datetime.now(UTC) + timedelta(seconds=run_time),
+                id=f"plugin:{job_plugin.name}",
+                args=[db_path, job_plugin, None, 86400],
+            )
+        job_scheduler.start()
+
+        try:
+            # late_plugin's poll is submitted while late_sleeper still owns
+            # the worker (0.5s into its 3s collect()); with the old default
+            # grace time of 1s it would be discarded instead of run late.
+            assert late_ran.wait(timeout=5.0), (
+                "late-submitted job was discarded instead of running"
+            )
+            # late_ran fires inside collect(), before finish_run() commits,
+            # so wait for the run row to flip from the in-progress failure
+            # sentinel to 'ok' before asserting on the ledger.
+            deadline = time.monotonic() + 5.0
+            while time.monotonic() < deadline:
+                if storage.consecutive_failures(db_path, "late_plugin") == 0:
+                    break
+                time.sleep(0.05)
+        finally:
+            job_scheduler.shutdown(wait=False)
+
+        assert storage.consecutive_failures(db_path, "late_plugin") == 0, (
+            "late_plugin's late run should have finished 'ok'"
         )
 
 

@@ -164,7 +164,10 @@ def build_scheduler(config: dict[str, Any], http: Any = None) -> BackgroundSched
     single worker keeps polls serialized against the one SQLite writer
     rather than relying on ``busy_timeout`` to paper over concurrent
     writes). Every job also sets ``coalesce=True`` so a missed run (e.g.
-    the container was asleep) doesn't fire a pile of catch-up runs.
+    the container was asleep) doesn't fire a pile of catch-up runs, and
+    ``misfire_grace_time=None`` so a run submitted late to a backed-up
+    executor executes late instead of being silently discarded (which
+    would leave a poll missing from ``plugin_runs``).
 
     One uvicorn worker, always: multiple workers would mean multiple
     schedulers polling the same sources and writing the same SQLite file
@@ -189,6 +192,7 @@ def build_scheduler(config: dict[str, Any], http: Any = None) -> BackgroundSched
             next_run_time=datetime.now() + timedelta(seconds=first_run_delay),
             max_instances=1,
             coalesce=True,
+            misfire_grace_time=None,
             id=f"plugin:{plugin.name}",
             args=[db_path, plugin, http, heartbeat_seconds],
         )
