@@ -154,6 +154,59 @@ class TestRunPluginOnceFailureIsolation:
         assert len(result.error) <= 500
         assert "simulated plugin failure" in result.error
 
+    def test_error_is_capped_however_long_the_traceback_is(self, db_path):
+        # A real traceback's length depends on the filesystem path it was
+        # raised from: a long Windows temp path blows past the cap where
+        # CI's short Linux paths don't, which is how #42 stayed hidden.
+        # Force the issue instead of trusting the environment.
+        module = ModuleType("raises_long")
+        module.POLL_INTERVAL_SECONDS = 300
+        module.METRICS = {}
+
+        def collect(config, http):
+            raise RuntimeError("head " + "x" * 5000 + " END_OF_MESSAGE")
+
+        module.collect = collect
+        plugin = _plugin_from_module("raises_long", module, {})
+
+        result = scheduler.run_plugin_once(
+            db_path, plugin, http=None, now=1000, heartbeat_seconds=86400
+        )
+
+        assert result.status == "error"
+        assert len(result.error) <= 500
+        # the tail is kept, so the exception itself survives the cap
+        assert result.error.rstrip().endswith("END_OF_MESSAGE")
+
+        conn = sqlite3.connect(str(db_path))
+        try:
+            stored = conn.execute(
+                "SELECT error FROM plugin_runs WHERE id = ?", (result.run_id,)
+            ).fetchone()[0]
+        finally:
+            conn.close()
+
+        # what the caller keeps and what the database holds are the same text
+        assert stored == result.error
+
+    def test_contract_violation_error_is_also_capped(self, db_path):
+        module = ModuleType("many_violations")
+        module.POLL_INTERVAL_SECONDS = 300
+        module.METRICS = {}
+
+        def collect(config, http):
+            return {f"undeclared.key.number_{i}": 1 for i in range(200)}
+
+        module.collect = collect
+        plugin = _plugin_from_module("many_violations", module, {})
+
+        result = scheduler.run_plugin_once(
+            db_path, plugin, http=None, now=1000, heartbeat_seconds=86400
+        )
+
+        assert result.status == "error"
+        assert len(result.error) <= 500
+
     def test_a_raising_plugin_does_not_block_another_plugins_run(self, db_path):
         raising = _load_fixture_plugin("_fake_raises.py")
         other = _load_fixture_plugin("_fake_constant.py")
