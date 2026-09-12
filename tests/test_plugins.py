@@ -143,7 +143,7 @@ class TestDiscoverPlugins:
         ) as loader:
             plugins.discover_plugins(config, builtin_dir=FIXTURES_DIR)
 
-        imported = {call.args[0].name for call in loader.call_args_list}
+        imported = {call.args[0].stem for call in loader.call_args_list}
         assert "_underscored" not in imported
         assert "valid" in imported
 
@@ -162,6 +162,7 @@ class TestDiscoverPlugins:
         config = _config(
             plugin_dir=str(user_dir),
             plugins_config={
+                "valid": {"enabled": True},
                 "bad-name": {"enabled": True},
                 "2024 stats": {"enabled": True},
             },
@@ -170,7 +171,7 @@ class TestDiscoverPlugins:
         with caplog.at_level(logging.WARNING):
             loaded = plugins.discover_plugins(config, builtin_dir=FIXTURES_DIR)
 
-        # Neither file was imported (2024 stats.py raises on import),
+        # Neither bad file was imported (2024 stats.py raises on import),
         # both were logged and skipped, and the valid fixture still loads.
         assert [p.name for p in loaded] == ["valid"]
         assert "bad-name.py" in caplog.text
