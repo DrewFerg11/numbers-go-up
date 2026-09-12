@@ -28,6 +28,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 
 from numbers_go_up import storage
 from numbers_go_up.config import ConfigError
+from numbers_go_up.http import RateLimited
 from numbers_go_up.plugins import LoadedPlugin, discover_plugins
 
 logger = logging.getLogger(__name__)
@@ -37,6 +38,10 @@ logger = logging.getLogger(__name__)
 # seconds, matching the "delay-only" behaviour Responsible Use #3 accepts.
 DEFAULT_JITTER_FRACTION = 0.2
 FIRST_RUN_MAX_DELAY_SECONDS = 60
+
+# 429 without Retry-After backs off exponentially, capped -- Responsible
+# Use #3's one exception to "no backoff storms" (Failure Handling #4).
+MAX_BACKOFF_SECONDS = 86400
 
 
 @dataclasses.dataclass(frozen=True)
@@ -67,6 +72,16 @@ def run_plugin_once(
 
     try:
         result = plugin.module.collect(plugin.config, http)
+    except RateLimited as exc:
+        error = f"rate limited (retry_after={exc.retry_after})"
+        storage.finish_run(
+            db_path, run_id, "error", error, samples_written=0, finished_at=now
+        )
+        # Re-raised so the scheduler can apply the 429 backoff rule -- the
+        # one exception to "no backoff storms" -- to this plugin's next
+        # run. Ordinary exceptions don't get this treatment; they're
+        # handled below and never change the interval.
+        raise
     except Exception:
         error = storage.error_tail(traceback.format_exc())
         storage.finish_run(
@@ -147,10 +162,59 @@ def run_plugin_once(
     )
 
 
+def compute_backoff_delay_seconds(
+    interval_seconds: int,
+    retry_after: float | None,
+    consecutive_429s: int,
+    cap_seconds: int = MAX_BACKOFF_SECONDS,
+) -> float:
+    """The 429 backoff table (Responsible Use #3), all four rows:
+
+    - Success / ordinary error: not this function's job -- the caller
+      simply doesn't reschedule, so the job's normal interval applies.
+    - 429 with Retry-After: ``max(Retry-After, interval)``, capped — the
+      header is attacker-adjacent (any mirror/CDN/anti-bot layer in front
+      of the origin can set it), so an absurd value is trusted only up to
+      the cap; beyond that the plugin returns weekly instead of never.
+    - 429 without Retry-After: ``interval * 2**consecutive_429s``, capped.
+    """
+    if retry_after is not None:
+        return min(max(retry_after, interval_seconds), cap_seconds)
+    return min(interval_seconds * (2**consecutive_429s), cap_seconds)
+
+
 def _run_scheduled_plugin(
-    db_path: str | Path, plugin: LoadedPlugin, http: Any, heartbeat_seconds: int
+    scheduler: BackgroundScheduler,
+    job_id: str,
+    backoff_state: dict[str, int],
+    db_path: str | Path,
+    plugin: LoadedPlugin,
+    http: Any,
+    heartbeat_seconds: int,
 ) -> None:
-    run_plugin_once(db_path, plugin, http, int(time.time()), heartbeat_seconds)
+    try:
+        run_plugin_once(db_path, plugin, http, int(time.time()), heartbeat_seconds)
+    except RateLimited as exc:
+        consecutive_429s = backoff_state.get(plugin.name, 0) + 1
+        backoff_state[plugin.name] = consecutive_429s
+        delay = compute_backoff_delay_seconds(
+            plugin.interval_seconds, exc.retry_after, consecutive_429s
+        )
+        logger.warning(
+            "Plugin %s rate limited (retry_after=%s, consecutive=%d); "
+            "next run in %.0fs",
+            plugin.name,
+            exc.retry_after,
+            consecutive_429s,
+            delay,
+        )
+        scheduler.modify_job(
+            job_id, next_run_time=datetime.now() + timedelta(seconds=delay)
+        )
+    else:
+        # Success or an ordinary error: no backoff (Failure Handling #4),
+        # and any 429 streak is broken -- reset the counter.
+        backoff_state[plugin.name] = 0
 
 
 def _validated_jitter_fraction(value: Any) -> float:
@@ -188,10 +252,6 @@ def _validated_jitter_fraction(value: Any) -> float:
 def build_scheduler(config: dict[str, Any], http: Any = None) -> BackgroundScheduler:
     """Build (but don't start) one interval job per enabled plugin.
 
-    ``http`` is ``None`` here: Phase 2 ships no real plugin yet, and the
-    shared client with 429-aware backoff is #21's job. The scheduler wiring
-    doesn't change when that lands — only what gets passed as ``http``.
-
     A single-threaded executor is deliberate: it makes ``max_instances=1``
     meaningful per job (APScheduler enforces it per job regardless, but a
     single worker keeps polls serialized against the one SQLite writer
@@ -219,8 +279,10 @@ def build_scheduler(config: dict[str, Any], http: Any = None) -> BackgroundSched
     )
 
     scheduler = BackgroundScheduler(executors={"default": ThreadPoolExecutor(10)})
+    backoff_state: dict[str, int] = {}
 
     for plugin in discover_plugins(config):
+        job_id = f"plugin:{plugin.name}"
         first_run_delay = random.uniform(0, FIRST_RUN_MAX_DELAY_SECONDS)
         scheduler.add_job(
             _run_scheduled_plugin,
@@ -231,8 +293,16 @@ def build_scheduler(config: dict[str, Any], http: Any = None) -> BackgroundSched
             max_instances=1,
             coalesce=True,
             misfire_grace_time=None,
-            id=f"plugin:{plugin.name}",
-            args=[db_path, plugin, http, heartbeat_seconds],
+            id=job_id,
+            args=[
+                scheduler,
+                job_id,
+                backoff_state,
+                db_path,
+                plugin,
+                http,
+                heartbeat_seconds,
+            ],
         )
         logger.info(
             "Scheduled plugin %s every %ss (source=%s)",

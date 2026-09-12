@@ -11,6 +11,7 @@ from apscheduler.executors.pool import ThreadPoolExecutor
 from apscheduler.schedulers.background import BackgroundScheduler
 
 from numbers_go_up import migrate, plugins, scheduler, storage
+from numbers_go_up.http import RateLimited
 
 FIXTURES_DIR = Path(__file__).resolve().parent / "fixtures" / "plugins"
 
@@ -652,7 +653,9 @@ class TestMisfireGrace:
         job_scheduler = BackgroundScheduler(
             executors={"default": ThreadPoolExecutor(1)}
         )
+        backoff_state: dict[str, int] = {}
         for job_plugin, run_time in ((slow_plugin, 0.0), (late_plugin, 0.5)):
+            job_id = f"plugin:{job_plugin.name}"
             job_scheduler.add_job(
                 scheduler._run_scheduled_plugin,
                 trigger="interval",
@@ -661,8 +664,16 @@ class TestMisfireGrace:
                 coalesce=True,
                 misfire_grace_time=None,
                 next_run_time=datetime.now(UTC) + timedelta(seconds=run_time),
-                id=f"plugin:{job_plugin.name}",
-                args=[db_path, job_plugin, None, 86400],
+                id=job_id,
+                args=[
+                    job_scheduler,
+                    job_id,
+                    backoff_state,
+                    db_path,
+                    job_plugin,
+                    None,
+                    86400,
+                ],
             )
         job_scheduler.start()
 
@@ -816,13 +827,15 @@ def test_shutdown_wait_false_does_not_block_on_a_slow_job(tmp_path):
     )
 
     job_scheduler = BackgroundScheduler(executors={"default": ThreadPoolExecutor(1)})
+    job_id = "plugin:slow"
     job_scheduler.add_job(
         scheduler._run_scheduled_plugin,
         trigger="interval",
         seconds=300,
         max_instances=1,
         coalesce=True,
-        args=[db_path, plugin, None, 86400],
+        id=job_id,
+        args=[job_scheduler, job_id, {}, db_path, plugin, None, 86400],
     )
     job_scheduler.start()
     time.sleep(0.2)  # let the job actually start running
@@ -832,3 +845,189 @@ def test_shutdown_wait_false_does_not_block_on_a_slow_job(tmp_path):
     elapsed = time.perf_counter() - started
 
     assert elapsed < 1.0
+
+
+class TestRunPluginOnceRateLimited:
+    def test_429_is_recorded_as_error_naming_rate_limited(self, db_path):
+        module = ModuleType("rate_limited_plugin")
+        module.METRICS = {
+            "rate_limited_plugin.x": {"kind": "gauge", "label": "X", "unit": ""}
+        }
+
+        def collect(config, http):
+            raise RateLimited(retry_after=30)
+
+        module.collect = collect
+        plugin = _plugin_from_module("rate_limited_plugin", module, module.METRICS)
+
+        with pytest.raises(RateLimited):
+            scheduler.run_plugin_once(
+                db_path, plugin, http=None, now=1000, heartbeat_seconds=86400
+            )
+
+        assert storage.consecutive_failures(db_path, "rate_limited_plugin") == 1
+
+        conn = sqlite3.connect(str(db_path))
+        try:
+            error = conn.execute(
+                "SELECT error FROM plugin_runs WHERE plugin_name = ?",
+                ("rate_limited_plugin",),
+            ).fetchone()[0]
+        finally:
+            conn.close()
+        assert "rate limited" in error
+
+
+class TestComputeBackoffDelaySeconds:
+    def test_429_with_retry_after_uses_max_of_retry_after_and_interval(self):
+        assert scheduler.compute_backoff_delay_seconds(1800, 5, 1) == 1800
+        assert scheduler.compute_backoff_delay_seconds(1800, 3600, 1) == 3600
+
+    def test_429_without_retry_after_backs_off_exponentially(self):
+        assert scheduler.compute_backoff_delay_seconds(1800, None, 1) == 3600
+        assert scheduler.compute_backoff_delay_seconds(1800, None, 2) == 7200
+        assert scheduler.compute_backoff_delay_seconds(1800, None, 3) == 14400
+
+    def test_exponential_backoff_is_capped(self):
+        delay = scheduler.compute_backoff_delay_seconds(1800, None, 20)
+
+        assert delay == scheduler.MAX_BACKOFF_SECONDS
+
+        # The Retry-After branch is capped too: a hostile year-long value
+        # (RFC 9110 10.6.1.2 suggests receivers discard anything over a
+        # year) clamps to the same cap instead of taking the plugin
+        # offline until 2036.
+        retry_after_delay = scheduler.compute_backoff_delay_seconds(
+            1800, 365 * 86400, 1
+        )
+
+        assert retry_after_delay == scheduler.MAX_BACKOFF_SECONDS
+
+
+class _FakeSchedulerStub:
+    def __init__(self):
+        self.modify_job_calls = []
+
+    def modify_job(self, job_id, next_run_time=None):
+        self.modify_job_calls.append((job_id, next_run_time))
+
+
+class TestRunScheduledPluginBackoff:
+    def test_429_with_retry_after_reschedules_using_the_backoff_table(self, db_path):
+        module = ModuleType("rl_plugin")
+        module.METRICS = {"rl_plugin.x": {"kind": "gauge", "label": "X", "unit": ""}}
+
+        def collect(config, http):
+            raise RateLimited(retry_after=5)
+
+        module.collect = collect
+        plugin = plugins.LoadedPlugin(
+            name="rl_plugin",
+            module=module,
+            metrics=module.METRICS,
+            interval_seconds=1800,
+            config={},
+            source="user",
+        )
+        fake_scheduler = _FakeSchedulerStub()
+        backoff_state: dict[str, int] = {}
+
+        before = datetime.now()
+        scheduler._run_scheduled_plugin(
+            fake_scheduler,
+            "plugin:rl_plugin",
+            backoff_state,
+            db_path,
+            plugin,
+            None,
+            86400,
+        )
+        after = datetime.now()
+
+        assert len(fake_scheduler.modify_job_calls) == 1
+        job_id, next_run_time = fake_scheduler.modify_job_calls[0]
+        assert job_id == "plugin:rl_plugin"
+        # retry_after=5 < interval=1800, so max(5, 1800) = 1800 applies --
+        # a short Retry-After never makes the next poll sooner than normal.
+        assert before + timedelta(seconds=1800) <= next_run_time
+        assert next_run_time <= after + timedelta(seconds=1800)
+        assert backoff_state["rl_plugin"] == 1
+
+    def test_429_without_retry_after_increments_the_backoff_counter(self, db_path):
+        module = ModuleType("rl_plugin2")
+        module.METRICS = {"rl_plugin2.x": {"kind": "gauge", "label": "X", "unit": ""}}
+
+        def collect(config, http):
+            raise RateLimited(retry_after=None)
+
+        module.collect = collect
+        plugin = plugins.LoadedPlugin(
+            name="rl_plugin2",
+            module=module,
+            metrics=module.METRICS,
+            interval_seconds=300,
+            config={},
+            source="user",
+        )
+        fake_scheduler = _FakeSchedulerStub()
+        backoff_state: dict[str, int] = {}
+
+        scheduler._run_scheduled_plugin(
+            fake_scheduler,
+            "plugin:rl_plugin2",
+            backoff_state,
+            db_path,
+            plugin,
+            None,
+            86400,
+        )
+        scheduler._run_scheduled_plugin(
+            fake_scheduler,
+            "plugin:rl_plugin2",
+            backoff_state,
+            db_path,
+            plugin,
+            None,
+            86400,
+        )
+
+        assert backoff_state["rl_plugin2"] == 2
+        assert len(fake_scheduler.modify_job_calls) == 2
+
+    def test_success_does_not_reschedule_and_resets_the_backoff_counter(self, db_path):
+        plugin = _load_fixture_plugin("_fake_constant.py")
+        fake_scheduler = _FakeSchedulerStub()
+        backoff_state = {"fake_constant": 3}
+
+        scheduler._run_scheduled_plugin(
+            fake_scheduler,
+            "plugin:fake_constant",
+            backoff_state,
+            db_path,
+            plugin,
+            None,
+            86400,
+        )
+
+        assert backoff_state["fake_constant"] == 0
+        assert fake_scheduler.modify_job_calls == []
+
+    def test_ordinary_error_does_not_reschedule_and_resets_the_backoff_counter(
+        self, db_path
+    ):
+        plugin = _load_fixture_plugin("_fake_raises.py")
+        fake_scheduler = _FakeSchedulerStub()
+        backoff_state = {"fake_raises": 2}
+
+        scheduler._run_scheduled_plugin(
+            fake_scheduler,
+            "plugin:fake_raises",
+            backoff_state,
+            db_path,
+            plugin,
+            None,
+            86400,
+        )
+
+        assert backoff_state["fake_raises"] == 0
+        assert fake_scheduler.modify_job_calls == []
