@@ -59,9 +59,7 @@ def _plugin_from_module(
     )
 
 
-def _scheduler_config(
-    tmp_path, plugins_config=None, jitter_fraction=0.2, db_path=None
-):
+def _scheduler_config(tmp_path, plugins_config=None, jitter_fraction=0.2, db_path=None):
     db_path = db_path or (tmp_path / "stats.db")
     migrate.run_migrations(db_path)
     return {
@@ -355,6 +353,7 @@ class TestReviewFixes:
 
         assert result.status == "error"
         assert result.samples_written == 0
+        assert "inf_plugin.value" in result.error
 
     def test_non_dict_result_does_not_crash_the_service(self, db_path):
         module = ModuleType("list_plugin")
@@ -567,7 +566,9 @@ class TestMisfireGrace:
         late_ran = threading.Event()
 
         late_module = ModuleType("late_plugin")
-        late_module.METRICS = {"late_plugin.x": {"kind": "gauge", "label": "X", "unit": ""}}
+        late_module.METRICS = {
+            "late_plugin.x": {"kind": "gauge", "label": "X", "unit": ""}
+        }
 
         def late_collect(config, http):
             late_ran.set()
