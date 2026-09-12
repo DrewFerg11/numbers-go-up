@@ -68,7 +68,7 @@ def run_plugin_once(
     try:
         result = plugin.module.collect(plugin.config, http)
     except Exception:
-        error = traceback.format_exc()
+        error = storage.error_tail(traceback.format_exc())
         storage.finish_run(
             db_path, run_id, "error", error, samples_written=0, finished_at=now
         )
@@ -109,7 +109,7 @@ def run_plugin_once(
         # breaks after collect() still never stops another plugin's poll
         # or crashes the service. samples_written stays honest -- rows
         # written before the crash are counted.
-        error = traceback.format_exc()
+        error = storage.error_tail(traceback.format_exc())
         storage.finish_run(
             db_path,
             run_id,
@@ -126,7 +126,7 @@ def run_plugin_once(
         # Write the valid metrics and report the offenders: a status of
         # error with samples_written > 0 is honest -- data arrived and the
         # plugin broke its contract, but good data isn't thrown away.
-        error = "; ".join(violations)
+        error = storage.error_tail("; ".join(violations))
         storage.finish_run(
             db_path,
             run_id,

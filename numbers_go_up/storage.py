@@ -165,6 +165,21 @@ def start_run(db_path: str | Path, plugin_name: str, started_at: int) -> int:
         return cursor.lastrowid
 
 
+def error_tail(error: str | None) -> str | None:
+    """Cap error text at its last ``_ERROR_TAIL_CHARS`` characters.
+
+    Failure Handling #5: store the *tail* of a traceback, not the head —
+    the exception is at the end. This is the single place the cap is
+    applied, so the text a caller keeps and the text written to
+    ``plugin_runs`` are always identical. A real traceback's length
+    depends on the filesystem paths it was raised from, so "short enough"
+    is a property of the environment, never something to rely on.
+    """
+    if error is not None and len(error) > _ERROR_TAIL_CHARS:
+        return error[-_ERROR_TAIL_CHARS:]
+    return error
+
+
 def finish_run(
     db_path: str | Path,
     run_id: int,
@@ -183,8 +198,7 @@ def finish_run(
             f"status must be one of {sorted(VALID_RUN_STATUSES)}, got {status!r}"
         )
 
-    if error is not None and len(error) > _ERROR_TAIL_CHARS:
-        error = error[-_ERROR_TAIL_CHARS:]
+    error = error_tail(error)
 
     with contextlib.closing(connect(db_path)) as conn:
         row = conn.execute(
