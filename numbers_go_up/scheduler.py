@@ -27,6 +27,7 @@ from apscheduler.executors.pool import ThreadPoolExecutor
 from apscheduler.schedulers.background import BackgroundScheduler
 
 from numbers_go_up import storage
+from numbers_go_up.config import ConfigError
 from numbers_go_up.plugins import LoadedPlugin, discover_plugins
 
 logger = logging.getLogger(__name__)
@@ -152,6 +153,38 @@ def _run_scheduled_plugin(
     run_plugin_once(db_path, plugin, http, int(time.time()), heartbeat_seconds)
 
 
+def _validated_jitter_fraction(value: Any) -> float:
+    """Return ``value`` as a float usable as APScheduler's delay-only jitter.
+
+    The fraction is consumed arithmetically inside IntervalTrigger at fire
+    time (``interval_seconds * fraction``, then ``random.uniform(0,
+    jitter)``), so a bad value must fail startup here rather than kill the
+    scheduler's polling loop at runtime. A quoted ``jitter_fraction: "0.2"``
+    (the same quoting slip discover_plugins defends against for
+    poll_interval) would make ``interval_seconds * "0.2"`` a ~540-character
+    repeated string — no TypeError until the first fire, where
+    ``random.uniform(0, <str>)`` raises inside the scheduler's main loop and
+    every plugin stops polling while /health keeps serving 200. A negative
+    fraction fires polls early; a fraction >= 1 lets jitter exceed the
+    interval.
+    """
+    # Bools are ints in Python, but ``jitter_fraction: true`` is a config
+    # mistake, not a number -- same convention as plugins._is_valid_interval.
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        raise ConfigError(
+            f"poll.jitter_fraction must be a number, got {value!r} "
+            f"({type(value).__name__})"
+        )
+    fraction = float(value)
+    # The 0 <= comparison chain also rejects NaN (every comparison with NaN
+    # is False); the explicit isnan check just documents it.
+    if math.isnan(fraction) or not 0 <= fraction < 1:
+        raise ConfigError(
+            f"poll.jitter_fraction must be a finite number in [0, 1), got {value!r}"
+        )
+    return fraction
+
+
 def build_scheduler(config: dict[str, Any], http: Any = None) -> BackgroundScheduler:
     """Build (but don't start) one interval job per enabled plugin.
 
@@ -169,6 +202,11 @@ def build_scheduler(config: dict[str, Any], http: Any = None) -> BackgroundSched
     executor executes late instead of being silently discarded (which
     would leave a poll missing from ``plugin_runs``).
 
+    ``jitter_fraction`` is validated up front (float in ``[0, 1)``): a bad
+    value raises ``ConfigError`` here and fails startup, instead of
+    killing the scheduler's polling loop at the first fire (see
+    :func:`_validated_jitter_fraction`).
+
     One uvicorn worker, always: multiple workers would mean multiple
     schedulers polling the same sources and writing the same SQLite file
     from separate processes. The Dockerfile's CMD has no ``--workers``
@@ -176,8 +214,8 @@ def build_scheduler(config: dict[str, Any], http: Any = None) -> BackgroundSched
     """
     db_path = config["storage"]["path"]
     heartbeat_seconds = config["storage"]["heartbeat_seconds"]
-    jitter_fraction = config.get("poll", {}).get(
-        "jitter_fraction", DEFAULT_JITTER_FRACTION
+    jitter_fraction = _validated_jitter_fraction(
+        config.get("poll", {}).get("jitter_fraction", DEFAULT_JITTER_FRACTION)
     )
 
     scheduler = BackgroundScheduler(executors={"default": ThreadPoolExecutor(10)})
