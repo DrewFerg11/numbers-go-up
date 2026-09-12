@@ -1,5 +1,7 @@
+import logging
 from pathlib import Path
 from types import ModuleType
+from unittest.mock import patch
 
 from numbers_go_up import plugins
 
@@ -108,14 +110,55 @@ class TestDiscoverPlugins:
 
         assert [p.name for p in loaded] == ["valid"]
 
-    def test_underscore_prefixed_files_are_never_discovered(self, tmp_path):
+    def test_underscore_prefixed_files_are_never_discovered(self, tmp_path, caplog):
         # Also proves discovery never even attempts to import it: the
         # fixture file has invalid syntax and would raise if imported.
         config = _config(plugins_config={"underscored": {"enabled": True}})
 
-        loaded = plugins.discover_plugins(config, builtin_dir=FIXTURES_DIR)
+        with caplog.at_level(logging.WARNING):
+            loaded = plugins.discover_plugins(config, builtin_dir=FIXTURES_DIR)
 
         assert [p.name for p in loaded] == []
+        # Discovery must not even attempt to import underscore-prefixed
+        # files: nothing about _underscored was logged (an attempted
+        # import of its invalid syntax would log an error).
+        assert "_underscored" not in caplog.text
+        # Direct proof: the loader was called for every non-underscore
+        # fixture file but never for _underscored.py.
+        with patch.object(
+            plugins, "load_plugin_from_path", wraps=plugins.load_plugin_from_path
+        ) as loader:
+            plugins.discover_plugins(config, builtin_dir=FIXTURES_DIR)
+
+        imported = {call.args[0].name for call in loader.call_args_list}
+        assert "_underscored" not in imported
+        assert "valid" in imported
+
+    def test_file_whose_name_is_not_an_identifier_is_skipped(self, tmp_path, caplog):
+        # The stem becomes the plugin name and the prefix of its published
+        # metric keys (Home-Assistant-facing), so discovery rejects stems
+        # that are not lowercase identifiers before importing anything.
+        user_dir = tmp_path / "user-plugins"
+        user_dir.mkdir()
+        (user_dir / "bad-name.py").write_text(
+            'METRICS = {"bad-name.thing": '
+            '{"kind": "gauge", "label": "Thing", "unit": ""}}\n'
+            "def collect(config, http): return {}\n"
+        )
+        (user_dir / "2024 stats.py").write_text("raise AssertionError\n")
+        config = _config(
+            plugin_dir=str(user_dir),
+            plugins_config={"bad-name": {"enabled": True}, "2024 stats": {"enabled": True}},
+        )
+
+        with caplog.at_level(logging.WARNING):
+            loaded = plugins.discover_plugins(config, builtin_dir=FIXTURES_DIR)
+
+        # Neither file was imported (2024 stats.py raises on import),
+        # both were logged and skipped, and the valid fixture still loads.
+        assert [p.name for p in loaded] == ["valid"]
+        assert "bad-name.py" in caplog.text
+        assert "2024 stats.py" in caplog.text
 
     def test_missing_user_plugin_dir_is_fine(self, tmp_path):
         config = _config(
@@ -154,6 +197,25 @@ class TestDiscoverPlugins:
         assert loaded[0].source == "user"
         assert "valid.override.count" in loaded[0].metrics
 
+    def test_shadowing_a_builtin_logs_a_warning(self, tmp_path, caplog):
+        user_dir = tmp_path / "user-plugins"
+        user_dir.mkdir()
+        (user_dir / "valid.py").write_text(
+            'METRICS = {"valid.override.count": '
+            '{"kind": "gauge", "label": "Override", "unit": ""}}\n'
+            "def collect(config, http): raise NotImplementedError\n"
+        )
+        config = _config(
+            plugin_dir=str(user_dir), plugins_config={"valid": {"enabled": True}}
+        )
+
+        with caplog.at_level(logging.WARNING):
+            loaded = plugins.discover_plugins(config, builtin_dir=FIXTURES_DIR)
+
+        assert [p.name for p in loaded] == ["valid"]
+        assert loaded[0].source == "user"
+        assert "replaces the built-in" in caplog.text
+
     def test_enabled_plugin_gets_its_own_config_section(self):
         config = _config(
             plugins_config={"valid": {"enabled": True, "poll_interval": 900}}
@@ -182,6 +244,86 @@ class TestDiscoverPlugins:
             loaded = plugins.discover_plugins(config, builtin_dir=FIXTURES_DIR)
 
         assert loaded[0].interval_seconds == 300
+
+    def test_a_configured_poll_interval_of_zero_is_raised_to_the_floor(self, caplog):
+        # 0 is falsy, so the previous or-chain swallowed it into the
+        # module/default interval; it must reach the floor check instead.
+        config = _config(
+            plugins_config={"valid": {"enabled": True, "poll_interval": 0}}
+        )
+
+        with caplog.at_level(logging.WARNING):
+            loaded = plugins.discover_plugins(config, builtin_dir=FIXTURES_DIR)
+
+        assert loaded[0].interval_seconds == 300
+        assert "below the" in caplog.text
+
+    def test_a_configured_default_interval_of_zero_is_raised_to_the_floor(
+        self, caplog
+    ):
+        config = _config(
+            poll={"default_interval": 0},
+            plugins_config={"valid": {"enabled": True}},
+        )
+
+        with caplog.at_level(logging.WARNING):
+            loaded = plugins.discover_plugins(config, builtin_dir=FIXTURES_DIR)
+
+        assert loaded[0].interval_seconds == 300
+        assert "below the" in caplog.text
+
+    def test_a_non_integer_poll_interval_falls_back_to_the_default(
+        self, tmp_path, caplog
+    ):
+        user_dir = tmp_path / "user-plugins"
+        user_dir.mkdir()
+        (user_dir / "no_poll.py").write_text(
+            'METRICS = {"no_poll.thing.count": '
+            '{"kind": "gauge", "label": "Thing", "unit": ""}}\n'
+            "def collect(config, http): raise NotImplementedError\n"
+        )
+        # "30m" is an easy YAML quoting slip; without the type guard the
+        # floor comparison raises TypeError and kills discovery of
+        # every plugin.
+        config = _config(
+            plugin_dir=str(user_dir),
+            plugins_config={
+                "no_poll": {"enabled": True, "poll_interval": "30m"},
+                "valid": {"enabled": True},
+            },
+        )
+
+        with caplog.at_level(logging.WARNING):
+            loaded = plugins.discover_plugins(config, builtin_dir=FIXTURES_DIR)
+
+        assert [p.name for p in loaded] == ["no_poll", "valid"]
+        assert loaded[0].interval_seconds == 1800
+        assert "is not an integer" in caplog.text
+
+    def test_a_non_integer_default_interval_falls_back_to_the_floor(self, caplog):
+        config = _config(
+            poll={"default_interval": "30m"},
+            plugins_config={"valid": {"enabled": True}},
+        )
+
+        with caplog.at_level(logging.WARNING):
+            loaded = plugins.discover_plugins(config, builtin_dir=FIXTURES_DIR)
+
+        assert loaded[0].interval_seconds == 300
+        assert "is not an integer" in caplog.text
+
+    def test_a_boolean_poll_interval_falls_back_to_the_default(self, caplog):
+        # True is an int subclass in Python but "poll_interval: true" is a
+        # config mistake, not a number of seconds.
+        config = _config(
+            plugins_config={"valid": {"enabled": True, "poll_interval": True}}
+        )
+
+        with caplog.at_level(logging.WARNING):
+            loaded = plugins.discover_plugins(config, builtin_dir=FIXTURES_DIR)
+
+        assert loaded[0].interval_seconds == 1800
+        assert "is not an integer" in caplog.text
 
     def test_disabled_plugin_is_discovered_but_not_scheduled(self):
         config = _config(plugins_config={"valid": {"enabled": False}})
