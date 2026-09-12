@@ -278,6 +278,20 @@ class TestConsecutiveFailures:
         )
         assert storage.consecutive_failures(db_path, "fake_raises") == 2
 
+    def test_resets_to_zero_after_a_success(self, db_path):
+        # The reset branch of consecutive_failures ("else: break" on the
+        # newest 'ok' row) is not exercised anywhere else in this PR:
+        # every run in the test above is an error for fake_raises, so the
+        # break never executes and a regression counting ALL errors
+        # instead of consecutive ones would pass silently. Seed an 'ok'
+        # run directly and prove the reset.
+        run_id = storage.start_run(db_path, "fake_raises", 1600)
+        storage.finish_run(
+            db_path, run_id, "ok", None, samples_written=1, finished_at=1600
+        )
+
+        assert storage.consecutive_failures(db_path, "fake_raises") == 0
+
     def test_unknown_plugin_has_zero_consecutive_failures(self, db_path):
         assert storage.consecutive_failures(db_path, "never-ran") == 0
 
