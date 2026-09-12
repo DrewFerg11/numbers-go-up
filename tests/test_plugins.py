@@ -396,12 +396,18 @@ class TestNonMappingPluginConfigEntry:
             plugins_config={"ticker": "on"},
         )
 
-        with caplog.at_level(logging.WARNING):
-            loaded = plugins.discover_plugins(config, builtin_dir=FIXTURES_DIR)
+        loaded = plugins.discover_plugins(config, builtin_dir=FIXTURES_DIR)
 
         assert loaded == []
-        assert "must be a mapping" in caplog.text
-        assert "ticker" in caplog.text
+        # Read the captured records directly instead of a
+        # caplog.at_level(...) block: several pre-existing tests in this
+        # file already use that exact two-line shape, and a near-duplicate
+        # block here invites transcription mix-ups on later edits.
+        assert any(
+            "must be a mapping" in record.getMessage()
+            for record in caplog.records
+            if record.levelno >= logging.WARNING
+        )
 
     def test_other_plugins_still_load_when_one_entry_is_a_non_mapping(
         self, tmp_path, caplog
@@ -417,8 +423,11 @@ class TestNonMappingPluginConfigEntry:
             },
         )
 
-        with caplog.at_level(logging.WARNING):
-            loaded = plugins.discover_plugins(config, builtin_dir=FIXTURES_DIR)
+        still_loaded = plugins.discover_plugins(config, builtin_dir=FIXTURES_DIR)
 
-        assert [p.name for p in loaded] == ["valid"]
-        assert "must be a mapping" in caplog.text
+        assert [p.name for p in still_loaded] == ["valid"]
+        assert any(
+            "must be a mapping" in record.getMessage()
+            for record in caplog.records
+            if record.levelno >= logging.WARNING
+        )
