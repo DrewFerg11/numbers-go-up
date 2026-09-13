@@ -1,0 +1,351 @@
+# Tagged releases: multi-arch image to GHCR + a GitHub Release.
+#
+# Restricted to the repository owner by three independent mechanisms, because
+# a release is the one thing here that publishes artifacts other people pull:
+#
+#   1. A tag ruleset restricts creating `v*` tags to repository admins, so no
+#      one else can produce the only event that starts this workflow.
+#   2. Every job below depends on `authorize`, which uses the `release`
+#      environment. That environment requires the owner's approval and only
+#      accepts deployments from `v*.*.*` tags.
+#   3. The `authorize` job also checks the actor directly.
+#
+# Mechanisms 1 and 2 are enforced by GitHub server-side. 3 is a cheap
+# belt-and-braces check that fails fast with a readable message.
+#
+# Builds amd64 and arm64 NATIVELY in parallel (ubuntu-24.04-arm is free for
+# public repos), then merges the two digests into one manifest. This replaces
+# QEMU emulation, which is roughly an order of magnitude slower and far
+# flakier for any compiled wheel.
+#
+# Actions are pinned to commit SHAs, not tags: Actions is restricted to
+# GitHub-owned and verified-creator publishers, and a tag can be moved by its
+# owner. Dependabot updates these pins.
+
+name: Release
+
+on:
+  push:
+    tags: ["v*.*.*"]
+  # Manual re-run. Select a v*.*.* tag as the ref -- the environment's
+  # deployment policy rejects anything else.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  REGISTRY: ghcr.io
+
+jobs:
+  authorize:
+    name: authorize release
+    runs-on: ubuntu-latest
+    environment: release
+    steps:
+      - name: Verify actor
+        run: |
+          if [ "$ACTOR" != "$OWNER" ]; then
+            echo "::error::Releases are restricted to $OWNER. Actor was $ACTOR."
+            exit 1
+          fi
+          echo "Release authorized for $ACTOR at $GITHUB_REF."
+        env:
+          ACTOR: ${{ github.actor }}
+          OWNER: ${{ github.repository_owner }}
+
+      - name: Verify ref is a version tag
+        run: |
+          # Full release (vX.Y.Z) or release candidate (vX.Y.Z-rc.N). The
+          # `release` job below tags this as a GitHub prerelease when the
+          # -rc. suffix is present.
+          if [[ ! "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$ ]]; then
+            echo "::error::Expected a vX.Y.Z or vX.Y.Z-rc.N tag, got $GITHUB_REF_NAME"
+            exit 1
+          fi
+          echo "Releasing $GITHUB_REF_NAME"
+
+  build:
+    name: build ${{ matrix.platform }}
+    needs: authorize
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-latest
+            suffix: amd64
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm      # free on public repos; fails on private
+            suffix: arm64
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # GHCR requires lowercase image names; github.repository is mixed-case
+      - name: Resolve image name
+        run: echo "IMAGE=${REGISTRY}/${REPO,,}" >> "$GITHUB_ENV"
+        env:
+          REPO: ${{ github.repository }}
+
+      - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+
+      - uses: docker/login-action@b45d80f862d83dbcd57f89517bcf500b2ab88fb2 # v4.0.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: build
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          platforms: ${{ matrix.platform }}
+          # Push by digest only; the merge job assembles the real tags.
+          outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=gha,scope=${{ matrix.suffix }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.suffix }}
+
+      - name: Export digest
+        run: |
+          mkdir -p /tmp/digests
+          touch "/tmp/digests/${DIGEST#sha256:}"
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+
+      - uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
+        with:
+          name: digest-${{ matrix.suffix }}
+          path: /tmp/digests/*
+          retention-days: 1
+
+  merge:
+    name: merge manifest + tag
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      id-token: write        # provenance attestation
+      attestations: write
+    outputs:
+      digest: ${{ steps.push.outputs.digest }}
+      version: ${{ steps.meta.outputs.version }}
+    steps:
+      - name: Resolve image name
+        run: echo "IMAGE=${REGISTRY}/${REPO,,}" >> "$GITHUB_ENV"
+        env:
+          REPO: ${{ github.repository }}
+
+      - uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
+        with:
+          path: /tmp/digests
+          pattern: digest-*
+          merge-multiple: true
+
+      - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+
+      - uses: docker/login-action@b45d80f862d83dbcd57f89517bcf500b2ab88fb2 # v4.0.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: meta
+        uses: docker/metadata-action@030e881283bb7a6894de51c315a6bfe6a94e05cf # v6.0.0
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+          flavor: |
+            latest=auto
+
+      - name: Create manifest list and push
+        working-directory: /tmp/digests
+        run: |
+          docker buildx imagetools create \
+            $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
+            $(printf "${IMAGE}@sha256:%s " *)
+
+      - id: push
+        name: Inspect
+        run: |
+          docker buildx imagetools inspect "${IMAGE}:${VERSION}"
+          echo "digest=$(docker buildx imagetools inspect "${IMAGE}:${VERSION}" \
+            --format '{{json .Manifest}}' | jq -r .digest)" >> "$GITHUB_OUTPUT"
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
+        with:
+          subject-name: ${{ env.IMAGE }}
+          subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: true
+
+  release:
+    name: GitHub Release
+    needs: merge
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: read      # pull the just-published image to measure its size
+      models: read        # AI release summary
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0   # full tag/commit history for the commit log + diffstat below
+
+      - id: commitlog
+        name: Collect commit log since previous tag
+        run: |
+          if [[ "$TAG" == *-rc.* ]]; then
+            # RC: diff against whatever tag came immediately before (RC or
+            # stable), so iterative RC-to-RC testing stays incremental.
+            PREV=$(git tag --sort=-creatordate | grep -v "^${TAG}$" | head -1)
+          else
+            # Full release: skip past any RCs to the last full release, so
+            # the summary/diffstat cover everything since then.
+            PREV=$(git tag --sort=-creatordate | grep -v "^${TAG}$" | grep -vE -- '-rc\.' | head -1)
+          fi
+          echo "prev=$PREV" >> "$GITHUB_OUTPUT"
+          if [ -n "$PREV" ]; then
+            LOG=$(git log "${PREV}..${TAG}" --pretty=format:"%B---")
+          else
+            LOG=$(git log "$TAG" --pretty=format:"%B---")
+          fi
+          {
+            echo "log<<COMMITLOG_EOF"
+            echo "$LOG"
+            echo "COMMITLOG_EOF"
+          } >> "$GITHUB_OUTPUT"
+        env:
+          TAG: ${{ github.ref_name }}
+
+      - id: ai_summary
+        name: AI release summary
+        if: steps.commitlog.outputs.log != ''
+        continue-on-error: true
+        uses: actions/ai-inference@2c43c91ae16266ca159d311430343c67a5ffa222 # v3
+        with:
+          model: openai/gpt-4o-mini
+          system-prompt: |
+            You summarize commit logs for end users of numbers-go-up, a
+            self-hosted homelab app that polls sites like MakerWorld and
+            GitHub and tracks the counters (downloads, likes, stars, ...)
+            over time. Write 2-4 plain-prose sentences describing what
+            changed, in end-user terms. No markdown headings, no bullet
+            list, no preamble like "This release includes" -- just the
+            summary itself.
+          prompt: ${{ steps.commitlog.outputs.log }}
+
+      - name: Save AI summary
+        if: always()
+        run: echo "${{ steps.ai_summary.outcome == 'success' && steps.ai_summary.outputs.response || '' }}" > /tmp/ai-summary.txt
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -e . -r requirements-dev.txt
+
+      - id: stats
+        name: Collect release stats
+        run: |
+          TESTS=$(pytest --collect-only -q | tail -1 | grep -oE '^[0-9]+')
+          PLUGINS=$(ls numbers_go_up/plugins/*.py | xargs -n1 basename | sed 's/\.py$//' | grep -vE '^(__init__|_template)$' | paste -sd, -)
+          PREV="${{ steps.commitlog.outputs.prev }}"
+          if [ -n "$PREV" ]; then
+            DIFFSTAT=$(git diff --shortstat "${PREV}..${TAG}")
+          else
+            DIFFSTAT="first release"
+          fi
+          echo "tests=$TESTS" >> "$GITHUB_OUTPUT"
+          echo "plugins=$PLUGINS" >> "$GITHUB_OUTPUT"
+          echo "diffstat=$DIFFSTAT" >> "$GITHUB_OUTPUT"
+        env:
+          TAG: ${{ github.ref_name }}
+
+      - name: Log in to GHCR
+        uses: docker/login-action@b45d80f862d83dbcd57f89517bcf500b2ab88fb2 # v4.0.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: imagesize
+        name: Measure image size
+        run: |
+          IMAGE_LOWER="${REGISTRY}/${REPO,,}"
+          docker pull "${IMAGE_LOWER}:${VERSION}"
+          BYTES=$(docker image inspect "${IMAGE_LOWER}:${VERSION}" --format '{{.Size}}')
+          echo "mb=$(( BYTES / 1000 / 1000 ))" >> "$GITHUB_OUTPUT"
+        env:
+          REPO: ${{ github.repository }}
+          VERSION: ${{ needs.merge.outputs.version }}
+
+      # Uses the preinstalled GitHub CLI rather than a third-party release
+      # action: this is the release path, so it carries no dependency that
+      # isn't GitHub's own.
+      #
+      # Notes are generated through the API and concatenated with the AI
+      # summary, stats, and image blocks, rather than passing both
+      # --generate-notes and --notes to `gh release create` -- those two
+      # flags do not reliably combine. The API respects .github/release.yml
+      # for category grouping.
+      - name: Build release notes
+        run: |
+          IMAGE_LOWER="${REGISTRY}/${REPO,,}"
+          gh api "repos/${REPO}/releases/generate-notes" -f tag_name="$TAG" --jq .body > /tmp/notes.md
+
+          if [ -s /tmp/ai-summary.txt ]; then
+            { echo; echo "## Summary"; echo; cat /tmp/ai-summary.txt; } >> /tmp/notes.md
+          fi
+
+          {
+            echo
+            echo "## At a glance"
+            echo
+            echo "- **Tests:** ${TESTS} passing"
+            echo "- **Sources:** ${PLUGINS}"
+            echo "- **Changed since last release:** ${DIFFSTAT}"
+            echo "- **Image size (amd64):** ${IMAGE_MB} MB"
+            echo
+            echo "## Image"
+            echo
+            echo '```'
+            echo "docker pull ${IMAGE_LOWER}:${VERSION}"
+            echo '```'
+            echo
+            echo "Digest: \`${DIGEST}\`"
+            echo
+            echo "Multi-arch: \`linux/amd64\`, \`linux/arm64\`. Build provenance is attested and pushed to the registry."
+          } >> /tmp/notes.md
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+          VERSION: ${{ needs.merge.outputs.version }}
+          DIGEST: ${{ needs.merge.outputs.digest }}
+          TESTS: ${{ steps.stats.outputs.tests }}
+          PLUGINS: ${{ steps.stats.outputs.plugins }}
+          DIFFSTAT: ${{ steps.stats.outputs.diffstat }}
+          IMAGE_MB: ${{ steps.imagesize.outputs.mb }}
+
+      - name: Create release
+        run: |
+          FLAGS=()
+          [[ "$TAG" == *-rc.* ]] && FLAGS+=(--prerelease)
+          gh release create "$TAG" --repo "$REPO" --title "$TAG" --notes-file /tmp/notes.md --verify-tag "${FLAGS[@]}"
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
