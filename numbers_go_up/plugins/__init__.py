@@ -266,3 +266,30 @@ def discover_plugins(
         )
 
     return loaded
+
+
+def discover_plugin_names(
+    config: dict[str, Any], builtin_dir: Path | None = None
+) -> list[str]:
+    """Every contract-valid plugin name, whether or not it's enabled.
+
+    Mirrors :func:`discover_plugins`' combining of built-ins and
+    ``NGU_PLUGIN_DIR`` (a user plugin replaces a built-in of the same
+    name), but skips the config enabled-check: ``/api/plugins`` reports on
+    every plugin the service could run, not just the ones currently turned
+    on.
+    """
+    if builtin_dir is None:
+        builtin_dir = Path(__file__).parent
+    builtin_modules = _discover_dir(builtin_dir)
+
+    user_dir = config.get("plugin_dir")
+    user_modules = _discover_dir(Path(user_dir)) if user_dir else {}
+
+    combined: dict[str, ModuleType] = {**builtin_modules, **user_modules}
+
+    return [
+        name
+        for name, module in sorted(combined.items())
+        if validate_plugin_contract(name, module) is not None
+    ]

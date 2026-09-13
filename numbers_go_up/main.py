@@ -5,7 +5,7 @@ from fastapi import FastAPI
 
 from numbers_go_up import __version__, api, http, migrate, scheduler
 from numbers_go_up.config import load_config
-from numbers_go_up.plugins import discover_plugins
+from numbers_go_up.plugins import discover_plugin_names, discover_plugins
 
 
 @asynccontextmanager
@@ -22,6 +22,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.plugin_intervals = {
         plugin.name: plugin.interval_seconds for plugin in discover_plugins(config)
     }
+    # /api/plugins reports on every discovered plugin, enabled or not, but
+    # must not discover per request: discovery executes every plugin module
+    # (module-level code, including user plugins from NGU_PLUGIN_DIR), and
+    # a mid-flight file edit would otherwise let the endpoint diverge from
+    # the scheduler's startup snapshot. Same one-time scan, read by the
+    # route off app.state.
+    app.state.plugin_names = discover_plugin_names(config)
 
     shared_http_client = http.build_client()
     job_scheduler = scheduler.build_scheduler(config, http=shared_http_client)

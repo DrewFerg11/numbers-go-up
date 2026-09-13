@@ -2,8 +2,8 @@
 
 All routes are read-only queries; new SQL always goes in storage.py, never
 here. Mounted on the app in main.py. Anything a route needs beyond a plain
-query -- plugin poll intervals, the scheduler -- is prepared once at
-startup and read off ``app.state`` (see main.lifespan), rather than
+query -- plugin poll intervals, plugin names, the scheduler -- is prepared
+once at startup and read off ``app.state`` (see main.lifespan), rather than
 recomputed per request or imported as a module-level global.
 """
 
@@ -128,3 +128,93 @@ def stats_delta(
         "current": current,
         "previous": previous,
     }
+
+
+@router.get("/metrics")
+def list_metrics(request: Request) -> dict[str, Any]:
+    db_path = request.app.state.config["storage"]["path"]
+
+    metrics = [
+        {
+            "key": row["metric_key"],
+            "plugin": row["plugin_name"],
+            "kind": row["kind"],
+            "label": row["label"],
+            "unit": row["unit"],
+            "icon": row["icon"],
+            "last_value": row["last_value"],
+            "last_seen": _iso(row["last_seen"]),
+            "active": bool(row["active"]),
+        }
+        for row in storage.list_all_series(db_path)
+    ]
+    return {"metrics": metrics}
+
+
+@router.get("/plugins")
+def list_plugins(request: Request) -> dict[str, Any]:
+    config = request.app.state.config
+    db_path = config["storage"]["path"]
+    # All read off app.state, not module-level globals, so a test can
+    # build an app with no scheduler running and no plugin discovery at
+    # all (main.lifespan prepares both once at startup).
+    job_scheduler = getattr(request.app.state, "scheduler", None)
+    plugin_names = getattr(request.app.state, "plugin_names", [])
+    plugins_config = config.get("plugins") or {}
+
+    plugins = []
+    for name in plugin_names:
+        plugin_config = plugins_config.get(name)
+        enabled = isinstance(plugin_config, dict) and bool(plugin_config.get("enabled"))
+
+        last_poll = None
+        next_poll = None
+        last_error = None
+
+        if not enabled:
+            status = "disabled"
+        else:
+            if job_scheduler is not None:
+                job = job_scheduler.get_job(f"plugin:{name}")
+                if job is not None and job.next_run_time is not None:
+                    next_poll = _iso(int(job.next_run_time.timestamp()))
+
+            # The newest *finished* run, not latest_run(): start_run()
+            # inserts every run as status='error' (the _RUN_IN_PROGRESS
+            # sentinel) and only finish_run() overwrites it, so reading the
+            # newest row outright reports a healthy in-flight poll as an
+            # error -- the trap _is_stale() already avoids via
+            # latest_finished_run().
+            run = storage.latest_finished_run(db_path, name)
+            if run is None:
+                status = "pending"
+            else:
+                last_poll = _iso(run["started_at"])
+                if run["status"] == "ok":
+                    status = "ok"
+                else:
+                    status = "error"
+                    last_error = run["error"]
+
+            # A poll currently in flight is liveness, not an error: report
+            # it as its own state, keeping last_poll/last_error from the
+            # newest finished run so the endpoint doesn't flip
+            # ok -> error -> ok as runs start and finish.
+            newest = storage.latest_run(db_path, name)
+            if newest is not None and newest["finished_at"] is None:
+                status = "polling"
+
+        plugins.append(
+            {
+                "name": name,
+                "status": status,
+                "enabled": enabled,
+                "last_poll": last_poll,
+                "next_poll": next_poll,
+                "consecutive_failures": storage.consecutive_failures(db_path, name),
+                "last_error": last_error,
+                "metrics": storage.metric_keys_for_plugin(db_path, name),
+            }
+        )
+
+    return {"plugins": plugins}
