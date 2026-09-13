@@ -372,6 +372,89 @@ class TestPrunePluginRuns:
             conn.close()
 
 
+def _set_active(db_path, series_id, active):
+    # Stand-in for the first future writer of the flag: nothing in the app
+    # sets `active` yet, so deactivation is simulated with raw SQL exactly
+    # the way that writer would leave the row.
+    conn = sqlite3.connect(str(db_path))
+    try:
+        conn.execute(
+            "UPDATE metric_series SET active = ? WHERE id = ?", (active, series_id)
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+class TestLatestFinishedRun:
+    def test_returns_the_newest_finished_run_whatever_its_outcome(self, db_path):
+        first = storage.start_run(db_path, "demo", 1000)
+        storage.finish_run(
+            db_path, first, "ok", None, samples_written=1, finished_at=1001
+        )
+        second = storage.start_run(db_path, "demo", 2000)
+        storage.finish_run(
+            db_path, second, "error", "boom", samples_written=0, finished_at=2001
+        )
+
+        row = storage.latest_finished_run(db_path, "demo")
+
+        assert row["status"] == "error"
+        assert row["started_at"] == 2000
+        assert row["finished_at"] == 2001
+        assert row["error"] == "boom"
+
+    def test_skips_a_run_still_in_flight(self, db_path):
+        failed = storage.start_run(db_path, "demo", 1000)
+        storage.finish_run(
+            db_path, failed, "error", "boom", samples_written=0, finished_at=1001
+        )
+        storage.start_run(db_path, "demo", 2000)  # never finished: in flight
+
+        row = storage.latest_finished_run(db_path, "demo")
+
+        assert row["status"] == "error"
+        assert row["finished_at"] == 1001
+
+    def test_only_run_in_flight_returns_none(self, db_path):
+        storage.start_run(db_path, "demo", 1000)
+
+        assert storage.latest_finished_run(db_path, "demo") is None
+
+    def test_never_ran_returns_none(self, db_path):
+        assert storage.latest_finished_run(db_path, "demo") is None
+
+    def test_ignores_other_plugins(self, db_path):
+        other = storage.start_run(db_path, "other", 1000)
+        storage.finish_run(
+            db_path, other, "error", "boom", samples_written=0, finished_at=1001
+        )
+
+        assert storage.latest_finished_run(db_path, "demo") is None
+
+
+class TestActiveSeriesFiltering:
+    def _series(self, db_path, metric_key):
+        return storage.get_or_create_series(
+            db_path, metric_key, "demo", "cumulative", "Count", "", "", 1000
+        )
+
+    def test_list_series_skips_deactivated_series(self, db_path):
+        self._series(db_path, "demo.live.count")
+        retired = self._series(db_path, "demo.retired.count")
+        _set_active(db_path, retired, 0)
+
+        keys = [row["metric_key"] for row in storage.list_series(db_path)]
+
+        assert keys == ["demo.live.count"]
+
+    def test_get_series_by_key_returns_none_for_deactivated_series(self, db_path):
+        retired = self._series(db_path, "demo.retired.count")
+        _set_active(db_path, retired, 0)
+
+        assert storage.get_series_by_key(db_path, "demo.retired.count") is None
+
+
 class TestValueAsOf:
     def _series(self, db_path):
         return storage.get_or_create_series(

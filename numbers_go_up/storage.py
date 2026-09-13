@@ -258,6 +258,27 @@ def consecutive_failures(db_path: str | Path, plugin_name: str) -> int:
     return count
 
 
+def latest_finished_run(db_path: str | Path, plugin_name: str) -> sqlite3.Row | None:
+    """The newest plugin_runs row for ``plugin_name`` with a known outcome,
+    or None if the plugin has never finished a run.
+
+    Rows still in flight (``finished_at IS NULL`` -- start_run's
+    ``_RUN_IN_PROGRESS`` sentinel, overwritten by ``finish_run``) are
+    skipped rather than read as failures: a poll in flight means the
+    plugin is alive. Deliberately the opposite of
+    :func:`consecutive_failures`, whose liveness convention (#19) counts
+    an unfinished run as a failure.
+    """
+    with contextlib.closing(connect(db_path)) as conn:
+        conn.row_factory = sqlite3.Row
+        return conn.execute(
+            "SELECT started_at, finished_at, status, error FROM plugin_runs "
+            "WHERE plugin_name = ? AND finished_at IS NOT NULL "
+            "ORDER BY started_at DESC LIMIT 1",
+            (plugin_name,),
+        ).fetchone()
+
+
 def latest(db_path: str | Path, series_ids: Iterable[int]) -> dict[int, float]:
     """Return the newest value for each of ``series_ids`` in one call.
 
@@ -293,6 +314,67 @@ def value_as_of(db_path: str | Path, series_id: int, ts: int) -> float | None:
             (series_id, ts),
         ).fetchone()
     return row[0] if row is not None else None
+
+
+def list_series(db_path: str | Path) -> list[sqlite3.Row]:
+    """Every active metric_series row, ordered by metric_key.
+
+    The catalogue query: /api/stats/latest and /api/metrics both need every
+    series' current state in one shot rather than one query per series.
+    Deactivated series (``active = 0``) are excluded so the first future
+    writer of that flag can't end up silently serving deactivated metrics.
+    """
+    with contextlib.closing(connect(db_path)) as conn:
+        conn.row_factory = sqlite3.Row
+        return conn.execute(
+            "SELECT id, metric_key, plugin_name, kind, label, unit, icon, "
+            "last_value, last_seen FROM metric_series "
+            "WHERE active = 1 ORDER BY metric_key"
+        ).fetchall()
+
+
+def get_series_by_key(db_path: str | Path, metric_key: str) -> sqlite3.Row | None:
+    """The active metric_series row for ``metric_key`` -- None if it's
+    unknown or deactivated (``active = 0``), so history/delta on a
+    deactivated key 404s instead of serving its history.
+    """
+    with contextlib.closing(connect(db_path)) as conn:
+        conn.row_factory = sqlite3.Row
+        return conn.execute(
+            "SELECT id, metric_key, plugin_name, kind, label, unit, icon, "
+            "last_value, last_seen FROM metric_series "
+            "WHERE active = 1 AND metric_key = ?",
+            (metric_key,),
+        ).fetchone()
+
+
+def latest_run(db_path: str | Path, plugin_name: str) -> sqlite3.Row | None:
+    """The single newest plugin_runs row for ``plugin_name``, whatever its
+    outcome. None if the plugin has never run.
+
+    Unlike :func:`consecutive_failures`, which stops counting at the first
+    success, this always returns the most recent run -- /api/plugins'
+    ``last_poll`` and ``last_error`` need the newest run regardless of
+    whether it succeeded.
+    """
+    with contextlib.closing(connect(db_path)) as conn:
+        conn.row_factory = sqlite3.Row
+        return conn.execute(
+            "SELECT started_at, finished_at, status, error FROM plugin_runs "
+            "WHERE plugin_name = ? ORDER BY started_at DESC LIMIT 1",
+            (plugin_name,),
+        ).fetchone()
+
+
+def metric_keys_for_plugin(db_path: str | Path, plugin_name: str) -> list[str]:
+    """Every metric_key currently in metric_series for ``plugin_name``."""
+    with contextlib.closing(connect(db_path)) as conn:
+        rows = conn.execute(
+            "SELECT metric_key FROM metric_series WHERE plugin_name = ? "
+            "ORDER BY metric_key",
+            (plugin_name,),
+        ).fetchall()
+    return [row[0] for row in rows]
 
 
 def history(
