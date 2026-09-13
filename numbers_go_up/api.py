@@ -37,12 +37,17 @@ def _is_stale(
     interval_seconds: int,
     now: int,
 ) -> bool:
-    """Both halves of the stale rule: an old newest sample *and* a failing
-    plugin. Age alone would mark every flat, store-on-change series stale.
+    """Both halves of the stale rule: an old newest sample *and* a plugin
+    whose newest *finished* run failed. Age alone would mark every flat,
+    store-on-change series stale. consecutive_failures() is deliberately
+    not used here: start_run() inserts every run as status='error' (the
+    _RUN_IN_PROGRESS sentinel) and only finish_run() overwrites it, so
+    while a poll is in flight it counts a healthy plugin as failing.
     """
     if last_seen is None or now - last_seen <= 3 * interval_seconds:
         return False
-    return storage.consecutive_failures(db_path, plugin_name) > 0
+    finished = storage.latest_finished_run(db_path, plugin_name)
+    return finished is not None and finished["status"] != "ok"
 
 
 @router.get("/stats/latest")

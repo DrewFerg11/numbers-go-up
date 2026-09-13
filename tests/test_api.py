@@ -1,3 +1,4 @@
+import sqlite3
 import time
 
 import pytest
@@ -39,6 +40,15 @@ def client_for(tmp_path, **kwargs):
     db_path = db(tmp_path)
     app = make_app(db_path, **kwargs)
     return TestClient(app), db_path
+
+
+def deactivate(db_path, series_id):
+    conn = sqlite3.connect(str(db_path))
+    try:
+        conn.execute("UPDATE metric_series SET active = 0 WHERE id = ?", (series_id,))
+        conn.commit()
+    finally:
+        conn.close()
 
 
 # --- /api/stats/latest -------------------------------------------------
@@ -102,6 +112,47 @@ def test_latest_stale_requires_both_old_sample_and_last_run_failed(tmp_path):
     assert response.json()["metrics"]["acme.widgets"]["stale"] is True
 
 
+def test_latest_poll_in_flight_does_not_make_a_healthy_series_stale(tmp_path):
+    # Repro of the in-flight bug: start_run() inserts status='error' (the
+    # _RUN_IN_PROGRESS sentinel) and only finish_run() overwrites it, so a
+    # healthy plugin mid-poll must not read as failing.
+    client, db_path = client_for(tmp_path, plugin_intervals={"acme": 1800})
+    now = int(time.time())
+    old_ts = now - 4 * 1800 - 10
+    series_id = seed_series(db_path, "acme.widgets", now=old_ts)
+    storage.record_sample(db_path, series_id, old_ts, 42, HOUR)
+
+    # Last finished run succeeded, and a new poll is in flight right now.
+    run_id = storage.start_run(db_path, "acme", now - 1)
+    storage.finish_run(
+        db_path, run_id, "ok", None, samples_written=0, finished_at=now - 1
+    )
+    storage.start_run(db_path, "acme", now)
+
+    response = client.get("/api/stats/latest")
+
+    assert response.json()["metrics"]["acme.widgets"]["stale"] is False
+
+
+def test_latest_poll_in_flight_after_a_failure_is_stale(tmp_path):
+    client, db_path = client_for(tmp_path, plugin_intervals={"acme": 1800})
+    now = int(time.time())
+    old_ts = now - 4 * 1800 - 10
+    series_id = seed_series(db_path, "acme.widgets", now=old_ts)
+    storage.record_sample(db_path, series_id, old_ts, 42, HOUR)
+
+    # Last finished run failed; the retry now in flight must not mask it.
+    run_id = storage.start_run(db_path, "acme", now - 1)
+    storage.finish_run(
+        db_path, run_id, "error", "boom", samples_written=0, finished_at=now - 1
+    )
+    storage.start_run(db_path, "acme", now)
+
+    response = client.get("/api/stats/latest")
+
+    assert response.json()["metrics"]["acme.widgets"]["stale"] is True
+
+
 def test_latest_recent_failed_sample_not_stale_due_to_age(tmp_path):
     client, db_path = client_for(tmp_path, plugin_intervals={"acme": 1800})
     now = int(time.time())
@@ -128,6 +179,18 @@ def test_latest_omits_series_with_no_samples(tmp_path):
     assert response.json()["metrics"] == {}
 
 
+def test_latest_skips_deactivated_series(tmp_path):
+    client, db_path = client_for(tmp_path)
+    now = int(time.time())
+    series_id = seed_series(db_path, "acme.retired", now=now)
+    storage.record_sample(db_path, series_id, now, 42, HOUR)
+    deactivate(db_path, series_id)
+
+    response = client.get("/api/stats/latest")
+
+    assert response.json()["metrics"] == {}
+
+
 def test_latest_delta_null_with_no_history_before_window(tmp_path):
     client, db_path = client_for(tmp_path)
     now = int(time.time())
@@ -146,6 +209,20 @@ def test_history_unknown_metric_404(tmp_path):
     client, _ = client_for(tmp_path)
 
     response = client.get("/api/stats/history", params={"metric": "nope", "hours": 24})
+
+    assert response.status_code == 404
+
+
+def test_history_deactivated_metric_404(tmp_path):
+    client, db_path = client_for(tmp_path)
+    now = int(time.time())
+    series_id = seed_series(db_path, "acme.retired", now=now)
+    storage.record_sample(db_path, series_id, now, 7, HOUR)
+    deactivate(db_path, series_id)
+
+    response = client.get(
+        "/api/stats/history", params={"metric": "acme.retired", "hours": 24}
+    )
 
     assert response.status_code == 404
 
@@ -206,6 +283,20 @@ def test_delta_unknown_metric_404(tmp_path):
     client, _ = client_for(tmp_path)
 
     response = client.get("/api/stats/delta", params={"metric": "nope", "hours": 24})
+
+    assert response.status_code == 404
+
+
+def test_delta_deactivated_metric_404(tmp_path):
+    client, db_path = client_for(tmp_path)
+    now = int(time.time())
+    series_id = seed_series(db_path, "acme.retired", now=now)
+    storage.record_sample(db_path, series_id, now, 7, HOUR)
+    deactivate(db_path, series_id)
+
+    response = client.get(
+        "/api/stats/delta", params={"metric": "acme.retired", "hours": 24}
+    )
 
     assert response.status_code == 404
 
