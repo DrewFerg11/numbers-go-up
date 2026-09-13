@@ -319,10 +319,11 @@ def value_as_of(db_path: str | Path, series_id: int, ts: int) -> float | None:
 def list_series(db_path: str | Path) -> list[sqlite3.Row]:
     """Every active metric_series row, ordered by metric_key.
 
-    The catalogue query: /api/stats/latest and /api/metrics both need every
-    series' current state in one shot rather than one query per series.
-    Deactivated series (``active = 0``) are excluded so the first future
-    writer of that flag can't end up silently serving deactivated metrics.
+    /api/stats/latest needs every series' current state in one shot rather
+    than one query per series. Deactivated series (``active = 0``) are
+    excluded so the first future writer of that flag can't end up silently
+    serving deactivated metrics. /api/metrics wants every series regardless
+    of ``active`` -- see :func:`list_all_series`.
     """
     with contextlib.closing(connect(db_path)) as conn:
         conn.row_factory = sqlite3.Row
@@ -330,6 +331,23 @@ def list_series(db_path: str | Path) -> list[sqlite3.Row]:
             "SELECT id, metric_key, plugin_name, kind, label, unit, icon, "
             "last_value, last_seen FROM metric_series "
             "WHERE active = 1 ORDER BY metric_key"
+        ).fetchall()
+
+
+def list_all_series(db_path: str | Path) -> list[sqlite3.Row]:
+    """Every metric_series row, active or not, ordered by metric_key,
+    ``active`` column included.
+
+    The catalogue for /api/metrics, which reports on every series that
+    ever existed -- including a retired one whose plugin has since been
+    disabled or removed -- unlike :func:`list_series`, which /api/stats/
+    latest uses and which excludes deactivated series.
+    """
+    with contextlib.closing(connect(db_path)) as conn:
+        conn.row_factory = sqlite3.Row
+        return conn.execute(
+            "SELECT id, metric_key, plugin_name, kind, label, unit, icon, "
+            "last_value, last_seen, active FROM metric_series ORDER BY metric_key"
         ).fetchall()
 
 

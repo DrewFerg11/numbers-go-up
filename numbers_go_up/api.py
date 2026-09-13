@@ -16,6 +16,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Query, Request
 
 from numbers_go_up import storage
+from numbers_go_up.plugins import discover_plugin_names
 
 router = APIRouter(prefix="/api")
 
@@ -128,3 +129,77 @@ def stats_delta(
         "current": current,
         "previous": previous,
     }
+
+
+@router.get("/metrics")
+def list_metrics(request: Request) -> dict[str, Any]:
+    db_path = request.app.state.config["storage"]["path"]
+
+    metrics = [
+        {
+            "key": row["metric_key"],
+            "plugin": row["plugin_name"],
+            "kind": row["kind"],
+            "label": row["label"],
+            "unit": row["unit"],
+            "icon": row["icon"],
+            "last_value": row["last_value"],
+            "last_seen": _iso(row["last_seen"]),
+            "active": bool(row["active"]),
+        }
+        for row in storage.list_all_series(db_path)
+    ]
+    return {"metrics": metrics}
+
+
+@router.get("/plugins")
+def list_plugins(request: Request) -> dict[str, Any]:
+    config = request.app.state.config
+    db_path = config["storage"]["path"]
+    # Read off app.state, not a module-level global, so a test can build an
+    # app with no scheduler running (see main.lifespan).
+    job_scheduler = getattr(request.app.state, "scheduler", None)
+    plugins_config = config.get("plugins") or {}
+
+    plugins = []
+    for name in discover_plugin_names(config):
+        plugin_config = plugins_config.get(name)
+        enabled = isinstance(plugin_config, dict) and bool(plugin_config.get("enabled"))
+
+        last_poll = None
+        next_poll = None
+        last_error = None
+
+        if not enabled:
+            status = "disabled"
+        else:
+            if job_scheduler is not None:
+                job = job_scheduler.get_job(f"plugin:{name}")
+                if job is not None and job.next_run_time is not None:
+                    next_poll = _iso(int(job.next_run_time.timestamp()))
+
+            run = storage.latest_run(db_path, name)
+            if run is None:
+                status = "pending"
+            else:
+                last_poll = _iso(run["started_at"])
+                if run["status"] == "ok":
+                    status = "ok"
+                else:
+                    status = "error"
+                    last_error = run["error"]
+
+        plugins.append(
+            {
+                "name": name,
+                "status": status,
+                "enabled": enabled,
+                "last_poll": last_poll,
+                "next_poll": next_poll,
+                "consecutive_failures": storage.consecutive_failures(db_path, name),
+                "last_error": last_error,
+                "metrics": storage.metric_keys_for_plugin(db_path, name),
+            }
+        )
+
+    return {"plugins": plugins}
