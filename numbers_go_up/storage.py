@@ -295,6 +295,60 @@ def value_as_of(db_path: str | Path, series_id: int, ts: int) -> float | None:
     return row[0] if row is not None else None
 
 
+def list_series(db_path: str | Path) -> list[sqlite3.Row]:
+    """Every metric_series row, ordered by metric_key.
+
+    The catalogue query: /api/stats/latest and /api/metrics both need every
+    series' current state in one shot rather than one query per series.
+    """
+    with contextlib.closing(connect(db_path)) as conn:
+        conn.row_factory = sqlite3.Row
+        return conn.execute(
+            "SELECT id, metric_key, plugin_name, kind, label, unit, icon, "
+            "last_value, last_seen, active FROM metric_series ORDER BY metric_key"
+        ).fetchall()
+
+
+def get_series_by_key(db_path: str | Path, metric_key: str) -> sqlite3.Row | None:
+    """The metric_series row for ``metric_key``, or None if it's unknown."""
+    with contextlib.closing(connect(db_path)) as conn:
+        conn.row_factory = sqlite3.Row
+        return conn.execute(
+            "SELECT id, metric_key, plugin_name, kind, label, unit, icon, "
+            "last_value, last_seen, active FROM metric_series WHERE metric_key = ?",
+            (metric_key,),
+        ).fetchone()
+
+
+def latest_run(db_path: str | Path, plugin_name: str) -> sqlite3.Row | None:
+    """The single newest plugin_runs row for ``plugin_name``, whatever its
+    outcome. None if the plugin has never run.
+
+    Unlike :func:`consecutive_failures`, which stops counting at the first
+    success, this always returns the most recent run -- /api/plugins'
+    ``last_poll`` and ``last_error`` need the newest run regardless of
+    whether it succeeded.
+    """
+    with contextlib.closing(connect(db_path)) as conn:
+        conn.row_factory = sqlite3.Row
+        return conn.execute(
+            "SELECT started_at, finished_at, status, error FROM plugin_runs "
+            "WHERE plugin_name = ? ORDER BY started_at DESC LIMIT 1",
+            (plugin_name,),
+        ).fetchone()
+
+
+def metric_keys_for_plugin(db_path: str | Path, plugin_name: str) -> list[str]:
+    """Every metric_key currently in metric_series for ``plugin_name``."""
+    with contextlib.closing(connect(db_path)) as conn:
+        rows = conn.execute(
+            "SELECT metric_key FROM metric_series WHERE plugin_name = ? "
+            "ORDER BY metric_key",
+            (plugin_name,),
+        ).fetchall()
+    return [row[0] for row in rows]
+
+
 def history(
     db_path: str | Path, series_id: int, start: int, end: int
 ) -> list[tuple[int, float]]:
