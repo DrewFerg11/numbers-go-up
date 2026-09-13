@@ -1,0 +1,33 @@
+# Groups auto-generated release notes (generate_release_notes /
+# releases/generate-notes) by the labels pr-labeler.yml applies from each
+# PR's Conventional-Commit title prefix. Purely a notes-formatting config --
+# it does not affect which PRs are included, only how they're bucketed.
+
+changelog:
+  exclude:
+    labels:
+      - duplicate
+      - invalid
+      - wontfix
+      - question
+  categories:
+    - title: Breaking Changes
+      labels: [breaking]
+    - title: New Features
+      labels: [enhancement]
+    - title: Bug Fixes
+      labels: [bug]
+    - title: Dependencies
+      labels: [dependencies, github_actions, docker]
+    - title: Performance
+      labels: [performance]
+    - title: Documentation
+      labels: [documentation]
+    - title: Refactoring
+      labels: [refactor]
+    - title: Tests
+      labels: [tests]
+    - title: Build & CI
+      labels: [build, ci]
+    - title: Other Changes
+      labels: ["*"]

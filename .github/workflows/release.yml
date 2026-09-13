@@ -1,0 +1,231 @@
+# Tagged releases: multi-arch image to GHCR + a GitHub Release.
+#
+# Restricted to the repository owner by three independent mechanisms, because
+# a release is the one thing here that publishes artifacts other people pull:
+#
+#   1. A tag ruleset restricts creating `v*` tags to repository admins, so no
+#      one else can produce the only event that starts this workflow.
+#   2. Every job below depends on `authorize`, which uses the `release`
+#      environment. That environment requires the owner's approval and only
+#      accepts deployments from `v*.*.*` tags.
+#   3. The `authorize` job also checks the actor directly.
+#
+# Mechanisms 1 and 2 are enforced by GitHub server-side. 3 is a cheap
+# belt-and-braces check that fails fast with a readable message.
+#
+# Builds amd64 and arm64 NATIVELY in parallel (ubuntu-24.04-arm is free for
+# public repos), then merges the two digests into one manifest. This replaces
+# QEMU emulation, which is roughly an order of magnitude slower and far
+# flakier for any compiled wheel.
+#
+# Actions are pinned to commit SHAs, not tags: Actions is restricted to
+# GitHub-owned and verified-creator publishers, and a tag can be moved by its
+# owner. Dependabot updates these pins.
+
+name: Release
+
+on:
+  push:
+    tags: ["v*.*.*"]
+  # Manual re-run. Select a v*.*.* tag as the ref -- the environment's
+  # deployment policy rejects anything else.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  REGISTRY: ghcr.io
+
+jobs:
+  authorize:
+    name: authorize release
+    runs-on: ubuntu-latest
+    environment: release
+    steps:
+      - name: Verify actor
+        run: |
+          if [ "$ACTOR" != "$OWNER" ]; then
+            echo "::error::Releases are restricted to $OWNER. Actor was $ACTOR."
+            exit 1
+          fi
+          echo "Release authorized for $ACTOR at $GITHUB_REF."
+        env:
+          ACTOR: ${{ github.actor }}
+          OWNER: ${{ github.repository_owner }}
+
+      - name: Verify ref is a version tag
+        run: |
+          case "$GITHUB_REF" in
+            refs/tags/v*.*.*) echo "Releasing $GITHUB_REF_NAME" ;;
+            *) echo "::error::Expected a v*.*.* tag, got $GITHUB_REF"; exit 1 ;;
+          esac
+
+  build:
+    name: build ${{ matrix.platform }}
+    needs: authorize
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-latest
+            suffix: amd64
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm      # free on public repos; fails on private
+            suffix: arm64
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # GHCR requires lowercase image names; github.repository is mixed-case
+      - name: Resolve image name
+        run: echo "IMAGE=${REGISTRY}/${REPO,,}" >> "$GITHUB_ENV"
+        env:
+          REPO: ${{ github.repository }}
+
+      - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+
+      - uses: docker/login-action@b45d80f862d83dbcd57f89517bcf500b2ab88fb2 # v4.0.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: build
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          platforms: ${{ matrix.platform }}
+          # Push by digest only; the merge job assembles the real tags.
+          outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=gha,scope=${{ matrix.suffix }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.suffix }}
+
+      - name: Export digest
+        run: |
+          mkdir -p /tmp/digests
+          touch "/tmp/digests/${DIGEST#sha256:}"
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+
+      - uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
+        with:
+          name: digest-${{ matrix.suffix }}
+          path: /tmp/digests/*
+          retention-days: 1
+
+  merge:
+    name: merge manifest + tag
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      id-token: write        # provenance attestation
+      attestations: write
+    outputs:
+      digest: ${{ steps.push.outputs.digest }}
+      version: ${{ steps.meta.outputs.version }}
+    steps:
+      - name: Resolve image name
+        run: echo "IMAGE=${REGISTRY}/${REPO,,}" >> "$GITHUB_ENV"
+        env:
+          REPO: ${{ github.repository }}
+
+      - uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
+        with:
+          path: /tmp/digests
+          pattern: digest-*
+          merge-multiple: true
+
+      - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+
+      - uses: docker/login-action@b45d80f862d83dbcd57f89517bcf500b2ab88fb2 # v4.0.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: meta
+        uses: docker/metadata-action@030e881283bb7a6894de51c315a6bfe6a94e05cf # v6.0.0
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+          flavor: |
+            latest=auto
+
+      - name: Create manifest list and push
+        working-directory: /tmp/digests
+        run: |
+          docker buildx imagetools create \
+            $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
+            $(printf "${IMAGE}@sha256:%s " *)
+
+      - id: push
+        name: Inspect
+        run: |
+          docker buildx imagetools inspect "${IMAGE}:${VERSION}"
+          echo "digest=$(docker buildx imagetools inspect "${IMAGE}:${VERSION}" \
+            --format '{{json .Manifest}}' | jq -r .digest)" >> "$GITHUB_OUTPUT"
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
+        with:
+          subject-name: ${{ env.IMAGE }}
+          subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: true
+
+  release:
+    name: GitHub Release
+    needs: merge
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      # Uses the preinstalled GitHub CLI rather than a third-party release
+      # action: this is the release path, so it carries no dependency that
+      # isn't GitHub's own.
+      #
+      # Notes are generated through the API and concatenated with the image
+      # block, rather than passing both --generate-notes and --notes to
+      # `gh release create` -- those two flags do not reliably combine.
+      # The API respects .github/release.yml for category grouping.
+      - name: Build release notes
+        run: |
+          IMAGE_LOWER="${REGISTRY}/${REPO,,}"
+          gh api "repos/${REPO}/releases/generate-notes" -f tag_name="$TAG" --jq .body > /tmp/notes.md
+
+          {
+            echo
+            echo "## Image"
+            echo
+            echo '```'
+            echo "docker pull ${IMAGE_LOWER}:${VERSION}"
+            echo '```'
+            echo
+            echo "Digest: \`${DIGEST}\`"
+            echo
+            echo "Multi-arch: \`linux/amd64\`, \`linux/arm64\`. Build provenance is attested and pushed to the registry."
+          } >> /tmp/notes.md
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+          VERSION: ${{ needs.merge.outputs.version }}
+          DIGEST: ${{ needs.merge.outputs.digest }}
+
+      - name: Create release
+        run: gh release create "$TAG" --repo "$REPO" --title "$TAG" --notes-file /tmp/notes.md --verify-tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
