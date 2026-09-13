@@ -2,8 +2,8 @@
 
 All routes are read-only queries; new SQL always goes in storage.py, never
 here. Mounted on the app in main.py. Anything a route needs beyond a plain
-query -- plugin poll intervals, the scheduler -- is prepared once at
-startup and read off ``app.state`` (see main.lifespan), rather than
+query -- plugin poll intervals, plugin names, the scheduler -- is prepared
+once at startup and read off ``app.state`` (see main.lifespan), rather than
 recomputed per request or imported as a module-level global.
 """
 
@@ -16,7 +16,6 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Query, Request
 
 from numbers_go_up import storage
-from numbers_go_up.plugins import discover_plugin_names
 
 router = APIRouter(prefix="/api")
 
@@ -156,13 +155,15 @@ def list_metrics(request: Request) -> dict[str, Any]:
 def list_plugins(request: Request) -> dict[str, Any]:
     config = request.app.state.config
     db_path = config["storage"]["path"]
-    # Read off app.state, not a module-level global, so a test can build an
-    # app with no scheduler running (see main.lifespan).
+    # All read off app.state, not module-level globals, so a test can
+    # build an app with no scheduler running and no plugin discovery at
+    # all (main.lifespan prepares both once at startup).
     job_scheduler = getattr(request.app.state, "scheduler", None)
+    plugin_names = getattr(request.app.state, "plugin_names", [])
     plugins_config = config.get("plugins") or {}
 
     plugins = []
-    for name in discover_plugin_names(config):
+    for name in plugin_names:
         plugin_config = plugins_config.get(name)
         enabled = isinstance(plugin_config, dict) and bool(plugin_config.get("enabled"))
 
@@ -178,7 +179,13 @@ def list_plugins(request: Request) -> dict[str, Any]:
                 if job is not None and job.next_run_time is not None:
                     next_poll = _iso(int(job.next_run_time.timestamp()))
 
-            run = storage.latest_run(db_path, name)
+            # The newest *finished* run, not latest_run(): start_run()
+            # inserts every run as status='error' (the _RUN_IN_PROGRESS
+            # sentinel) and only finish_run() overwrites it, so reading the
+            # newest row outright reports a healthy in-flight poll as an
+            # error -- the trap _is_stale() already avoids via
+            # latest_finished_run().
+            run = storage.latest_finished_run(db_path, name)
             if run is None:
                 status = "pending"
             else:
@@ -188,6 +195,14 @@ def list_plugins(request: Request) -> dict[str, Any]:
                 else:
                     status = "error"
                     last_error = run["error"]
+
+            # A poll currently in flight is liveness, not an error: report
+            # it as its own state, keeping last_poll/last_error from the
+            # newest finished run so the endpoint doesn't flip
+            # ok -> error -> ok as runs start and finish.
+            newest = storage.latest_run(db_path, name)
+            if newest is not None and newest["finished_at"] is None:
+                status = "polling"
 
         plugins.append(
             {
