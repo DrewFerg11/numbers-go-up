@@ -194,21 +194,130 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      packages: read      # pull the just-published image to measure its size
+      models: read        # AI release summary
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0   # full tag/commit history for the commit log + diffstat below
+
+      - id: commitlog
+        name: Collect commit log since previous tag
+        run: |
+          if [[ "$TAG" == *-rc.* ]]; then
+            # RC: diff against whatever tag came immediately before (RC or
+            # stable), so iterative RC-to-RC testing stays incremental.
+            PREV=$(git tag --sort=-creatordate | grep -v "^${TAG}$" | head -1)
+          else
+            # Full release: skip past any RCs to the last full release, so
+            # the summary/diffstat cover everything since then.
+            PREV=$(git tag --sort=-creatordate | grep -v "^${TAG}$" | grep -vE -- '-rc\.' | head -1)
+          fi
+          echo "prev=$PREV" >> "$GITHUB_OUTPUT"
+          if [ -n "$PREV" ]; then
+            LOG=$(git log "${PREV}..${TAG}" --pretty=format:"%B---")
+          else
+            LOG=$(git log "$TAG" --pretty=format:"%B---")
+          fi
+          {
+            echo "log<<COMMITLOG_EOF"
+            echo "$LOG"
+            echo "COMMITLOG_EOF"
+          } >> "$GITHUB_OUTPUT"
+        env:
+          TAG: ${{ github.ref_name }}
+
+      - id: ai_summary
+        name: AI release summary
+        if: steps.commitlog.outputs.log != ''
+        continue-on-error: true
+        uses: actions/ai-inference@2c43c91ae16266ca159d311430343c67a5ffa222 # v3
+        with:
+          model: openai/gpt-4o-mini
+          system-prompt: |
+            You summarize commit logs for end users of numbers-go-up, a
+            self-hosted homelab app that polls sites like MakerWorld and
+            GitHub and tracks the counters (downloads, likes, stars, ...)
+            over time. Write 2-4 plain-prose sentences describing what
+            changed, in end-user terms. No markdown headings, no bullet
+            list, no preamble like "This release includes" -- just the
+            summary itself.
+          prompt: ${{ steps.commitlog.outputs.log }}
+
+      - name: Save AI summary
+        if: always()
+        run: echo "${{ steps.ai_summary.outcome == 'success' && steps.ai_summary.outputs.response || '' }}" > /tmp/ai-summary.txt
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -e . -r requirements-dev.txt
+
+      - id: stats
+        name: Collect release stats
+        run: |
+          TESTS=$(pytest --collect-only -q | tail -1 | grep -oE '^[0-9]+')
+          PLUGINS=$(ls numbers_go_up/plugins/*.py | xargs -n1 basename | sed 's/\.py$//' | grep -vE '^(__init__|_template)$' | paste -sd, -)
+          PREV="${{ steps.commitlog.outputs.prev }}"
+          if [ -n "$PREV" ]; then
+            DIFFSTAT=$(git diff --shortstat "${PREV}..${TAG}")
+          else
+            DIFFSTAT="first release"
+          fi
+          echo "tests=$TESTS" >> "$GITHUB_OUTPUT"
+          echo "plugins=$PLUGINS" >> "$GITHUB_OUTPUT"
+          echo "diffstat=$DIFFSTAT" >> "$GITHUB_OUTPUT"
+        env:
+          TAG: ${{ github.ref_name }}
+
+      - name: Log in to GHCR
+        uses: docker/login-action@b45d80f862d83dbcd57f89517bcf500b2ab88fb2 # v4.0.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: imagesize
+        name: Measure image size
+        run: |
+          IMAGE_LOWER="${REGISTRY}/${REPO,,}"
+          docker pull "${IMAGE_LOWER}:${VERSION}"
+          BYTES=$(docker image inspect "${IMAGE_LOWER}:${VERSION}" --format '{{.Size}}')
+          echo "mb=$(( BYTES / 1000 / 1000 ))" >> "$GITHUB_OUTPUT"
+        env:
+          REPO: ${{ github.repository }}
+          VERSION: ${{ needs.merge.outputs.version }}
+
       # Uses the preinstalled GitHub CLI rather than a third-party release
       # action: this is the release path, so it carries no dependency that
       # isn't GitHub's own.
       #
-      # Notes are generated through the API and concatenated with the image
-      # block, rather than passing both --generate-notes and --notes to
-      # `gh release create` -- those two flags do not reliably combine.
-      # The API respects .github/release.yml for category grouping.
+      # Notes are generated through the API and concatenated with the AI
+      # summary, stats, and image blocks, rather than passing both
+      # --generate-notes and --notes to `gh release create` -- those two
+      # flags do not reliably combine. The API respects .github/release.yml
+      # for category grouping.
       - name: Build release notes
         run: |
           IMAGE_LOWER="${REGISTRY}/${REPO,,}"
           gh api "repos/${REPO}/releases/generate-notes" -f tag_name="$TAG" --jq .body > /tmp/notes.md
 
+          if [ -s /tmp/ai-summary.txt ]; then
+            { echo; echo "## Summary"; echo; cat /tmp/ai-summary.txt; } >> /tmp/notes.md
+          fi
+
           {
+            echo
+            echo "## At a glance"
+            echo
+            echo "- **Tests:** ${TESTS} passing"
+            echo "- **Sources:** ${PLUGINS}"
+            echo "- **Changed since last release:** ${DIFFSTAT}"
+            echo "- **Image size (amd64):** ${IMAGE_MB} MB"
             echo
             echo "## Image"
             echo
@@ -226,6 +335,10 @@ jobs:
           TAG: ${{ github.ref_name }}
           VERSION: ${{ needs.merge.outputs.version }}
           DIGEST: ${{ needs.merge.outputs.digest }}
+          TESTS: ${{ steps.stats.outputs.tests }}
+          PLUGINS: ${{ steps.stats.outputs.plugins }}
+          DIFFSTAT: ${{ steps.stats.outputs.diffstat }}
+          IMAGE_MB: ${{ steps.imagesize.outputs.mb }}
 
       - name: Create release
         run: |
