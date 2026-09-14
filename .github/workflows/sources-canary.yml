@@ -1,0 +1,150 @@
+# Daily live probes against real upstream sources (`pytest -m live`), which
+# ci-test.yml deliberately excludes -- see its `-m "not live"` comment.
+#
+# Each source is its own matrix entry so one plugin's 403 can't mask another
+# plugin's parse break, and adding a source is a one-line change. Only
+# `makerworld` exists today.
+#
+# Filing policy (see docs/gh-workflows if this disagrees):
+#   - A single failure is noise -- MakerWorld and TikTok both 403 GitHub's
+#     Azure IP ranges sometimes while working fine from a residential
+#     connection (CONTRIBUTING.md, the broken_source issue template).
+#   - Two *consecutive* failures for the same plugin open (or comment on) a
+#     single tracking issue labelled canary + area:plugins, matching the
+#     "Broken data source" template's own labels. There's no workflow
+#     storage, so "consecutive" is read off the previous completed run of
+#     this workflow rather than a state file.
+#   - Recovery comments "green again" on the open issue rather than closing
+#     it -- a 403 that clears on its own is exactly the intermittent break an
+#     auto-close would hide.
+#
+# The probe's own UID secret must never reach a public issue: its value is
+# scrubbed out of any captured output before it's used in an issue body.
+
+name: Sources Canary
+
+on:
+  schedule:
+    # 06:27 UTC. Off the hour: GitHub's scheduled-workflow queue backs up
+    # at :00, and a canary that runs 40 minutes late all week isn't trusted.
+    - cron: "27 6 * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  probe:
+    name: canary ${{ matrix.plugin }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - plugin: makerworld
+            secret_name: NGU_CANARY_MAKERWORLD_UID
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -e . -r requirements-dev.txt
+
+      # A missing secret makes the live test call pytest.skip(), which exits
+      # 0 -- a canary that lost its secret would report green forever while
+      # probing nothing. Fail here, before pytest ever runs.
+      - name: Verify canary secret is set
+        run: |
+          if [ -z "$SECRET_VALUE" ]; then
+            echo "::error::${{ matrix.secret_name }} is not set (or empty). The live probe would silently skip via pytest.skip() and this job would report green without probing anything. Set the secret under repo Settings > Secrets and variables > Actions."
+            exit 1
+          fi
+        env:
+          SECRET_VALUE: ${{ secrets[matrix.secret_name] }}
+
+      - id: probe
+        name: Run live probe
+        continue-on-error: true
+        shell: bash
+        run: |
+          pytest -q -m live -k "$PLUGIN" 2>&1 | tee /tmp/canary-output.txt
+          exit "${PIPESTATUS[0]}"
+        env:
+          PLUGIN: ${{ matrix.plugin }}
+          NGU_CANARY_MAKERWORLD_UID: ${{ secrets.NGU_CANARY_MAKERWORLD_UID }}
+
+      # Scrub the secret value out of the captured output (tracebacks and
+      # assertion diffs are the likely way it'd leak) before anything below
+      # this point reads the file into an issue body.
+      - name: Scrub secret from captured output
+        if: always()
+        run: |
+          if [ -n "$SECRET_VALUE" ] && [ -f /tmp/canary-output.txt ]; then
+            sed -i "s/${SECRET_VALUE}/<redacted>/g" /tmp/canary-output.txt
+          fi
+        env:
+          SECRET_VALUE: ${{ secrets[matrix.secret_name] }}
+
+      - id: tail
+        name: Collect (scrubbed) error tail
+        if: always()
+        run: |
+          {
+            echo "tail<<CANARY_EOF"
+            tail -n 30 /tmp/canary-output.txt 2>/dev/null || echo "(no output captured)"
+            echo "CANARY_EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Report result
+        if: always()
+        run: |
+          TITLE="Source broken: ${PLUGIN} (canary)"
+          RUN_URL="${GITHUB_SERVER_URL}/${REPO}/actions/runs/${GITHUB_RUN_ID}"
+
+          EXISTING=$(gh issue list --repo "$REPO" --label canary --label area:plugins --state open \
+            --search "in:title \"${TITLE}\"" --json number,title \
+            --jq "[.[] | select(.title == \"${TITLE}\")][0].number // empty")
+
+          if [ "$PROBE_OUTCOME" = "success" ]; then
+            if [ -n "$EXISTING" ]; then
+              gh issue comment "$EXISTING" --repo "$REPO" --body "Green again as of ${RUN_URL}."
+            fi
+            exit 0
+          fi
+
+          # Failure. Consecutive-failure count has no state file to live in,
+          # so read it off the previous completed run of this workflow.
+          PREV_RUN_ID=$(gh run list --repo "$REPO" --workflow sources-canary.yml \
+            --json databaseId,status --jq '[.[] | select(.status == "completed")][0].databaseId // empty' \
+            --limit 10)
+
+          PREV_CONCLUSION=""
+          if [ -n "$PREV_RUN_ID" ]; then
+            PREV_CONCLUSION=$(gh run view "$PREV_RUN_ID" --repo "$REPO" --json jobs \
+              --jq "[.jobs[] | select(.name | contains(\"canary ${PLUGIN}\"))][0].conclusion // empty")
+          fi
+
+          BODY=$(printf '**Symptom:** live probe failed (`pytest -m live -k %s`)\n**Where it ran:** GitHub Actions (Azure IP ranges) -- see the linked run for whether this reproduces from a residential connection.\n**Run:** %s\n\n```\n%s\n```\n' "$PLUGIN" "$RUN_URL" "$TAIL")
+
+          if [ -n "$EXISTING" ]; then
+            gh issue comment "$EXISTING" --repo "$REPO" --body "$(printf 'Failed again.\n\n%s' "$BODY")"
+          elif [ "$PREV_CONCLUSION" = "failure" ]; then
+            gh issue create --repo "$REPO" --title "$TITLE" --label canary --label area:plugins --body "$BODY"
+          else
+            echo "First failure this streak for ${PLUGIN}; not filing yet (threshold is 2 consecutive)."
+          fi
+        env:
+          PLUGIN: ${{ matrix.plugin }}
+          REPO: ${{ github.repository }}
+          PROBE_OUTCOME: ${{ steps.probe.outcome }}
+          TAIL: ${{ steps.tail.outputs.tail }}
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Fail job if probe failed
+        if: steps.probe.outcome != 'success'
+        run: exit 1
