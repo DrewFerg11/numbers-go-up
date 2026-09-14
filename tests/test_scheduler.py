@@ -6,12 +6,13 @@ from pathlib import Path
 from types import ModuleType
 from unittest.mock import patch
 
+import httpx
 import pytest
 from apscheduler.executors.pool import ThreadPoolExecutor
 from apscheduler.schedulers.background import BackgroundScheduler
 
 from numbers_go_up import migrate, plugins, scheduler, storage
-from numbers_go_up.http import RateLimited
+from numbers_go_up.http import BLOCKED_ERROR_PREFIX, Blocked, RateLimited
 
 FIXTURES_DIR = Path(__file__).resolve().parent / "fixtures" / "plugins"
 
@@ -878,6 +879,45 @@ class TestRunPluginOnceRateLimited:
         assert "rate limited" in error
 
 
+def _blocked() -> Blocked:
+    request = httpx.Request("GET", "https://example.invalid/profile")
+    return Blocked(
+        httpx.Response(403, headers={"cf-mitigated": "challenge"}, request=request)
+    )
+
+
+class TestRunPluginOnceBlocked:
+    def test_403_is_recorded_as_error_with_the_blocked_prefix(self, db_path):
+        module = ModuleType("blocked_plugin")
+        module.METRICS = {
+            "blocked_plugin.x": {"kind": "gauge", "label": "X", "unit": ""}
+        }
+
+        def collect(config, http):
+            raise _blocked()
+
+        module.collect = collect
+        plugin = _plugin_from_module("blocked_plugin", module, module.METRICS)
+
+        with pytest.raises(Blocked):
+            scheduler.run_plugin_once(
+                db_path, plugin, http=None, now=1000, heartbeat_seconds=86400
+            )
+
+        assert storage.consecutive_failures(db_path, "blocked_plugin") == 1
+
+        conn = sqlite3.connect(str(db_path))
+        try:
+            error = conn.execute(
+                "SELECT error FROM plugin_runs WHERE plugin_name = ?",
+                ("blocked_plugin",),
+            ).fetchone()[0]
+        finally:
+            conn.close()
+        assert error.startswith(BLOCKED_ERROR_PREFIX)
+        assert "cf-mitigated=challenge" in error
+
+
 class TestComputeBackoffDelaySeconds:
     def test_429_with_retry_after_uses_max_of_retry_after_and_interval(self):
         assert scheduler.compute_backoff_delay_seconds(1800, 5, 1) == 1800
@@ -993,6 +1033,47 @@ class TestRunScheduledPluginBackoff:
 
         assert backoff_state["rl_plugin2"] == 2
         assert len(fake_scheduler.modify_job_calls) == 2
+
+    def test_403_backs_off_exponentially_like_a_429_without_retry_after(self, db_path):
+        module = ModuleType("blocked_plugin2")
+        module.METRICS = {
+            "blocked_plugin2.x": {"kind": "gauge", "label": "X", "unit": ""}
+        }
+
+        def collect(config, http):
+            raise _blocked()
+
+        module.collect = collect
+        plugin = plugins.LoadedPlugin(
+            name="blocked_plugin2",
+            module=module,
+            metrics=module.METRICS,
+            interval_seconds=1800,
+            config={},
+            source="user",
+        )
+        fake_scheduler = _FakeSchedulerStub()
+        backoff_state: dict[str, int] = {}
+
+        before = datetime.now()
+        for _ in range(2):
+            scheduler._run_scheduled_plugin(
+                fake_scheduler,
+                "plugin:blocked_plugin2",
+                backoff_state,
+                db_path,
+                plugin,
+                None,
+                86400,
+            )
+        after = datetime.now()
+
+        assert backoff_state["blocked_plugin2"] == 2
+        assert len(fake_scheduler.modify_job_calls) == 2
+        # Second consecutive 403: interval * 2**2.
+        _, next_run_time = fake_scheduler.modify_job_calls[1]
+        assert before + timedelta(seconds=7200) <= next_run_time
+        assert next_run_time <= after + timedelta(seconds=7200)
 
     def test_success_does_not_reschedule_and_resets_the_backoff_counter(self, db_path):
         plugin = _load_fixture_plugin("_fake_constant.py")

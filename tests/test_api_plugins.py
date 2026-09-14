@@ -206,6 +206,25 @@ def test_plugins_error_status_and_last_error_from_latest_finished_run(tmp_path):
     assert plugin["last_poll"] is not None
 
 
+def test_plugins_blocked_status_when_latest_finished_run_was_a_403(tmp_path):
+    client, db_path = client_for(
+        tmp_path, plugins_config={"makerworld": {"enabled": True}}
+    )
+    now = int(time.time())
+    error = "blocked (HTTP 403, cf-mitigated=challenge) for url 'https://x/'"
+    run_id = storage.start_run(db_path, "makerworld", now)
+    storage.finish_run(
+        db_path, run_id, "error", error, samples_written=0, finished_at=now
+    )
+
+    response = client.get("/api/plugins")
+    plugin = next(p for p in response.json()["plugins"] if p["name"] == "makerworld")
+
+    assert plugin["status"] == "blocked"
+    assert plugin["last_error"] == error
+    assert plugin["consecutive_failures"] == 1
+
+
 def test_plugins_ok_status_has_null_last_error(tmp_path):
     client, db_path = client_for(
         tmp_path, plugins_config={"makerworld": {"enabled": True}}

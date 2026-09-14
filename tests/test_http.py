@@ -78,13 +78,44 @@ class TestBuildClient:
 
     def test_ordinary_status_codes_are_left_to_raise_for_status(self):
         client = http.build_client(
-            transport=httpx.MockTransport(lambda r: httpx.Response(403))
+            transport=httpx.MockTransport(lambda r: httpx.Response(404))
         )
 
         response = client.get("https://example.invalid/")
-        assert response.status_code == 403
+        assert response.status_code == 404
         with pytest.raises(httpx.HTTPStatusError):
             response.raise_for_status()
+
+    def test_403_raises_blocked(self):
+        client = http.build_client(
+            transport=httpx.MockTransport(lambda r: httpx.Response(403))
+        )
+
+        with pytest.raises(http.Blocked) as exc_info:
+            client.get("https://example.invalid/")
+
+        assert str(exc_info.value).startswith(http.BLOCKED_ERROR_PREFIX)
+        assert exc_info.value.response.status_code == 403
+
+    def test_blocked_is_an_http_status_error(self):
+        # Plugins that already expect a 403 to raise HTTPStatusError (via
+        # raise_for_status) keep working unchanged.
+        client = http.build_client(
+            transport=httpx.MockTransport(lambda r: httpx.Response(403))
+        )
+
+        with pytest.raises(httpx.HTTPStatusError):
+            client.get("https://example.invalid/")
+
+    def test_blocked_message_names_a_cloudflare_challenge(self):
+        client = http.build_client(
+            transport=httpx.MockTransport(
+                lambda r: httpx.Response(403, headers={"cf-mitigated": "challenge"})
+            )
+        )
+
+        with pytest.raises(http.Blocked, match="cf-mitigated=challenge"):
+            client.get("https://example.invalid/")
 
 
 class TestParseRetryAfter:

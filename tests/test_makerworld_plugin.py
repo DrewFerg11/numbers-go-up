@@ -72,6 +72,16 @@ class TestUserIdValidation:
             with pytest.raises(ValueError, match="numeric"):
                 makerworld.collect({"user_id": bad}, _client(handler))
 
+    def test_requests_the_bambu_api_host_not_makerworld_com(self):
+        # makerworld.com is Cloudflare-challenged for non-browser TLS
+        # clients (#30); the same endpoint on api.bambulab.com is not.
+        def handler(request: httpx.Request) -> httpx.Response:
+            assert request.url.host == "api.bambulab.com"
+            assert request.url.path == "/v1/user-service/user/profile/123456"
+            return httpx.Response(200, json=REAL_SHAPE_BODY)
+
+        makerworld.collect({"user_id": "123456"}, _client(handler))
+
     def test_integer_user_id_is_accepted(self):
         def handler(request: httpx.Request) -> httpx.Response:
             assert request.url.path.endswith("/123456")
@@ -207,7 +217,7 @@ class TestHttpErrors:
     def test_http_403_is_not_swallowed(self):
         client = _client(lambda r: httpx.Response(403))
 
-        with pytest.raises(httpx.HTTPStatusError):
+        with pytest.raises(http.Blocked):
             makerworld.collect({"user_id": "123"}, client)
 
 
