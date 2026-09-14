@@ -29,9 +29,12 @@ class RateLimited(Exception):
     response didn't send one, or it couldn't be parsed.
     """
 
-    def __init__(self, retry_after: float | None):
+    def __init__(
+        self, retry_after: float | None, response: httpx.Response | None = None
+    ):
         super().__init__(f"rate limited (retry_after={retry_after})")
         self.retry_after = retry_after
+        self.response = response
 
 
 # Every Blocked error message starts with this, so /api/plugins can tell a
@@ -116,8 +119,16 @@ def build_client(transport: httpx.BaseTransport | None = None) -> httpx.Client:
 
     def _on_response(response: httpx.Response) -> None:
         client.cookies.clear()
+        if response.status_code in (403, 429):
+            # Raising here happens before httpx reads the body. Read it
+            # first: the scheduler's failure log quotes the start of it (a
+            # Cloudflare challenge says so in its <title>), and an unread
+            # response holds its connection until garbage collection.
+            response.read()
         if response.status_code == 429:
-            raise RateLimited(parse_retry_after(response.headers.get("Retry-After")))
+            raise RateLimited(
+                parse_retry_after(response.headers.get("Retry-After")), response
+            )
         if response.status_code == 403:
             raise Blocked(response)
 

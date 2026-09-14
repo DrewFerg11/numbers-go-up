@@ -13,12 +13,18 @@ import time
 from datetime import UTC, datetime
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, HTTPException, Query, Request, Response
 
 from numbers_go_up import storage
 from numbers_go_up.http import BLOCKED_ERROR_PREFIX
 
 router = APIRouter(prefix="/api")
+# Mounted at the root next to /health, not under /api: it's for uptime
+# monitors, not dashboard clients.
+health_router = APIRouter()
+
+# Matches the dashboard footer's "red" (Failure Handling #2).
+DEFAULT_UNHEALTHY_FAILURES = 3
 
 # A full year of one series was measured at 4.9ms, so this cap is about
 # keeping responses reasonable, not performance.
@@ -152,8 +158,9 @@ def list_metrics(request: Request) -> dict[str, Any]:
     return {"metrics": metrics}
 
 
-@router.get("/plugins")
-def list_plugins(request: Request) -> dict[str, Any]:
+def _plugin_statuses(request: Request) -> list[dict[str, Any]]:
+    """One status report per discovered plugin, shared by /api/plugins and
+    /health/plugins so the two can never disagree."""
     config = request.app.state.config
     db_path = config["storage"]["path"]
     # All read off app.state, not module-level globals, so a test can
@@ -223,4 +230,69 @@ def list_plugins(request: Request) -> dict[str, Any]:
             }
         )
 
-    return {"plugins": plugins}
+    return plugins
+
+
+@router.get("/plugins")
+def list_plugins(request: Request) -> dict[str, Any]:
+    return {"plugins": _plugin_statuses(request)}
+
+
+def _unhealthy_reason(plugin: dict[str, Any], failure_threshold: int) -> str | None:
+    """Why an enabled plugin counts as unhealthy, or None if it doesn't.
+
+    Blocked is unhealthy on the first 403: that isn't a blip, it's a source
+    refusing this client, and the scheduler is already backing off. Other
+    failures only count once ``failure_threshold`` *finished* runs in a row
+    have failed -- consecutive_failures() also counts an in-flight run (its
+    liveness convention, #19), which would flag a healthy plugin mid-poll.
+    """
+    last_error = plugin["last_error"]
+    if last_error is not None and last_error.startswith(BLOCKED_ERROR_PREFIX):
+        return "blocked"
+
+    finished_failures = plugin["consecutive_failures"]
+    if plugin["status"] == "polling":
+        finished_failures = max(finished_failures - 1, 0)
+    if finished_failures >= failure_threshold:
+        return f"{finished_failures} consecutive failures"
+    return None
+
+
+@health_router.get("/health/plugins")
+def plugins_health(
+    request: Request,
+    response: Response,
+    failures: int = Query(DEFAULT_UNHEALTHY_FAILURES, ge=1),
+) -> dict[str, Any]:
+    """Plugin health for uptime monitors: 200 when every enabled plugin is
+    polling successfully, 503 when any is blocked or has failed ``failures``
+    finished polls in a row. Disabled plugins are ignored, and so is a plugin
+    that hasn't finished its first poll yet.
+
+    Separate from /health on purpose: that one is liveness, and a source
+    being down is no reason for Docker to restart the container.
+    """
+    unhealthy = []
+    for plugin in _plugin_statuses(request):
+        if not plugin["enabled"]:
+            continue
+        reason = _unhealthy_reason(plugin, failures)
+        if reason is not None:
+            unhealthy.append(
+                {
+                    "name": plugin["name"],
+                    "reason": reason,
+                    "consecutive_failures": plugin["consecutive_failures"],
+                    "last_poll": plugin["last_poll"],
+                    "last_error": plugin["last_error"],
+                }
+            )
+
+    if unhealthy:
+        response.status_code = 503
+    return {
+        "status": "unhealthy" if unhealthy else "ok",
+        "failure_threshold": failures,
+        "unhealthy": unhealthy,
+    }

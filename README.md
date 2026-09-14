@@ -53,6 +53,15 @@ docker compose up -d
 curl localhost:8080/health
 ```
 
+`/health` only says the process is up. To be alerted when a source stops
+polling, point an uptime monitor (e.g. Uptime Kuma, HTTP type) at
+`/health/plugins`. It returns 503 when an enabled plugin is blocked (HTTP 403)
+or has failed 3 polls in a row. Tune that with `?failures=N`.
+
+Logs go to the container's stderr. A failing plugin logs one warning when it
+starts failing and one line when it recovers, not one per poll. Set
+`NGU_LOG_LEVEL=DEBUG` to see every repeat.
+
 > **Heads-up:** if you skip the `chown` step, Docker creates `./data`,
 > `./config`, and `./user-plugins` as root-owned, and the container (running as
 > UID 1000) can't write to them — you'll hit permission errors once
