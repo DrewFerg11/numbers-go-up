@@ -65,6 +65,23 @@ jobs:
           fi
           echo "Releasing $GITHUB_REF_NAME"
 
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # An image whose /health reports a version that isn't its tag is worse
+      # than a failed release, so this has to fail before anything builds.
+      # The prerelease suffix (-rc.N) isn't part of __version__, so it's
+      # stripped before comparing.
+      - name: Verify tag matches package version
+        run: |
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          TAG_VERSION="${TAG_VERSION%%-rc.*}"
+          PKG_VERSION=$(python3 -c "import numbers_go_up; print(numbers_go_up.__version__)")
+          if [ "$TAG_VERSION" != "$PKG_VERSION" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME implies version $TAG_VERSION, but numbers_go_up.__version__ is $PKG_VERSION"
+            exit 1
+          fi
+          echo "Tag $GITHUB_REF_NAME matches numbers_go_up.__version__ ($PKG_VERSION)"
+
   build:
     name: build ${{ matrix.platform }}
     needs: authorize
@@ -106,6 +123,8 @@ jobs:
           platforms: ${{ matrix.platform }}
           # Push by digest only; the merge job assembles the real tags.
           outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=true
+          # SBOM for tagged releases only -- keeps edge pushes (publish.yml) cheap.
+          sbom: true
           cache-from: type=gha,scope=${{ matrix.suffix }}
           cache-to: type=gha,mode=max,scope=${{ matrix.suffix }}
 
@@ -161,7 +180,6 @@ jobs:
           tags: |
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
-            type=semver,pattern={{major}}
           flavor: |
             latest=auto
 
