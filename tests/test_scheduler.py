@@ -1,3 +1,4 @@
+import logging
 import sqlite3
 import threading
 import time
@@ -1112,3 +1113,178 @@ class TestRunScheduledPluginBackoff:
 
         assert backoff_state["fake_raises"] == 0
         assert fake_scheduler.modify_job_calls == []
+
+
+def _scripted_plugin(name: str, outcomes: list) -> plugins.LoadedPlugin:
+    """A plugin whose collect() plays ``outcomes`` in order: an exception
+    instance is raised, anything else is returned as the metric value."""
+    module = ModuleType(name)
+    metric = f"{name}.x"
+    module.METRICS = {metric: {"kind": "gauge", "label": "X", "unit": ""}}
+    remaining = list(outcomes)
+
+    def collect(config, http):
+        outcome = remaining.pop(0)
+        if isinstance(outcome, BaseException):
+            raise outcome
+        return {metric: outcome}
+
+    module.collect = collect
+    return _plugin_from_module(name, module, module.METRICS)
+
+
+def _http_403(body: str = "", **headers: str) -> Blocked:
+    request = httpx.Request("GET", "https://example.invalid/profile")
+    return Blocked(httpx.Response(403, headers=headers, text=body, request=request))
+
+
+class TestDescribeFailure:
+    def test_non_http_exception_uses_type_and_first_line(self):
+        signature, detail = scheduler.describe_failure(ValueError("bad\nsecond line"))
+
+        assert signature == "ValueError"
+        assert detail == "ValueError: bad"
+
+    def test_http_failure_includes_status_headers_and_collapsed_body(self):
+        exc = _http_403(
+            "<html>\n  <title>Just a moment...</title>\n</html>",
+            **{
+                "cf-mitigated": "challenge",
+                "cf-ray": "abc123-IAD",
+                "server": "cloudflare",
+            },
+        )
+
+        signature, detail = scheduler.describe_failure(exc)
+
+        assert signature == "Blocked/403"
+        assert "status=403" in detail
+        assert "cf-mitigated=challenge" in detail
+        assert "cf-ray=abc123-IAD" in detail
+        assert "server=cloudflare" in detail
+        assert "body='<html> <title>Just a moment...</title> </html>'" in detail
+
+    def test_body_is_truncated(self):
+        _, detail = scheduler.describe_failure(_http_403("x" * 5000))
+
+        assert "x" * 200 in detail
+        assert "x" * 201 not in detail
+
+
+class TestFailureLogging:
+    @staticmethod
+    def _run(plugin, streaks, db_path):
+        scheduler._run_scheduled_plugin(
+            _FakeSchedulerStub(),
+            f"plugin:{plugin.name}",
+            {},
+            db_path,
+            plugin,
+            None,
+            86400,
+            streaks,
+        )
+
+    @staticmethod
+    def _records(caplog, level):
+        return [
+            r
+            for r in caplog.records
+            if r.name == "numbers_go_up.scheduler" and r.levelno == level
+        ]
+
+    def test_first_failure_warns_once_with_traceback_repeats_stay_quiet(
+        self, db_path, caplog
+    ):
+        caplog.set_level(logging.DEBUG, logger="numbers_go_up.scheduler")
+        plugin = _scripted_plugin("flaky", [RuntimeError("boom")] * 3)
+        streaks: dict = {}
+
+        for _ in range(3):
+            self._run(plugin, streaks, db_path)
+
+        warnings = self._records(caplog, logging.WARNING)
+        assert len(warnings) == 1
+        assert (
+            "Plugin flaky poll failed: RuntimeError: boom" in warnings[0].getMessage()
+        )
+        assert warnings[0].exc_info is not None
+        assert len(self._records(caplog, logging.DEBUG)) == 2
+        assert streaks["flaky"].count == 3
+
+    def test_change_of_failure_warns_again(self, db_path, caplog):
+        caplog.set_level(logging.INFO, logger="numbers_go_up.scheduler")
+        plugin = _scripted_plugin(
+            "shifting", [RuntimeError("a"), ValueError("b"), ValueError("b")]
+        )
+        streaks: dict = {}
+
+        for _ in range(3):
+            self._run(plugin, streaks, db_path)
+
+        warnings = self._records(caplog, logging.WARNING)
+        assert len(warnings) == 2
+        assert "changed after 1 consecutive failures: ValueError: b" in (
+            warnings[1].getMessage()
+        )
+
+    def test_recovery_logs_info_once_and_clears_the_streak(self, db_path, caplog):
+        caplog.set_level(logging.INFO, logger="numbers_go_up.scheduler")
+        plugin = _scripted_plugin(
+            "recovering", [RuntimeError("a"), RuntimeError("a"), 1, 2]
+        )
+        streaks: dict = {}
+
+        for _ in range(4):
+            self._run(plugin, streaks, db_path)
+
+        infos = self._records(caplog, logging.INFO)
+        assert len(infos) == 1
+        assert "recovered after 2 consecutive failures" in infos[0].getMessage()
+        assert streaks == {}
+
+    def test_healthy_polls_log_nothing(self, db_path, caplog):
+        caplog.set_level(logging.DEBUG, logger="numbers_go_up.scheduler")
+        plugin = _scripted_plugin("healthy", [1, 2, 3])
+
+        for _ in range(3):
+            self._run(plugin, {}, db_path)
+
+        assert [r for r in caplog.records if r.name == "numbers_go_up.scheduler"] == []
+
+    def test_blocked_warning_carries_cloudflare_details_without_traceback(
+        self, db_path, caplog
+    ):
+        caplog.set_level(logging.INFO, logger="numbers_go_up.scheduler")
+        blocked = _http_403(
+            "<title>Just a moment...</title>",
+            **{"cf-mitigated": "challenge", "cf-ray": "abc123-IAD"},
+        )
+        plugin = _scripted_plugin("walled", [blocked, blocked])
+        streaks: dict = {}
+
+        for _ in range(2):
+            self._run(plugin, streaks, db_path)
+
+        warnings = self._records(caplog, logging.WARNING)
+        assert len(warnings) == 1
+        message = warnings[0].getMessage()
+        assert "cf-mitigated=challenge" in message
+        assert "cf-ray=abc123-IAD" in message
+        assert "Just a moment" in message
+        assert warnings[0].exc_info is None
+        # The backoff reschedule is still reported each time, at INFO.
+        assert len(self._records(caplog, logging.INFO)) == 2
+
+    def test_contract_violation_is_logged_as_a_failure(self, db_path, caplog):
+        caplog.set_level(logging.INFO, logger="numbers_go_up.scheduler")
+        module = ModuleType("liar")
+        module.METRICS = {"liar.x": {"kind": "gauge", "label": "X", "unit": ""}}
+        module.collect = lambda config, http: {"liar.undeclared": 1}
+        plugin = _plugin_from_module("liar", module, module.METRICS)
+
+        self._run(plugin, {}, db_path)
+
+        warnings = self._records(caplog, logging.WARNING)
+        assert len(warnings) == 1
+        assert "contract violation" in warnings[0].getMessage()

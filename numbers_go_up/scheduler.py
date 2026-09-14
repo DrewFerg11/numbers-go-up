@@ -23,6 +23,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+import httpx
 from apscheduler.executors.pool import ThreadPoolExecutor
 from apscheduler.schedulers.background import BackgroundScheduler
 
@@ -50,6 +51,9 @@ class RunResult:
     status: str  # "ok" or "error"
     samples_written: int
     error: str | None
+    # The exception behind an "error" run, when there was one (a contract
+    # violation has none) -- kept so the scheduler can log what failed.
+    exception: BaseException | None = None
 
 
 def run_plugin_once(
@@ -91,12 +95,14 @@ def run_plugin_once(
             db_path, run_id, "error", str(exc), samples_written=0, finished_at=now
         )
         raise
-    except Exception:
+    except Exception as exc:
         error = storage.error_tail(traceback.format_exc())
         storage.finish_run(
             db_path, run_id, "error", error, samples_written=0, finished_at=now
         )
-        return RunResult(run_id=run_id, status="error", samples_written=0, error=error)
+        return RunResult(
+            run_id=run_id, status="error", samples_written=0, error=error, exception=exc
+        )
 
     samples_written = 0
     violations: list[str] = []
@@ -126,7 +132,7 @@ def run_plugin_once(
             )
             if storage.record_sample(db_path, series_id, now, value, heartbeat_seconds):
                 samples_written += 1
-    except Exception:
+    except Exception as exc:
         # collect() succeeded but validate/store blew up (a non-dict
         # result, sqlite contention, a full disk...). Finish the run and
         # swallow, exactly like the collect() guard above: a plugin that
@@ -143,7 +149,11 @@ def run_plugin_once(
             finished_at=now,
         )
         return RunResult(
-            run_id=run_id, status="error", samples_written=samples_written, error=error
+            run_id=run_id,
+            status="error",
+            samples_written=samples_written,
+            error=error,
+            exception=exc,
         )
 
     if violations:
@@ -194,6 +204,112 @@ def compute_backoff_delay_seconds(
     return min(interval_seconds * (2**consecutive_429s), cap_seconds)
 
 
+# Response headers worth logging on a failed poll: who answered and why.
+# cf-ray is the id Cloudflare support asks for. Never auth-bearing headers.
+_LOGGED_RESPONSE_HEADERS = (
+    "server",
+    "cf-mitigated",
+    "cf-ray",
+    "retry-after",
+    "content-type",
+)
+_LOGGED_BODY_CHARS = 200
+
+
+def describe_failure(exc: BaseException) -> tuple[str, str]:
+    """Summarise a failed poll's exception for the log as ``(signature, detail)``.
+
+    ``signature`` is deliberately coarse -- the exception type, plus the
+    HTTP status when there is one -- so a streak of the same failure logs
+    once and a *different* failure (403 -> 500) logs again. ``detail`` is
+    one line: the exception's first line and, for HTTP failures, the status,
+    the identifying response headers, and the start of the body.
+    """
+    lines = str(exc).splitlines()
+    signature = type(exc).__name__
+    detail = f"{signature}: {lines[0] if lines else ''}"
+
+    response = getattr(exc, "response", None)
+    if not isinstance(response, httpx.Response):
+        return signature, detail
+
+    signature = f"{signature}/{response.status_code}"
+    parts = [detail, f"status={response.status_code}"]
+    for name in _LOGGED_RESPONSE_HEADERS:
+        value = response.headers.get(name)
+        if value is not None:
+            parts.append(f"{name}={value}")
+    try:
+        body = " ".join(response.text.split())[:_LOGGED_BODY_CHARS]
+    except httpx.ResponseNotRead:
+        body = ""
+    if body:
+        parts.append(f"body={body!r}")
+    return signature, " ".join(parts)
+
+
+@dataclasses.dataclass
+class _FailureStreak:
+    signature: str
+    count: int
+    started: float
+
+
+def _log_failure(
+    streaks: dict[str, _FailureStreak],
+    plugin_name: str,
+    signature: str,
+    detail: str,
+    exc: BaseException | None,
+) -> None:
+    """Log a failed poll without flooding: WARNING on the first failure of a
+    streak and whenever the kind of failure changes, DEBUG otherwise.
+
+    The traceback is attached only for failures without an HTTP response
+    (a plugin bug, a parse error, a connection error) -- for an HTTP
+    failure the status, headers, and body in ``detail`` say more than a
+    stack through httpx does.
+    """
+    exc_info = (
+        exc if exc is not None and getattr(exc, "response", None) is None else None
+    )
+    streak = streaks.get(plugin_name)
+    if streak is None:
+        streaks[plugin_name] = _FailureStreak(signature, 1, time.time())
+        logger.warning(
+            "Plugin %s poll failed: %s", plugin_name, detail, exc_info=exc_info
+        )
+    elif streak.signature != signature:
+        logger.warning(
+            "Plugin %s failure changed after %d consecutive failures: %s",
+            plugin_name,
+            streak.count,
+            detail,
+            exc_info=exc_info,
+        )
+        streak.signature = signature
+        streak.count += 1
+    else:
+        streak.count += 1
+        logger.debug(
+            "Plugin %s poll failed again (%d consecutive): %s",
+            plugin_name,
+            streak.count,
+            detail,
+        )
+
+
+def _log_success(streaks: dict[str, _FailureStreak], plugin_name: str) -> None:
+    streak = streaks.pop(plugin_name, None)
+    if streak is not None:
+        logger.info(
+            "Plugin %s recovered after %d consecutive failures (failing for %s)",
+            plugin_name,
+            streak.count,
+            timedelta(seconds=int(time.time() - streak.started)),
+        )
+
+
 def _run_scheduled_plugin(
     scheduler: BackgroundScheduler,
     job_id: str,
@@ -202,20 +318,27 @@ def _run_scheduled_plugin(
     plugin: LoadedPlugin,
     http: Any,
     heartbeat_seconds: int,
+    failure_streaks: dict[str, _FailureStreak] | None = None,
 ) -> None:
+    if failure_streaks is None:
+        failure_streaks = {}
     try:
-        run_plugin_once(db_path, plugin, http, int(time.time()), heartbeat_seconds)
+        result = run_plugin_once(
+            db_path, plugin, http, int(time.time()), heartbeat_seconds
+        )
     except (RateLimited, Blocked) as exc:
+        signature, detail = describe_failure(exc)
+        _log_failure(failure_streaks, plugin.name, signature, detail, exc)
+
         consecutive = backoff_state.get(plugin.name, 0) + 1
         backoff_state[plugin.name] = consecutive
         retry_after = exc.retry_after if isinstance(exc, RateLimited) else None
         delay = compute_backoff_delay_seconds(
             plugin.interval_seconds, retry_after, consecutive
         )
-        logger.warning(
-            "Plugin %s %s (retry_after=%s, consecutive=%d); next run in %.0fs",
+        logger.info(
+            "Plugin %s backing off (retry_after=%s, consecutive=%d); next run in %.0fs",
             plugin.name,
-            "rate limited" if isinstance(exc, RateLimited) else "blocked (HTTP 403)",
             retry_after,
             consecutive,
             delay,
@@ -227,6 +350,21 @@ def _run_scheduled_plugin(
         # Success or an ordinary error: no backoff (Failure Handling #4),
         # and any 429/403 streak is broken -- reset the counter.
         backoff_state[plugin.name] = 0
+        if result.status == "ok":
+            _log_success(failure_streaks, plugin.name)
+        elif result.exception is not None:
+            signature, detail = describe_failure(result.exception)
+            _log_failure(
+                failure_streaks, plugin.name, signature, detail, result.exception
+            )
+        else:
+            _log_failure(
+                failure_streaks,
+                plugin.name,
+                "contract violation",
+                f"contract violation: {result.error}",
+                None,
+            )
 
 
 def _validated_jitter_fraction(value: Any) -> float:
@@ -292,6 +430,7 @@ def build_scheduler(config: dict[str, Any], http: Any = None) -> BackgroundSched
 
     scheduler = BackgroundScheduler(executors={"default": ThreadPoolExecutor(10)})
     backoff_state: dict[str, int] = {}
+    failure_streaks: dict[str, _FailureStreak] = {}
 
     for plugin in discover_plugins(config):
         job_id = f"plugin:{plugin.name}"
@@ -314,6 +453,7 @@ def build_scheduler(config: dict[str, Any], http: Any = None) -> BackgroundSched
                 plugin,
                 http,
                 heartbeat_seconds,
+                failure_streaks,
             ],
         )
         logger.info(

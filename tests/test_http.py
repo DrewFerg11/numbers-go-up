@@ -117,6 +117,31 @@ class TestBuildClient:
         with pytest.raises(http.Blocked, match="cf-mitigated=challenge"):
             client.get("https://example.invalid/")
 
+    def test_blocked_response_body_is_readable_for_the_failure_log(self):
+        client = http.build_client(
+            transport=httpx.MockTransport(
+                lambda r: httpx.Response(403, text="<title>Just a moment...</title>")
+            )
+        )
+
+        with pytest.raises(http.Blocked) as exc_info:
+            client.get("https://example.invalid/")
+
+        assert "Just a moment" in exc_info.value.response.text
+
+    def test_rate_limited_carries_the_response(self):
+        client = http.build_client(
+            transport=httpx.MockTransport(
+                lambda r: httpx.Response(429, text="slow down")
+            )
+        )
+
+        with pytest.raises(http.RateLimited) as exc_info:
+            client.get("https://example.invalid/")
+
+        assert exc_info.value.response.status_code == 429
+        assert exc_info.value.response.text == "slow down"
+
 
 class TestParseRetryAfter:
     def test_none_returns_none(self):

@@ -23,6 +23,7 @@ class _FakeScheduler:
 def make_app(db_path, plugins_config=None, job_scheduler=None, plugin_names=None):
     app = FastAPI()
     app.include_router(api.router)
+    app.include_router(api.health_router)
     app.state.config = {
         "storage": {"path": str(db_path)},
         "poll": {"default_interval": 1800},
@@ -223,6 +224,132 @@ def test_plugins_blocked_status_when_latest_finished_run_was_a_403(tmp_path):
     assert plugin["status"] == "blocked"
     assert plugin["last_error"] == error
     assert plugin["consecutive_failures"] == 1
+
+
+def _record_runs(db_path, plugin_name, outcomes, now):
+    """Finish one run per outcome, oldest first: "ok", or an error string."""
+    for offset, outcome in enumerate(outcomes):
+        started = now - (len(outcomes) - offset) * 100
+        run_id = storage.start_run(db_path, plugin_name, started)
+        if outcome == "ok":
+            storage.finish_run(
+                db_path, run_id, "ok", None, samples_written=1, finished_at=started
+            )
+        else:
+            storage.finish_run(
+                db_path,
+                run_id,
+                "error",
+                outcome,
+                samples_written=0,
+                finished_at=started,
+            )
+
+
+# --- /health/plugins ------------------------------------------------------------
+
+
+def test_health_plugins_ok_with_no_enabled_plugins(tmp_path):
+    client, db_path = client_for(tmp_path, plugins_config={})
+    _record_runs(db_path, "makerworld", ["boom"] * 5, int(time.time()))
+
+    response = client.get("/health/plugins")
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok", "failure_threshold": 3, "unhealthy": []}
+
+
+def test_health_plugins_ok_while_pending(tmp_path):
+    client, _ = client_for(tmp_path, plugins_config={"makerworld": {"enabled": True}})
+
+    response = client.get("/health/plugins")
+
+    assert response.status_code == 200
+
+
+def test_health_plugins_ok_below_the_failure_threshold(tmp_path):
+    client, db_path = client_for(
+        tmp_path, plugins_config={"makerworld": {"enabled": True}}
+    )
+    _record_runs(db_path, "makerworld", ["ok", "boom", "boom"], int(time.time()))
+
+    response = client.get("/health/plugins")
+
+    assert response.status_code == 200
+
+
+def test_health_plugins_503_at_the_failure_threshold(tmp_path):
+    client, db_path = client_for(
+        tmp_path, plugins_config={"makerworld": {"enabled": True}}
+    )
+    _record_runs(
+        db_path, "makerworld", ["ok", "boom", "boom", "boom"], int(time.time())
+    )
+
+    response = client.get("/health/plugins")
+
+    assert response.status_code == 503
+    body = response.json()
+    assert body["status"] == "unhealthy"
+    [plugin] = body["unhealthy"]
+    assert plugin["name"] == "makerworld"
+    assert plugin["reason"] == "3 consecutive failures"
+    assert plugin["last_error"] == "boom"
+
+
+def test_health_plugins_threshold_is_tunable_by_query(tmp_path):
+    client, db_path = client_for(
+        tmp_path, plugins_config={"makerworld": {"enabled": True}}
+    )
+    _record_runs(db_path, "makerworld", ["boom"], int(time.time()))
+
+    assert client.get("/health/plugins").status_code == 200
+    response = client.get("/health/plugins?failures=1")
+    assert response.status_code == 503
+    assert response.json()["failure_threshold"] == 1
+
+
+def test_health_plugins_rejects_a_threshold_below_one(tmp_path):
+    client, _ = client_for(tmp_path)
+
+    assert client.get("/health/plugins?failures=0").status_code == 422
+
+
+def test_health_plugins_blocked_is_unhealthy_on_the_first_403(tmp_path):
+    client, db_path = client_for(
+        tmp_path, plugins_config={"makerworld": {"enabled": True}}
+    )
+    error = "blocked (HTTP 403, cf-mitigated=challenge) for url 'https://x/'"
+    _record_runs(db_path, "makerworld", ["ok", error], int(time.time()))
+
+    response = client.get("/health/plugins")
+
+    assert response.status_code == 503
+    assert response.json()["unhealthy"][0]["reason"] == "blocked"
+
+
+def test_health_plugins_in_flight_run_does_not_count_as_a_failure(tmp_path):
+    client, db_path = client_for(
+        tmp_path, plugins_config={"makerworld": {"enabled": True}}
+    )
+    now = int(time.time())
+    _record_runs(db_path, "makerworld", ["ok", "boom", "boom"], now)
+    storage.start_run(db_path, "makerworld", now)  # third poll, still running
+
+    response = client.get("/health/plugins")
+
+    assert response.status_code == 200
+
+
+def test_health_plugins_recovers_after_a_success(tmp_path):
+    client, db_path = client_for(
+        tmp_path, plugins_config={"makerworld": {"enabled": True}}
+    )
+    _record_runs(db_path, "makerworld", ["boom"] * 4 + ["ok"], int(time.time()))
+
+    response = client.get("/health/plugins")
+
+    assert response.status_code == 200
 
 
 def test_plugins_ok_status_has_null_last_error(tmp_path):
