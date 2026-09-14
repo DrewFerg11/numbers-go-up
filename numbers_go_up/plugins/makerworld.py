@@ -57,7 +57,11 @@ METRICS = {
     },
 }
 
-_PROFILE_URL = "https://makerworld.com/api/v1/user-service/user/profile/{uid}"
+# api.bambulab.com, not makerworld.com (#30): makerworld.com sits behind a
+# Cloudflare bot challenge that 403s any non-browser TLS client, while the
+# same user-service answers unauthenticated on the Bambu API host with an
+# identical response body (verified Sep 14 2026, all 8 values matched).
+_PROFILE_URL = "https://api.bambulab.com/v1/user-service/user/profile/{uid}"
 
 
 def collect(config: dict, http) -> dict[str, int | float]:

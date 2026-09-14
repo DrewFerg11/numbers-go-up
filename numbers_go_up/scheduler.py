@@ -28,7 +28,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 
 from numbers_go_up import storage
 from numbers_go_up.config import ConfigError
-from numbers_go_up.http import RateLimited
+from numbers_go_up.http import Blocked, RateLimited
 from numbers_go_up.plugins import LoadedPlugin, discover_plugins
 
 logger = logging.getLogger(__name__)
@@ -39,8 +39,8 @@ logger = logging.getLogger(__name__)
 DEFAULT_JITTER_FRACTION = 0.2
 FIRST_RUN_MAX_DELAY_SECONDS = 60
 
-# 429 without Retry-After backs off exponentially, capped -- Responsible
-# Use #3's one exception to "no backoff storms" (Failure Handling #4).
+# 429 without Retry-After, and 403, back off exponentially, capped --
+# Responsible Use #3's exceptions to "no backoff storms" (Failure Handling #4).
 MAX_BACKOFF_SECONDS = 86400
 
 
@@ -77,10 +77,19 @@ def run_plugin_once(
         storage.finish_run(
             db_path, run_id, "error", error, samples_written=0, finished_at=now
         )
-        # Re-raised so the scheduler can apply the 429 backoff rule -- the
-        # one exception to "no backoff storms" -- to this plugin's next
-        # run. Ordinary exceptions don't get this treatment; they're
-        # handled below and never change the interval.
+        # Re-raised so the scheduler can apply the 429 backoff rule -- an
+        # exception to "no backoff storms" -- to this plugin's next run.
+        # Ordinary exceptions don't get this treatment; they're handled
+        # below and never change the interval.
+        raise
+    except Blocked as exc:
+        # Same as a 429: a 403 means the source is refusing this client,
+        # so re-raise for the scheduler's backoff. The error text starts
+        # with BLOCKED_ERROR_PREFIX, which /api/plugins reads back as
+        # status "blocked".
+        storage.finish_run(
+            db_path, run_id, "error", str(exc), samples_written=0, finished_at=now
+        )
         raise
     except Exception:
         error = storage.error_tail(traceback.format_exc())
@@ -168,7 +177,7 @@ def compute_backoff_delay_seconds(
     consecutive_429s: int,
     cap_seconds: int = MAX_BACKOFF_SECONDS,
 ) -> float:
-    """The 429 backoff table (Responsible Use #3), all four rows:
+    """The backoff table (Responsible Use #3), all four rows:
 
     - Success / ordinary error: not this function's job -- the caller
       simply doesn't reschedule, so the job's normal interval applies.
@@ -176,7 +185,9 @@ def compute_backoff_delay_seconds(
       header is attacker-adjacent (any mirror/CDN/anti-bot layer in front
       of the origin can set it), so an absurd value is trusted only up to
       the cap; beyond that the plugin returns weekly instead of never.
-    - 429 without Retry-After: ``interval * 2**consecutive_429s``, capped.
+    - 429 without Retry-After, or 403 (``retry_after=None``):
+      ``interval * 2**consecutive_429s``, capped. The counter covers any
+      unbroken 429/403 streak.
     """
     if retry_after is not None:
         return min(max(retry_after, interval_seconds), cap_seconds)
@@ -194,18 +205,19 @@ def _run_scheduled_plugin(
 ) -> None:
     try:
         run_plugin_once(db_path, plugin, http, int(time.time()), heartbeat_seconds)
-    except RateLimited as exc:
-        consecutive_429s = backoff_state.get(plugin.name, 0) + 1
-        backoff_state[plugin.name] = consecutive_429s
+    except (RateLimited, Blocked) as exc:
+        consecutive = backoff_state.get(plugin.name, 0) + 1
+        backoff_state[plugin.name] = consecutive
+        retry_after = exc.retry_after if isinstance(exc, RateLimited) else None
         delay = compute_backoff_delay_seconds(
-            plugin.interval_seconds, exc.retry_after, consecutive_429s
+            plugin.interval_seconds, retry_after, consecutive
         )
         logger.warning(
-            "Plugin %s rate limited (retry_after=%s, consecutive=%d); "
-            "next run in %.0fs",
+            "Plugin %s %s (retry_after=%s, consecutive=%d); next run in %.0fs",
             plugin.name,
-            exc.retry_after,
-            consecutive_429s,
+            "rate limited" if isinstance(exc, RateLimited) else "blocked (HTTP 403)",
+            retry_after,
+            consecutive,
             delay,
         )
         scheduler.modify_job(
@@ -213,7 +225,7 @@ def _run_scheduled_plugin(
         )
     else:
         # Success or an ordinary error: no backoff (Failure Handling #4),
-        # and any 429 streak is broken -- reset the counter.
+        # and any 429/403 streak is broken -- reset the counter.
         backoff_state[plugin.name] = 0
 
 

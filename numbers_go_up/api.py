@@ -16,6 +16,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Query, Request
 
 from numbers_go_up import storage
+from numbers_go_up.http import BLOCKED_ERROR_PREFIX
 
 router = APIRouter(prefix="/api")
 
@@ -193,8 +194,13 @@ def list_plugins(request: Request) -> dict[str, Any]:
                 if run["status"] == "ok":
                     status = "ok"
                 else:
-                    status = "error"
                     last_error = run["error"]
+                    # A 403 is recorded as status='error' (the CHECK
+                    # constraint allows only ok/error) with the Blocked
+                    # prefix. Surface it as its own state: a source refusing
+                    # this client needs a different fix than a broken plugin.
+                    blocked = (last_error or "").startswith(BLOCKED_ERROR_PREFIX)
+                    status = "blocked" if blocked else "error"
 
             # A poll currently in flight is liveness, not an error: report
             # it as its own state, keeping last_poll/last_error from the
