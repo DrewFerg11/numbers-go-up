@@ -16,8 +16,14 @@ import pathlib
 import httpx
 import pytest
 
-from numbers_go_up import http
+from numbers_go_up import http, plugins
 from numbers_go_up.plugins import makerworld
+
+# The eight always-present profile metrics -- excludes the per-model
+# {id} pattern entries makerworld.METRICS also carries since #55.
+_PROFILE_METRIC_KEYS = {
+    key for key in makerworld.METRICS if not plugins.is_pattern_key(key)
+}
 
 REAL_SHAPE_BODY = {
     "downloadCount": 1067,  # inflated; must never be used
@@ -108,7 +114,7 @@ class TestFieldMapping:
             "makerworld.profile.followers": 13,
             "makerworld.profile.level": 4,
         }
-        assert set(result) == set(makerworld.METRICS)
+        assert set(result) == _PROFILE_METRIC_KEYS
         # downloadCount (1067, inflated) must never appear as a value.
         assert 1067 not in result.values()
 
@@ -143,7 +149,7 @@ class TestRealCaptureFixture:
             "makerworld.profile.followers": body["fanCount"],
             "makerworld.profile.level": body["personal"]["userLevel"]["level"],
         }
-        assert set(result) == set(makerworld.METRICS)
+        assert set(result) == _PROFILE_METRIC_KEYS
         # The real inflated top-level downloadCount must never be used.
         assert body["downloadCount"] not in result.values()
 
@@ -233,4 +239,234 @@ def test_live_makerworld_profile():
     finally:
         client.close()
 
-    assert set(result) == set(makerworld.METRICS)
+    assert set(result) == _PROFILE_METRIC_KEYS
+
+
+def _model_hit(model_id: int, **overrides) -> dict:
+    hit = {
+        "id": model_id,
+        "title": f"Placeholder {model_id}",
+        "slug": f"placeholder-{model_id}",
+        "downloadCount": 100 + model_id,
+        "printCount": 10 + model_id,
+        "likeCount": 5,
+        "collectionCount": 2,
+        "commentCount": 1,
+    }
+    hit.update(overrides)
+    return hit
+
+
+def _listing_response(total: int, hits: list) -> httpx.Response:
+    return httpx.Response(200, json={"total": total, "hits": hits})
+
+
+def _router(profile_body: dict, listing_pages: list[dict]):
+    """A handler dispatching by path: profile requests always answer with
+    profile_body; listing requests are answered from listing_pages in
+    order (one entry consumed per call). Returns (handler, request_log)."""
+    requests: list[httpx.Request] = []
+    pages = iter(listing_pages)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if "/user-service/user/profile/" in str(request.url):
+            return httpx.Response(200, json=profile_body)
+        if "/design-service/published/" in str(request.url):
+            return next(pages)
+        raise AssertionError(f"unexpected request: {request.url}")
+
+    return handler, requests
+
+
+class TestModelsDisabled:
+    def test_absent_models_config_makes_exactly_one_request(self):
+        handler, requests = _router(REAL_SHAPE_BODY, [])
+        result = makerworld.collect({"user_id": "123"}, _client(handler))
+
+        assert len(requests) == 1
+        assert set(result) == _PROFILE_METRIC_KEYS
+
+    def test_models_enabled_false_makes_exactly_one_request(self):
+        handler, requests = _router(REAL_SHAPE_BODY, [])
+        result = makerworld.collect(
+            {"user_id": "123", "models": {"enabled": False}}, _client(handler)
+        )
+
+        assert len(requests) == 1
+        assert set(result) == _PROFILE_METRIC_KEYS
+
+
+class TestModelsEnabled:
+    def test_include_empty_creates_a_series_per_model_per_counter(self):
+        handler, requests = _router(
+            REAL_SHAPE_BODY, [_listing_response(2, [_model_hit(1), _model_hit(2)])]
+        )
+
+        result = makerworld.collect(
+            {"user_id": "123", "models": {"enabled": True, "include": []}},
+            _client(handler),
+        )
+
+        assert len(requests) == 2  # 1 profile + 1 listing page
+        for model_id in (1, 2):
+            for metric in ("downloads", "prints", "likes", "collections", "comments"):
+                key = f"makerworld.model.{model_id}.{metric}"
+                assert key in result
+                assert result[key]["attrs"]["model_id"] == model_id
+                assert result[key]["attrs"]["slug"] == f"placeholder-{model_id}"
+                assert result[key]["label"].startswith(f"MW Placeholder {model_id}")
+
+    def test_include_filters_to_only_those_models(self):
+        handler, _ = _router(
+            REAL_SHAPE_BODY,
+            [_listing_response(2, [_model_hit(1), _model_hit(2)])],
+        )
+
+        result = makerworld.collect(
+            {"user_id": "123", "models": {"enabled": True, "include": [1]}},
+            _client(handler),
+        )
+
+        assert "makerworld.model.1.downloads" in result
+        assert "makerworld.model.2.downloads" not in result
+
+    def test_missing_include_id_is_skipped_and_logged_once(self, caplog):
+        makerworld._warned_missing_model_ids.clear()
+        handler, _ = _router(
+            REAL_SHAPE_BODY, [_listing_response(1, [_model_hit(1)])] * 2
+        )
+
+        with caplog.at_level("WARNING"):
+            makerworld.collect(
+                {"user_id": "123", "models": {"enabled": True, "include": [999]}},
+                _client(handler),
+            )
+            makerworld.collect(
+                {"user_id": "123", "models": {"enabled": True, "include": [999]}},
+                _client(handler),
+            )
+
+        warnings = [
+            r for r in caplog.records if r.levelno >= 30 and "999" in r.getMessage()
+        ]
+        assert len(warnings) == 1
+
+    def test_invalid_include_entry_fails_without_a_request(self):
+        def handler(request: httpx.Request) -> httpx.Response:
+            raise AssertionError("no request should be made with a bad include entry")
+
+        with pytest.raises(ValueError, match="numeric"):
+            makerworld.collect(
+                {"user_id": "123", "models": {"enabled": True, "include": ["abc"]}},
+                _client(handler),
+            )
+
+    def test_bool_include_entry_fails_without_a_request(self):
+        def handler(request: httpx.Request) -> httpx.Response:
+            raise AssertionError("no request should be made with a bool include entry")
+
+        with pytest.raises(ValueError, match="numeric"):
+            makerworld.collect(
+                {"user_id": "123", "models": {"enabled": True, "include": [True]}},
+                _client(handler),
+            )
+
+    def test_max_exceeded_fails_the_poll_naming_count_and_cap(self):
+        hits = [_model_hit(i) for i in range(5)]
+        handler, _ = _router(REAL_SHAPE_BODY, [_listing_response(5, hits)])
+
+        with pytest.raises(ValueError, match="5"):
+            makerworld.collect(
+                {"user_id": "123", "models": {"enabled": True, "max": 3}},
+                _client(handler),
+            )
+
+    def test_paging_consumes_every_page_and_request_count_matches(self):
+        page_1 = _listing_response(150, [_model_hit(i) for i in range(100)])
+        page_2 = _listing_response(150, [_model_hit(i) for i in range(100, 150)])
+        handler, requests = _router(REAL_SHAPE_BODY, [page_1, page_2])
+
+        result = makerworld.collect(
+            {"user_id": "123", "models": {"enabled": True, "max": 200}},
+            _client(handler),
+        )
+
+        listing_requests = [
+            r for r in requests if "/design-service/published/" in str(r.url)
+        ]
+        assert len(listing_requests) == 2
+        assert "makerworld.model.0.downloads" in result
+        assert "makerworld.model.149.downloads" in result
+
+    def test_listing_failure_fails_the_whole_poll(self):
+        def handler(request: httpx.Request) -> httpx.Response:
+            if "/user-service/user/profile/" in str(request.url):
+                return httpx.Response(200, json=REAL_SHAPE_BODY)
+            return httpx.Response(200, text="<html>not json</html>")
+
+        with pytest.raises(ValueError, match="not valid JSON"):
+            makerworld.collect(
+                {"user_id": "123", "models": {"enabled": True}}, _client(handler)
+            )
+
+    def test_listing_missing_hits_field_fails_the_whole_poll(self):
+        def handler(request: httpx.Request) -> httpx.Response:
+            if "/user-service/user/profile/" in str(request.url):
+                return httpx.Response(200, json=REAL_SHAPE_BODY)
+            return httpx.Response(200, json={"total": 1})
+
+        with pytest.raises(ValueError, match="missing expected field"):
+            makerworld.collect(
+                {"user_id": "123", "models": {"enabled": True}}, _client(handler)
+            )
+
+    def test_listing_403_is_not_swallowed(self):
+        def handler(request: httpx.Request) -> httpx.Response:
+            if "/user-service/user/profile/" in str(request.url):
+                return httpx.Response(200, json=REAL_SHAPE_BODY)
+            return httpx.Response(403)
+
+        with pytest.raises(http.Blocked):
+            makerworld.collect(
+                {"user_id": "123", "models": {"enabled": True}}, _client(handler)
+            )
+
+
+class TestModelsRealCaptureFixture:
+    def test_scrubbed_capture_maps_correctly(self):
+        path = pathlib.Path(__file__).parent / "fixtures" / "makerworld_models.json"
+        body = json.loads(path.read_text(encoding="utf-8"))
+        handler, _ = _router(REAL_SHAPE_BODY, [httpx.Response(200, json=body)])
+
+        result = makerworld.collect(
+            {"user_id": "123", "models": {"enabled": True}}, _client(handler)
+        )
+
+        for hit in body["hits"]:
+            model_id = hit["id"]
+            assert (
+                result[f"makerworld.model.{model_id}.downloads"]["value"]
+                == (hit["downloadCount"])
+            )
+            assert (
+                result[f"makerworld.model.{model_id}.likes"]["value"]
+                == (hit["likeCount"])
+            )
+
+
+@pytest.mark.live
+def test_live_makerworld_models():
+    uid = os.environ.get("NGU_CANARY_MAKERWORLD_UID")
+    if not uid:
+        pytest.skip("NGU_CANARY_MAKERWORLD_UID not set")
+
+    client = http.build_client()
+    try:
+        result = makerworld.collect(
+            {"user_id": uid, "models": {"enabled": True}}, client
+        )
+    finally:
+        client.close()
+
+    assert any(key.startswith("makerworld.model.") for key in result)
