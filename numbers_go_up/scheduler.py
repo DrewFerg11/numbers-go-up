@@ -27,7 +27,7 @@ import httpx
 from apscheduler.executors.pool import ThreadPoolExecutor
 from apscheduler.schedulers.background import BackgroundScheduler
 
-from numbers_go_up import storage
+from numbers_go_up import plugins, storage
 from numbers_go_up.config import ConfigError
 from numbers_go_up.http import Blocked, RateLimited
 from numbers_go_up.plugins import LoadedPlugin, discover_plugins
@@ -106,12 +106,65 @@ def run_plugin_once(
 
     samples_written = 0
     violations: list[str] = []
+    returned_keys: set[str] = set()
 
     try:
-        for key, value in result.items():
-            if key not in plugin.metrics:
+        items = list(result.items())
+
+        # Cardinality guard: count *before* writing anything, so a runaway
+        # pattern match (a paging bug, a source dumping its whole database)
+        # never creates a single extra series this run rather than being
+        # truncated partway through. Exact keys are never counted or
+        # capped -- only pattern-matched keys can grow unboundedly.
+        pattern_match_count = sum(
+            1
+            for key, _ in items
+            if (match := plugins.resolve_metric(key, plugin.metrics)) is not None
+            and plugins.is_pattern_key(match[0])
+        )
+        cardinality_ok = pattern_match_count <= plugins.MAX_PATTERN_KEYS_PER_RUN
+        if not cardinality_ok:
+            violations.append(
+                f"plugin returned {pattern_match_count} pattern-matched keys, "
+                f"exceeding the cardinality cap of "
+                f"{plugins.MAX_PATTERN_KEYS_PER_RUN}"
+            )
+
+        for key, raw_value in items:
+            match = plugins.resolve_metric(key, plugin.metrics)
+            if match is None:
                 violations.append(f"{key!r} is not declared in this plugin's METRICS")
                 continue
+            declared_key, meta = match
+            is_pattern = plugins.is_pattern_key(declared_key)
+            if is_pattern and not cardinality_ok:
+                # Already reported once, above; don't create any of the
+                # series that pushed this run over the cap.
+                continue
+
+            label = meta.get("label")
+            unit = meta.get("unit")
+            icon = meta.get("icon")
+            attrs: dict[str, Any] | None = None
+
+            if isinstance(raw_value, dict):
+                if "kind" in raw_value or "unit" in raw_value:
+                    violations.append(
+                        f"{key!r}: 'kind'/'unit' cannot be set per poll "
+                        "(fixed by the plugin's METRICS pattern)"
+                    )
+                    continue
+                if "value" not in raw_value:
+                    violations.append(f"{key!r}: metadata dict is missing 'value'")
+                    continue
+                value = raw_value["value"]
+                if "label" in raw_value:
+                    label = raw_value["label"]
+                if "attrs" in raw_value:
+                    attrs = raw_value["attrs"]
+            else:
+                value = raw_value
+
             if isinstance(value, bool) or not isinstance(value, int | float):
                 violations.append(f"{key!r} value {value!r} is not int or float")
                 continue
@@ -119,17 +172,18 @@ def run_plugin_once(
                 violations.append(f"{key!r} value {value!r} is not finite")
                 continue
 
-            meta = plugin.metrics[key]
             series_id = storage.get_or_create_series(
                 db_path,
                 key,
                 plugin.name,
                 meta["kind"],
-                meta.get("label"),
-                meta.get("unit"),
-                meta.get("icon"),
+                label,
+                unit,
+                icon,
                 now,
+                attrs=attrs,
             )
+            returned_keys.add(key)
             if storage.record_sample(db_path, series_id, now, value, heartbeat_seconds):
                 samples_written += 1
     except Exception as exc:
@@ -173,12 +227,37 @@ def run_plugin_once(
             run_id=run_id, status="error", samples_written=samples_written, error=error
         )
 
+    _reconcile_pattern_series(db_path, plugin, returned_keys)
+
     storage.finish_run(
         db_path, run_id, "ok", None, samples_written=samples_written, finished_at=now
     )
     return RunResult(
         run_id=run_id, status="ok", samples_written=samples_written, error=None
     )
+
+
+def _reconcile_pattern_series(
+    db_path: str | Path, plugin: LoadedPlugin, returned_keys: set[str]
+) -> None:
+    """Deactivate/reactivate pattern-matched series after a fully successful run.
+
+    Only called once a run is known to be status "ok" with zero contract
+    violations (Failure Handling: a Cloudflare 403 must never retire every
+    subject at once). A series is only touched here if its key currently
+    matches one of the plugin's *pattern* METRICS entries -- exact keys are
+    never auto-deactivated, and a series whose pattern was removed from the
+    plugin entirely (a code change, not a poll) is left alone too.
+    """
+    for row in storage.series_for_plugin(db_path, plugin.name):
+        key = row["metric_key"]
+        match = plugins.resolve_metric(key, plugin.metrics)
+        if match is None or not plugins.is_pattern_key(match[0]):
+            continue
+
+        should_be_active = key in returned_keys
+        if bool(row["active"]) != should_be_active:
+            storage.set_series_active(db_path, row["id"], should_be_active)
 
 
 def compute_backoff_delay_seconds(

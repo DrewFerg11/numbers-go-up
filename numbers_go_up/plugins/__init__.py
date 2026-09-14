@@ -43,6 +43,79 @@ VALID_METRIC_KINDS = {"gauge", "cumulative"}
 # Stems that are not lowercase identifiers are rejected in ``_discover_dir``.
 _VALID_PLUGIN_NAME = re.compile(r"^[a-z][a-z0-9_]*$")
 
+# A per-plugin cap on distinct pattern-matched keys returned in one poll, so
+# a runaway listing (a paging bug, a source that starts returning every
+# object in its database) can't create thousands of series -- and, later,
+# thousands of Home Assistant entities. Exceeding it is a contract
+# violation, not a silent truncation. Plugins may enforce a tighter,
+# user-facing cap of their own (e.g. MakerWorld's ``models.max``).
+MAX_PATTERN_KEYS_PER_RUN = 500
+
+# A METRICS key may contain at most one ``{placeholder}``, and it must
+# occupy a whole dot-separated segment (``makerworld.model.{id}.downloads``,
+# never ``makerworld.model{id}.downloads``).
+_PATTERN_PLACEHOLDER = re.compile(r"^\{[a-zA-Z_][a-zA-Z0-9_]*\}$")
+# What a placeholder may resolve to at runtime -- lowercase, digits,
+# underscore, hyphen; Home-Assistant-entity-id-safe.
+_PLACEHOLDER_VALUE = re.compile(r"^[a-z0-9_-]+$")
+
+
+def is_pattern_key(key: str) -> bool:
+    """True if ``key`` is a METRICS pattern template (has a ``{placeholder}``)
+    rather than a literal, exact metric key."""
+    return "{" in key or "}" in key
+
+
+def _is_valid_pattern_key(key: str) -> bool:
+    """True if ``key`` has exactly one ``{placeholder}``, occupying a whole
+    dot-separated segment, and no stray braces anywhere else."""
+    segments = key.split(".")
+    placeholder_segments = [s for s in segments if _PATTERN_PLACEHOLDER.fullmatch(s)]
+    if len(placeholder_segments) != 1:
+        return False
+    return all(
+        s in placeholder_segments or ("{" not in s and "}" not in s) for s in segments
+    )
+
+
+def _pattern_regex(key: str) -> re.Pattern[str]:
+    """Compile a pattern template into a regex matching concrete keys.
+
+    Every literal segment is matched verbatim; the one placeholder segment
+    becomes a capturing group constrained to ``_PLACEHOLDER_VALUE``.
+    """
+    parts = [
+        "([a-z0-9_-]+)"
+        if _PATTERN_PLACEHOLDER.fullmatch(segment)
+        else re.escape(segment)
+        for segment in key.split(".")
+    ]
+    return re.compile("^" + r"\.".join(parts) + "$")
+
+
+def resolve_metric(
+    key: str, metrics: dict[str, dict[str, Any]]
+) -> tuple[str, dict[str, Any]] | None:
+    """Match a poll-returned ``key`` against a plugin's ``METRICS``.
+
+    Returns ``(declared_key, meta)`` for the exact key or the one pattern
+    template that matches, else ``None``. An exact key always wins over a
+    pattern that happens to also match it. ``kind``/``unit`` in the return
+    value always come from ``meta`` -- never from the poll -- since a
+    pattern's ``kind`` is what makes it safe against Home Assistant's
+    long-term statistics.
+    """
+    if key in metrics and not is_pattern_key(key):
+        return key, metrics[key]
+
+    for template, meta in metrics.items():
+        if not is_pattern_key(template):
+            continue
+        if _pattern_regex(template).fullmatch(key):
+            return template, meta
+
+    return None
+
 
 @dataclasses.dataclass(frozen=True)
 class LoadedPlugin:
@@ -87,6 +160,13 @@ def validate_plugin_contract(
     (has ``collect``, a non-empty ``METRICS`` whose keys are all prefixed
     ``"<name>."`` and whose ``kind`` is valid), else logs why and returns
     None.
+
+    A key may be a pattern template with one ``{placeholder}`` segment
+    (``"makerworld.model.{id}.downloads"``); it is validated the same way
+    as an exact key, plus the placeholder shape check in
+    :func:`_is_valid_pattern_key`. ``kind`` and ``unit`` for a pattern are
+    fixed here, at load time, and never overridable per poll -- see
+    :func:`resolve_metric`.
     """
     if not callable(getattr(module, "collect", None)):
         logger.warning("Plugin %s: missing collect(); skipping", name)
@@ -114,6 +194,16 @@ def validate_plugin_contract(
                 name,
                 key,
                 kind,
+            )
+            return None
+
+        if is_pattern_key(key) and not _is_valid_pattern_key(key):
+            logger.warning(
+                "Plugin %s: pattern metric key %r must have exactly one "
+                "{placeholder} occupying a whole dot-separated segment; "
+                "skipping",
+                name,
+                key,
             )
             return None
 

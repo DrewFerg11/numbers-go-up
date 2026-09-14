@@ -91,6 +91,45 @@ class TestValidatePluginContract:
 
         assert metrics is None
 
+    def test_pattern_key_with_one_whole_segment_placeholder_is_accepted(self):
+        module = ModuleType("mw")
+        module.collect = lambda config, http: {}
+        module.METRICS = {
+            "mw.model.{id}.downloads": {
+                "kind": "cumulative",
+                "label": "Downloads",
+                "unit": "downloads",
+            }
+        }
+
+        metrics = plugins.validate_plugin_contract("mw", module)
+
+        assert metrics == module.METRICS
+
+    def test_pattern_with_two_placeholders_is_rejected(self, caplog):
+        module = ModuleType("mw")
+        module.collect = lambda config, http: {}
+        module.METRICS = {
+            "mw.{a}.{b}.count": {"kind": "gauge", "label": "X", "unit": ""}
+        }
+
+        with caplog.at_level("WARNING"):
+            metrics = plugins.validate_plugin_contract("mw", module)
+
+        assert metrics is None
+
+    def test_placeholder_not_occupying_a_whole_segment_is_rejected(self, caplog):
+        module = ModuleType("mw")
+        module.collect = lambda config, http: {}
+        module.METRICS = {
+            "mw.model{id}.count": {"kind": "gauge", "label": "X", "unit": ""}
+        }
+
+        with caplog.at_level("WARNING"):
+            metrics = plugins.validate_plugin_contract("mw", module)
+
+        assert metrics is None
+
 
 class TestDiscoverPlugins:
     def test_discovers_builtin_plugins(self):
@@ -431,3 +470,42 @@ class TestNonMappingPluginConfigEntry:
             for record in caplog.records
             if record.levelno >= logging.WARNING
         )
+
+
+class TestResolveMetric:
+    METRICS = {
+        "mw.profile.likes": {"kind": "gauge", "label": "Likes", "unit": "likes"},
+        "mw.model.{id}.downloads": {
+            "kind": "cumulative",
+            "label": "Downloads",
+            "unit": "downloads",
+        },
+    }
+
+    def test_exact_key_matches_itself(self):
+        result = plugins.resolve_metric("mw.profile.likes", self.METRICS)
+
+        assert result == ("mw.profile.likes", self.METRICS["mw.profile.likes"])
+
+    def test_pattern_key_matches_a_concrete_subject(self):
+        result = plugins.resolve_metric("mw.model.3070072.downloads", self.METRICS)
+
+        assert result == (
+            "mw.model.{id}.downloads",
+            self.METRICS["mw.model.{id}.downloads"],
+        )
+
+    def test_placeholder_value_outside_allowed_charset_does_not_match(self):
+        assert (
+            plugins.resolve_metric("mw.model.HasCaps.downloads", self.METRICS) is None
+        )
+        assert plugins.resolve_metric("mw.model..downloads", self.METRICS) is None
+
+    def test_unknown_key_matches_nothing(self):
+        assert plugins.resolve_metric("mw.unknown.thing", self.METRICS) is None
+
+    def test_another_plugins_key_never_matches(self):
+        # Isolation: a key from a different plugin's namespace, even one
+        # shaped like it could match this plugin's pattern, must never
+        # resolve against another plugin's own METRICS dict.
+        assert plugins.resolve_metric("other.model.123.downloads", self.METRICS) is None
