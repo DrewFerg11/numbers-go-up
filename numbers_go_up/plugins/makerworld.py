@@ -119,6 +119,13 @@ _PROFILE_URL = "https://api.bambulab.com/v1/user-service/user/profile/{uid}"
 _LISTING_URL = "https://api.bambulab.com/v1/design-service/published/{uid}/design"
 _LISTING_PAGE_LIMIT = 100
 _DEFAULT_MODELS_MAX = 50
+# Hard cap on listing pages per poll: 200 pages * 100/page = 20,000 hits is
+# already far beyond any real account. Bounds the request count and memory
+# use against a server bug or shape change that makes ``total`` huge or
+# wrong, instead of hammering the host in a tight loop -- every other
+# runaway path in this project (Retry-After, backoff, the 500-key
+# cardinality cap) is bounded the same way.
+_MAX_LISTING_PAGES = 200
 
 # Model IDs from ``include`` that were absent from the listing, logged once
 # per process rather than once per poll (Failure Handling: don't flood the
@@ -147,25 +154,58 @@ def _validate_numeric_id(value: object, what: str) -> str:
 def _validate_include(include: object) -> list[str] | None:
     """Validate ``models.include`` up front, before any request is made.
 
-    Returns the validated list of model-id strings, or None if ``include``
-    is empty/absent (meaning "every published model").
+    Returns the validated, de-duplicated list of model-id strings (order
+    preserved), or None if ``include`` is empty/absent (meaning "every
+    published model"). De-duplicated here, not just in ``_select_models``:
+    a repeated ID must not count twice against ``models.max``.
     """
     if not include:
         return None
     if not isinstance(include, list):
         raise ValueError(f"models.include must be a list, got {type(include).__name__}")
-    return [_validate_numeric_id(item, "models.include entry") for item in include]
+
+    ids = [_validate_numeric_id(item, "models.include entry") for item in include]
+    seen: set[str] = set()
+    deduped = []
+    for model_id in ids:
+        if model_id not in seen:
+            seen.add(model_id)
+            deduped.append(model_id)
+    return deduped
+
+
+def _validate_max_models(value: object) -> int:
+    """Validate ``models.max`` up front, before any request is made.
+
+    Same convention as ``plugins._is_valid_interval`` and
+    ``scheduler._validated_jitter_fraction``: must be a plain int (bools
+    are int subclasses but not counts), at least 1.
+    """
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(f"models.max must be an int, got {value!r}")
+    if value < 1:
+        raise ValueError(f"models.max must be at least 1, got {value!r}")
+    return value
 
 
 def _fetch_all_models(http, user_id: str) -> list[dict]:
     """Page through the published-design listing and return every hit.
 
-    One request per page, ``limit=100``, until ``offset >= total``. A
-    listing with zero models still makes exactly one request.
+    One request per page, ``limit=100``, until ``offset >= total`` or the
+    server returns an empty page. A listing with zero models still makes
+    exactly one request.
+
+    ``offset`` advances by the number of hits actually returned, not by
+    ``_LISTING_PAGE_LIMIT``: if the server ever clamps the page size below
+    what was requested, advancing by the requested limit would silently
+    skip records between pages -- and a model skipped this way would drop
+    out of ``returned_keys``, so #54's reconciliation would deactivate its
+    series on what looks like a fully successful poll.
     """
     models: list[dict] = []
     offset = 0
-    while True:
+    total: object = None
+    for _ in range(_MAX_LISTING_PAGES):
         response = http.get(
             _LISTING_URL.format(uid=user_id),
             params={"offset": offset, "limit": _LISTING_PAGE_LIMIT},
@@ -187,15 +227,26 @@ def _fetch_all_models(http, user_id: str) -> list[dict]:
             raise ValueError(
                 f"MakerWorld listing response missing expected field: {exc}"
             ) from exc
+        if isinstance(total, bool) or not isinstance(total, int):
+            raise ValueError(
+                f"MakerWorld listing 'total' must be an int, got {total!r}"
+            )
         if not isinstance(hits, list):
             raise ValueError(
                 f"MakerWorld listing 'hits' must be a list, got {type(hits).__name__}"
             )
 
         models.extend(hits)
-        offset += _LISTING_PAGE_LIMIT
+        if not hits:
+            break
+        offset += len(hits)
         if offset >= total:
             break
+    else:
+        raise ValueError(
+            f"MakerWorld listing did not finish within {_MAX_LISTING_PAGES} "
+            f"pages (total={total!r}); refusing to keep paging"
+        )
     return models
 
 
@@ -297,12 +348,25 @@ def collect(config: dict, http) -> dict[str, int | float | dict]:
     user_id = _validate_numeric_id(user_id, "user_id")
 
     models_config = config.get("models")
+    if models_config is not None and not isinstance(models_config, dict):
+        # Same convention as discover_plugins' "config entry must be a
+        # mapping" guard: `models: true` is the most natural YAML slip for
+        # "just enable it", and silently treating it as disabled would
+        # leave a user waiting forever for metrics that never arrive.
+        logger.warning(
+            "MakerWorld models config must be a mapping (got %s); "
+            "treating models as disabled",
+            type(models_config).__name__,
+        )
+        models_config = None
+
     models_enabled = isinstance(models_config, dict) and models_config.get("enabled")
     if models_enabled:
         # Validate config up front, before any request: a bad `include`
-        # entry must fail clearly without making the profile request.
+        # entry or `max` must fail clearly without making the profile
+        # request.
         include_ids = _validate_include(models_config.get("include"))
-        max_models = models_config.get("max", _DEFAULT_MODELS_MAX)
+        max_models = _validate_max_models(models_config.get("max", _DEFAULT_MODELS_MAX))
 
     response = http.get(_PROFILE_URL.format(uid=user_id), timeout=15)
     response.raise_for_status()

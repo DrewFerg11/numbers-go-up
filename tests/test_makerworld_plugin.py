@@ -399,6 +399,104 @@ class TestModelsEnabled:
         assert "makerworld.model.0.downloads" in result
         assert "makerworld.model.149.downloads" in result
 
+    def test_a_clamped_page_size_does_not_silently_skip_records(self):
+        # If the server ever returns fewer hits than the requested limit,
+        # advancing offset by the *requested* limit (rather than by the
+        # hits actually returned) would silently skip records between
+        # pages -- and the skipped models would then look "not returned"
+        # to #54's reconciliation, deactivating their series on an
+        # apparently successful poll.
+        page_1 = _listing_response(150, [_model_hit(i) for i in range(60)])
+        page_2 = _listing_response(150, [_model_hit(i) for i in range(60, 150)])
+        handler, requests = _router(REAL_SHAPE_BODY, [page_1, page_2])
+
+        result = makerworld.collect(
+            {"user_id": "123", "models": {"enabled": True, "max": 200}},
+            _client(handler),
+        )
+
+        listing_requests = [
+            r for r in requests if "/design-service/published/" in str(r.url)
+        ]
+        assert len(listing_requests) == 2
+        for model_id in range(150):
+            assert f"makerworld.model.{model_id}.downloads" in result
+
+    def test_non_int_total_is_a_clean_error(self):
+        handler, _ = _router(
+            REAL_SHAPE_BODY, [httpx.Response(200, json={"total": "150", "hits": []})]
+        )
+
+        with pytest.raises(ValueError, match="total"):
+            makerworld.collect(
+                {"user_id": "123", "models": {"enabled": True}}, _client(handler)
+            )
+
+    def test_a_listing_that_never_terminates_is_capped(self):
+        # A server bug or shape change that makes `total` permanently
+        # exceed cumulative offset must fail loudly after a bounded number
+        # of pages, not hammer the host and grow memory forever.
+        def handler(request: httpx.Request) -> httpx.Response:
+            if "/user-service/user/profile/" in str(request.url):
+                return httpx.Response(200, json=REAL_SHAPE_BODY)
+            return httpx.Response(200, json={"total": 10**9, "hits": [_model_hit(1)]})
+
+        with pytest.raises(ValueError, match="did not finish"):
+            makerworld.collect(
+                {"user_id": "123", "models": {"enabled": True, "max": 10**9}},
+                _client(handler),
+            )
+
+    def test_non_int_max_fails_before_any_request(self):
+        def handler(request: httpx.Request) -> httpx.Response:
+            raise AssertionError("no request should be made with a bad models.max")
+
+        with pytest.raises(ValueError, match="max"):
+            makerworld.collect(
+                {"user_id": "123", "models": {"enabled": True, "max": "50"}},
+                _client(handler),
+            )
+
+    def test_bool_max_fails_before_any_request(self):
+        def handler(request: httpx.Request) -> httpx.Response:
+            raise AssertionError("no request should be made with a bool models.max")
+
+        with pytest.raises(ValueError, match="max"):
+            makerworld.collect(
+                {"user_id": "123", "models": {"enabled": True, "max": True}},
+                _client(handler),
+            )
+
+    def test_duplicate_include_entries_count_once_toward_max(self):
+        handler, _ = _router(REAL_SHAPE_BODY, [_listing_response(1, [_model_hit(1)])])
+
+        # Without exercising the plugin: max=1 with a de-duplicated
+        # include of a single id must not exceed the cap even though the
+        # id is listed twice.
+        result = makerworld.collect(
+            {
+                "user_id": "123",
+                "models": {"enabled": True, "include": [1, 1], "max": 1},
+            },
+            _client(handler),
+        )
+
+        assert "makerworld.model.1.downloads" in result
+
+    def test_non_mapping_models_config_disables_the_feature_with_a_warning(
+        self, caplog
+    ):
+        handler, requests = _router(REAL_SHAPE_BODY, [])
+
+        with caplog.at_level("WARNING"):
+            result = makerworld.collect(
+                {"user_id": "123", "models": True}, _client(handler)
+            )
+
+        assert len(requests) == 1  # profile only -- no listing request
+        assert set(result) == _PROFILE_METRIC_KEYS
+        assert "models" in caplog.text.lower()
+
     def test_listing_failure_fails_the_whole_poll(self):
         def handler(request: httpx.Request) -> httpx.Response:
             if "/user-service/user/profile/" in str(request.url):
@@ -469,4 +567,13 @@ def test_live_makerworld_models():
     finally:
         client.close()
 
-    assert any(key.startswith("makerworld.model.") for key in result)
+    # Don't require at least one model: a canary account with zero
+    # published models is a valid state, not a plugin failure. The
+    # profile metrics must still be present, and any per-model key that
+    # does show up must have the right shape.
+    assert set(result) >= _PROFILE_METRIC_KEYS
+    for key, value in result.items():
+        if key.startswith("makerworld.model."):
+            assert isinstance(value, dict)
+            assert isinstance(value["value"], int | float)
+            assert isinstance(value["attrs"]["model_id"], int)
