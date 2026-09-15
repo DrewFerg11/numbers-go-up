@@ -184,7 +184,14 @@ def run_plugin_once(
                         )
                         continue
                     try:
-                        json.dumps(candidate_attrs)
+                        # allow_nan=False: the default True lets
+                        # {"ts": float("nan")} through here (json.dumps
+                        # accepts NaN/Infinity by default) only to blow up
+                        # later -- FastAPI's response serializer re-dumps
+                        # with allow_nan=False, so a NaN/Infinity attr
+                        # would 500 the whole /api/metrics catalogue
+                        # instead of failing as a contract violation here.
+                        json.dumps(candidate_attrs, allow_nan=False)
                     except (TypeError, ValueError):
                         violations.append(f"{key!r}: 'attrs' must be JSON-serializable")
                         continue

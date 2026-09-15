@@ -1526,6 +1526,71 @@ class TestValueDictAttrsAndLabelValidation:
         assert result.samples_written == 0
         assert "attrs" in result.error
 
+    def test_nan_in_attrs_is_a_contract_violation_not_a_later_500(self, db_path):
+        # json.dumps() accepts NaN/Infinity by default, so a plain
+        # "is it JSON-serializable" check lets these through -- only for
+        # FastAPI's response serializer to re-dump the stored value with
+        # allow_nan=False and 500 the whole /api/metrics catalogue later.
+        # Must be rejected here, at the same per-key contract-violation
+        # boundary as every other bad attrs value.
+        module = ModuleType("nan_attrs")
+        module.METRICS = {
+            "nan_attrs.item.{id}.value": {
+                "kind": "gauge",
+                "label": "Item",
+                "unit": "",
+            }
+        }
+
+        def collect(config, http):
+            return {
+                "nan_attrs.item.1.value": {
+                    "value": 1,
+                    "attrs": {"ratio": float("nan")},
+                }
+            }
+
+        module.collect = collect
+        plugin = _plugin_from_module("nan_attrs", module, module.METRICS)
+
+        result = scheduler.run_plugin_once(
+            db_path, plugin, http=None, now=1000, heartbeat_seconds=86400
+        )
+
+        assert result.status == "error"
+        assert result.samples_written == 0
+        assert "attrs" in result.error
+        assert storage.get_series_by_key(db_path, "nan_attrs.item.1.value") is None
+
+    def test_infinite_value_in_attrs_is_a_contract_violation(self, db_path):
+        module = ModuleType("inf_attrs")
+        module.METRICS = {
+            "inf_attrs.item.{id}.value": {
+                "kind": "gauge",
+                "label": "Item",
+                "unit": "",
+            }
+        }
+
+        def collect(config, http):
+            return {
+                "inf_attrs.item.1.value": {
+                    "value": 1,
+                    "attrs": {"ratio": float("inf")},
+                }
+            }
+
+        module.collect = collect
+        plugin = _plugin_from_module("inf_attrs", module, module.METRICS)
+
+        result = scheduler.run_plugin_once(
+            db_path, plugin, http=None, now=1000, heartbeat_seconds=86400
+        )
+
+        assert result.status == "error"
+        assert result.samples_written == 0
+        assert "attrs" in result.error
+
     def test_a_bad_key_never_aborts_a_run_that_has_other_good_keys(self, db_path):
         # The whole point of treating this as a per-key contract violation
         # instead of letting the exception escape: one bad key must not

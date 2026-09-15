@@ -104,6 +104,15 @@ def get_or_create_series(
                 )
             except json.JSONDecodeError:
                 merged_attrs = {}
+            # A hand-edited row (or a future buggy writer) could hold
+            # valid-but-non-object JSON ("[1,2]", "3"); .update() on
+            # anything but a dict raises AttributeError, which would
+            # escape into run_plugin_once's blanket except and abort the
+            # rest of the poll -- exactly what the scheduler-boundary
+            # validation of the *new* attrs is there to prevent. Treat a
+            # corrupt stored value as "start fresh" instead.
+            if not isinstance(merged_attrs, dict):
+                merged_attrs = {}
             merged_attrs.update(attrs)
             attrs_json = json.dumps(merged_attrs)
         else:
