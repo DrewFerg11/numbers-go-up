@@ -121,6 +121,55 @@ def test_metrics_includes_deactivated_series(tmp_path):
     assert metric["active"] is False
 
 
+def test_metrics_exposes_attrs(tmp_path):
+    client, db_path = client_for(tmp_path)
+    now = int(time.time())
+    storage.get_or_create_series(
+        db_path,
+        "acme.widget",
+        "acme",
+        "gauge",
+        "Widget",
+        "u",
+        "i",
+        now,
+        attrs={"model_id": 42, "slug": "widget"},
+    )
+
+    response = client.get("/api/metrics")
+
+    metric = next(m for m in response.json()["metrics"] if m["key"] == "acme.widget")
+    assert metric["attrs"] == {"model_id": 42, "slug": "widget"}
+
+
+def test_metrics_survives_corrupt_attrs_json(tmp_path):
+    # get_or_create_series() always writes valid JSON, but /api/metrics is
+    # the one endpoint that reports on every series that ever existed --
+    # including a row a hand edit or a future bug left with invalid JSON
+    # in `attrs`. It must degrade to {} for that row, not 500 the whole
+    # catalogue.
+    client, db_path = client_for(tmp_path)
+    now = int(time.time())
+    storage.get_or_create_series(
+        db_path, "acme.corrupt", "acme", "gauge", "Corrupt", "u", "i", now
+    )
+    conn = storage.connect(db_path)
+    try:
+        conn.execute(
+            "UPDATE metric_series SET attrs = ? WHERE metric_key = ?",
+            ("{not valid json", "acme.corrupt"),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    response = client.get("/api/metrics")
+
+    assert response.status_code == 200
+    metric = next(m for m in response.json()["metrics"] if m["key"] == "acme.corrupt")
+    assert metric["attrs"] == {}
+
+
 # --- /api/plugins ------------------------------------------------------------
 
 

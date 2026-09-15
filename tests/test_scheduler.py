@@ -1419,6 +1419,143 @@ class TestPatternMetrics:
         )
         assert storage.get_series_by_key(db_path, "many.item.0.value") is None
 
+    def test_exact_keys_are_never_counted_or_capped(self, db_path, monkeypatch):
+        # Pins the documented half of the cardinality guard that has no
+        # other coverage: when the cap trips, an exact key must still be
+        # written and survive reconciliation (unlike every pattern key,
+        # which is skipped this run) rather than being swept up by a
+        # regression that caps "any returned key" instead of just
+        # pattern-matched ones.
+        monkeypatch.setattr(plugins, "MAX_PATTERN_KEYS_PER_RUN", 2)
+        module = ModuleType("mixed")
+        module.METRICS = {
+            "mixed.exact.count": {"kind": "gauge", "label": "Exact", "unit": ""},
+            "mixed.item.{id}.value": {"kind": "gauge", "label": "Item", "unit": ""},
+        }
+
+        def collect(config, http):
+            return {
+                "mixed.exact.count": 7,
+                **{f"mixed.item.{i}.value": i for i in range(5)},
+            }
+
+        module.collect = collect
+        plugin = _plugin_from_module("mixed", module, module.METRICS)
+
+        result = scheduler.run_plugin_once(
+            db_path, plugin, http=None, now=1000, heartbeat_seconds=86400
+        )
+
+        assert result.status == "error"
+        assert storage.get_series_by_key(db_path, "mixed.item.0.value") is None
+        exact_series = storage.get_series_by_key(db_path, "mixed.exact.count")
+        assert exact_series is not None
+        assert exact_series["last_value"] == 7
+
+
+class TestValueDictAttrsAndLabelValidation:
+    def test_non_str_label_is_a_contract_violation_not_a_crash(self, db_path):
+        module = ModuleType("badlabel")
+        module.METRICS = {
+            "badlabel.item.{id}.value": {"kind": "gauge", "label": "Item", "unit": ""}
+        }
+
+        def collect(config, http):
+            return {"badlabel.item.1.value": {"value": 1, "label": {"en": "Widget"}}}
+
+        module.collect = collect
+        plugin = _plugin_from_module("badlabel", module, module.METRICS)
+
+        result = scheduler.run_plugin_once(
+            db_path, plugin, http=None, now=1000, heartbeat_seconds=86400
+        )
+
+        assert result.status == "error"
+        assert result.samples_written == 0
+        assert "label" in result.error
+        assert storage.get_series_by_key(db_path, "badlabel.item.1.value") is None
+
+    def test_non_dict_attrs_is_a_contract_violation_not_a_crash(self, db_path):
+        module = ModuleType("badattrs")
+        module.METRICS = {
+            "badattrs.item.{id}.value": {"kind": "gauge", "label": "Item", "unit": ""}
+        }
+
+        def collect(config, http):
+            return {
+                "badattrs.item.1.value": {"value": 1, "attrs": ["not", "a", "dict"]}
+            }
+
+        module.collect = collect
+        plugin = _plugin_from_module("badattrs", module, module.METRICS)
+
+        result = scheduler.run_plugin_once(
+            db_path, plugin, http=None, now=1000, heartbeat_seconds=86400
+        )
+
+        assert result.status == "error"
+        assert result.samples_written == 0
+        assert "attrs" in result.error
+
+    def test_unserializable_attrs_is_a_contract_violation_not_a_crash(self, db_path):
+        module = ModuleType("unserializable")
+        module.METRICS = {
+            "unserializable.item.{id}.value": {
+                "kind": "gauge",
+                "label": "Item",
+                "unit": "",
+            }
+        }
+
+        def collect(config, http):
+            return {
+                "unserializable.item.1.value": {
+                    "value": 1,
+                    "attrs": {"ts": object()},
+                }
+            }
+
+        module.collect = collect
+        plugin = _plugin_from_module("unserializable", module, module.METRICS)
+
+        result = scheduler.run_plugin_once(
+            db_path, plugin, http=None, now=1000, heartbeat_seconds=86400
+        )
+
+        assert result.status == "error"
+        assert result.samples_written == 0
+        assert "attrs" in result.error
+
+    def test_a_bad_key_never_aborts_a_run_that_has_other_good_keys(self, db_path):
+        # The whole point of treating this as a per-key contract violation
+        # instead of letting the exception escape: one bad key must not
+        # cost the samples from every other key in the same poll.
+        module = ModuleType("partly_bad")
+        module.METRICS = {
+            "partly_bad.item.{id}.value": {
+                "kind": "gauge",
+                "label": "Item",
+                "unit": "",
+            }
+        }
+
+        def collect(config, http):
+            return {
+                "partly_bad.item.1.value": {"value": 1, "attrs": {"ts": object()}},
+                "partly_bad.item.2.value": 2,
+            }
+
+        module.collect = collect
+        plugin = _plugin_from_module("partly_bad", module, module.METRICS)
+
+        result = scheduler.run_plugin_once(
+            db_path, plugin, http=None, now=1000, heartbeat_seconds=86400
+        )
+
+        assert result.status == "error"
+        assert result.samples_written == 1
+        assert storage.get_series_by_key(db_path, "partly_bad.item.2.value") is not None
+
 
 class TestPatternSeriesLifecycle:
     def test_a_pattern_key_missing_from_a_successful_run_is_deactivated(self, db_path):

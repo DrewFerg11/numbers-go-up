@@ -29,6 +29,7 @@ plugin must not make a network request.
 from __future__ import annotations
 
 import dataclasses
+import functools
 import importlib.util
 import logging
 import re
@@ -56,8 +57,12 @@ MAX_PATTERN_KEYS_PER_RUN = 500
 # never ``makerworld.model{id}.downloads``).
 _PATTERN_PLACEHOLDER = re.compile(r"^\{[a-zA-Z_][a-zA-Z0-9_]*\}$")
 # What a placeholder may resolve to at runtime -- lowercase, digits,
-# underscore, hyphen; Home-Assistant-entity-id-safe.
-_PLACEHOLDER_VALUE = re.compile(r"^[a-z0-9_-]+$")
+# underscore, hyphen; Home-Assistant-entity-id-safe. The single source of
+# truth for that charset: both _PLACEHOLDER_VALUE (used to sanity-check the
+# constant itself) and _pattern_regex's capturing group are built from it,
+# so widening it in one place widens matching too.
+_PLACEHOLDER_CHARSET = "[a-z0-9_-]+"
+_PLACEHOLDER_VALUE = re.compile(f"^{_PLACEHOLDER_CHARSET}$")
 
 
 def is_pattern_key(key: str) -> bool:
@@ -78,19 +83,49 @@ def _is_valid_pattern_key(key: str) -> bool:
     )
 
 
+@functools.cache
 def _pattern_regex(key: str) -> re.Pattern[str]:
     """Compile a pattern template into a regex matching concrete keys.
 
     Every literal segment is matched verbatim; the one placeholder segment
-    becomes a capturing group constrained to ``_PLACEHOLDER_VALUE``.
+    becomes a capturing group constrained to ``_PLACEHOLDER_CHARSET``.
+    Cached: a plugin's pattern templates are a small, fixed set for the
+    life of the process, so compiling each one once (rather than on every
+    ``resolve_metric()`` call, potentially thousands of times per poll)
+    keeps the poll loop and the deactivation sweep O(keys) instead of
+    O(keys x recompiles).
     """
     parts = [
-        "([a-z0-9_-]+)"
+        f"({_PLACEHOLDER_CHARSET})"
         if _PATTERN_PLACEHOLDER.fullmatch(segment)
         else re.escape(segment)
         for segment in key.split(".")
     ]
     return re.compile("^" + r"\.".join(parts) + "$")
+
+
+def _patterns_overlap(a: str, b: str) -> bool:
+    """True if some concrete key could match both single-placeholder
+    pattern templates ``a`` and ``b``.
+
+    Segment counts must match, and every position must be "compatible":
+    equal literals, or at least one side a placeholder (a placeholder's
+    ``_PLACEHOLDER_CHARSET`` can match a plugin's own lowercase-word literal
+    segments, so ``x.a.{id}.count`` and ``x.{k}.{id}.count`` both match
+    ``x.a.5.count`` even though position 1 is a literal on one side and a
+    placeholder on the other -- requiring *both* sides to be placeholders
+    at every differing position would miss exactly that case).
+    """
+    segments_a = a.split(".")
+    segments_b = b.split(".")
+    if len(segments_a) != len(segments_b):
+        return False
+    return all(
+        sa == sb
+        or _PATTERN_PLACEHOLDER.fullmatch(sa)
+        or _PATTERN_PLACEHOLDER.fullmatch(sb)
+        for sa, sb in zip(segments_a, segments_b, strict=True)
+    )
 
 
 def resolve_metric(
@@ -166,7 +201,11 @@ def validate_plugin_contract(
     as an exact key, plus the placeholder shape check in
     :func:`_is_valid_pattern_key`. ``kind`` and ``unit`` for a pattern are
     fixed here, at load time, and never overridable per poll -- see
-    :func:`resolve_metric`.
+    :func:`resolve_metric`. Two patterns that could both match the same
+    concrete key (:func:`_patterns_overlap`) are also rejected here: with
+    both declared, which one a returned key resolves to would depend on
+    dict order, silently picking a possibly-wrong ``kind`` that is then
+    pinned forever.
     """
     if not callable(getattr(module, "collect", None)):
         logger.warning("Plugin %s: missing collect(); skipping", name)
@@ -206,6 +245,20 @@ def validate_plugin_contract(
                 key,
             )
             return None
+
+    pattern_keys = [key for key in metrics if is_pattern_key(key)]
+    for i, key_a in enumerate(pattern_keys):
+        for key_b in pattern_keys[i + 1 :]:
+            if _patterns_overlap(key_a, key_b):
+                logger.warning(
+                    "Plugin %s: pattern metric keys %r and %r overlap -- a "
+                    "returned key could match either, with ambiguous "
+                    "kind/unit/label; skipping",
+                    name,
+                    key_a,
+                    key_b,
+                )
+                return None
 
     return metrics
 

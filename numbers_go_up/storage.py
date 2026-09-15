@@ -385,19 +385,42 @@ def series_for_plugin(db_path: str | Path, plugin_name: str) -> list[sqlite3.Row
         ).fetchall()
 
 
-def set_series_active(db_path: str | Path, series_id: int, active: bool) -> None:
-    """Flip ``metric_series.active`` for one series.
+def set_series_active_bulk(
+    db_path: str | Path, activate_ids: Iterable[int], deactivate_ids: Iterable[int]
+) -> None:
+    """Flip ``metric_series.active`` for many series in one transaction.
 
     The first writer of this column (#54): deactivating keeps a pattern
     series' history intact while dropping it from
     :func:`list_series`/``/api/stats/latest``; reactivating brings it back
     when the plugin returns the key again on a later successful poll.
+
+    Used by the scheduler's pattern-series lifecycle reconciliation, which
+    can touch many series after one poll (a MakerWorld-style plugin with
+    hundreds of subjects). A single transaction rather than one
+    connection+commit per series means the whole sweep is atomic -- a
+    crash mid-sweep can no longer leave some subjects deactivated and
+    others not until the next successful poll happens to repair it.
     """
+    activate_ids = list(activate_ids)
+    deactivate_ids = list(deactivate_ids)
+    if not activate_ids and not deactivate_ids:
+        return
+
     with contextlib.closing(connect(db_path)) as conn:
-        conn.execute(
-            "UPDATE metric_series SET active = ? WHERE id = ?",
-            (1 if active else 0, series_id),
-        )
+        conn.execute("BEGIN IMMEDIATE")
+        if activate_ids:
+            placeholders = ",".join("?" for _ in activate_ids)
+            conn.execute(
+                f"UPDATE metric_series SET active = 1 WHERE id IN ({placeholders})",
+                activate_ids,
+            )
+        if deactivate_ids:
+            placeholders = ",".join("?" for _ in deactivate_ids)
+            conn.execute(
+                f"UPDATE metric_series SET active = 0 WHERE id IN ({placeholders})",
+                deactivate_ids,
+            )
         conn.commit()
 
 

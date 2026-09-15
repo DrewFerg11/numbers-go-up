@@ -130,6 +130,77 @@ class TestValidatePluginContract:
 
         assert metrics is None
 
+    def test_same_shape_patterns_differing_only_in_final_segment_do_not_overlap(
+        self, caplog
+    ):
+        module = ModuleType("mw")
+        module.collect = lambda config, http: {}
+        module.METRICS = {
+            "mw.model.{id}.downloads": {
+                "kind": "cumulative",
+                "label": "Downloads",
+                "unit": "downloads",
+            },
+            "mw.model.{id}.likes": {
+                "kind": "gauge",
+                "label": "Likes",
+                "unit": "likes",
+            },
+        }
+
+        # Same shape, different metric name at the end -- these don't
+        # overlap (the last segment always differs), so this is the
+        # control case proving the check isn't just rejecting every
+        # multi-pattern plugin.
+        metrics = plugins.validate_plugin_contract("mw", module)
+
+        assert metrics == module.METRICS
+
+    def test_two_patterns_that_could_match_the_same_key_are_rejected(self, caplog):
+        module = ModuleType("mw")
+        module.collect = lambda config, http: {}
+        module.METRICS = {
+            "mw.a.{id}.count": {"kind": "gauge", "label": "A", "unit": ""},
+            # Each pattern has exactly one placeholder (so the earlier
+            # single-placeholder check passes both individually), but at
+            # different positions. A placeholder can match another
+            # pattern's literal segment ("a"/"b" both satisfy
+            # [a-z0-9_-]+), so "mw.a.b.count" matches this one with
+            # id="b" *and* the one below with other="a" -- which one wins
+            # is undefined (dict order).
+            "mw.{other}.b.count": {"kind": "gauge", "label": "B", "unit": ""},
+        }
+
+        with caplog.at_level("WARNING"):
+            metrics = plugins.validate_plugin_contract("mw", module)
+
+        assert metrics is None
+        assert "overlap" in caplog.text
+
+    def test_patterns_with_different_literal_segments_do_not_overlap(self):
+        module = ModuleType("mw")
+        module.collect = lambda config, http: {}
+        module.METRICS = {
+            "mw.a.{id}.count": {"kind": "gauge", "label": "A", "unit": ""},
+            "mw.b.{id}.count": {"kind": "gauge", "label": "B", "unit": ""},
+        }
+
+        metrics = plugins.validate_plugin_contract("mw", module)
+
+        assert metrics == module.METRICS
+
+    def test_patterns_with_different_segment_counts_do_not_overlap(self):
+        module = ModuleType("mw")
+        module.collect = lambda config, http: {}
+        module.METRICS = {
+            "mw.{id}.count": {"kind": "gauge", "label": "A", "unit": ""},
+            "mw.{id}.sub.count": {"kind": "gauge", "label": "B", "unit": ""},
+        }
+
+        metrics = plugins.validate_plugin_contract("mw", module)
+
+        assert metrics == module.METRICS
+
 
 class TestDiscoverPlugins:
     def test_discovers_builtin_plugins(self):

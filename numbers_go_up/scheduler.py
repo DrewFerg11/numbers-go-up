@@ -14,6 +14,7 @@ threaded through here too.
 from __future__ import annotations
 
 import dataclasses
+import json
 import logging
 import math
 import random
@@ -109,7 +110,15 @@ def run_plugin_once(
     returned_keys: set[str] = set()
 
     try:
-        items = list(result.items())
+        # Resolve every key exactly once (not once for the cardinality count
+        # and again for the write loop): each entry pairs the raw poll
+        # result with its already-looked-up METRICS match, so neither
+        # resolve_metric() nor its regex compile (cached, but still a
+        # dict-order scan) runs twice per key.
+        resolved = [
+            (key, raw_value, plugins.resolve_metric(key, plugin.metrics))
+            for key, raw_value in result.items()
+        ]
 
         # Cardinality guard: count *before* writing anything, so a runaway
         # pattern match (a paging bug, a source dumping its whole database)
@@ -118,9 +127,8 @@ def run_plugin_once(
         # capped -- only pattern-matched keys can grow unboundedly.
         pattern_match_count = sum(
             1
-            for key, _ in items
-            if (match := plugins.resolve_metric(key, plugin.metrics)) is not None
-            and plugins.is_pattern_key(match[0])
+            for _, _, match in resolved
+            if match is not None and plugins.is_pattern_key(match[0])
         )
         cardinality_ok = pattern_match_count <= plugins.MAX_PATTERN_KEYS_PER_RUN
         if not cardinality_ok:
@@ -130,8 +138,7 @@ def run_plugin_once(
                 f"{plugins.MAX_PATTERN_KEYS_PER_RUN}"
             )
 
-        for key, raw_value in items:
-            match = plugins.resolve_metric(key, plugin.metrics)
+        for key, raw_value, match in resolved:
             if match is None:
                 violations.append(f"{key!r} is not declared in this plugin's METRICS")
                 continue
@@ -158,10 +165,30 @@ def run_plugin_once(
                     violations.append(f"{key!r}: metadata dict is missing 'value'")
                     continue
                 value = raw_value["value"]
+
                 if "label" in raw_value:
-                    label = raw_value["label"]
+                    candidate_label = raw_value["label"]
+                    if not isinstance(candidate_label, str):
+                        violations.append(
+                            f"{key!r}: 'label' must be a string, got "
+                            f"{candidate_label!r}"
+                        )
+                        continue
+                    label = candidate_label
+
                 if "attrs" in raw_value:
-                    attrs = raw_value["attrs"]
+                    candidate_attrs = raw_value["attrs"]
+                    if not isinstance(candidate_attrs, dict):
+                        violations.append(
+                            f"{key!r}: 'attrs' must be a dict, got {candidate_attrs!r}"
+                        )
+                        continue
+                    try:
+                        json.dumps(candidate_attrs)
+                    except (TypeError, ValueError):
+                        violations.append(f"{key!r}: 'attrs' must be JSON-serializable")
+                        continue
+                    attrs = candidate_attrs
             else:
                 value = raw_value
 
@@ -248,7 +275,16 @@ def _reconcile_pattern_series(
     matches one of the plugin's *pattern* METRICS entries -- exact keys are
     never auto-deactivated, and a series whose pattern was removed from the
     plugin entirely (a code change, not a poll) is left alone too.
+
+    All flips for this run are applied in one transaction (see
+    :func:`storage.set_series_active_bulk`) rather than one connection and
+    commit per series, so a crash mid-sweep can't leave some subjects
+    deactivated and others not until a later successful poll happens to
+    repair it.
     """
+    activate_ids: list[int] = []
+    deactivate_ids: list[int] = []
+
     for row in storage.series_for_plugin(db_path, plugin.name):
         key = row["metric_key"]
         match = plugins.resolve_metric(key, plugin.metrics)
@@ -256,8 +292,11 @@ def _reconcile_pattern_series(
             continue
 
         should_be_active = key in returned_keys
-        if bool(row["active"]) != should_be_active:
-            storage.set_series_active(db_path, row["id"], should_be_active)
+        if bool(row["active"]) == should_be_active:
+            continue
+        (activate_ids if should_be_active else deactivate_ids).append(row["id"])
+
+    storage.set_series_active_bulk(db_path, activate_ids, deactivate_ids)
 
 
 def compute_backoff_delay_seconds(
