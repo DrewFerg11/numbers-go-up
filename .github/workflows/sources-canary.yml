@@ -33,6 +33,7 @@ on:
 permissions:
   contents: read
   issues: write
+  actions: read  # gh run list/view (consecutive-failure lookup) hit the Actions API
 
 jobs:
   probe:
@@ -72,11 +73,15 @@ jobs:
         continue-on-error: true
         shell: bash
         run: |
+          # Export under the matrix's own secret name, not a hardcoded one --
+          # a second plugin's matrix entry must not have to touch this line.
+          export "${SECRET_NAME}=${SECRET_VALUE}"
           pytest -q -m live -k "$PLUGIN" 2>&1 | tee /tmp/canary-output.txt
           exit "${PIPESTATUS[0]}"
         env:
           PLUGIN: ${{ matrix.plugin }}
-          NGU_CANARY_MAKERWORLD_UID: ${{ secrets.NGU_CANARY_MAKERWORLD_UID }}
+          SECRET_NAME: ${{ matrix.secret_name }}
+          SECRET_VALUE: ${{ secrets[matrix.secret_name] }}
 
       # Scrub the secret value out of the captured output (tracebacks and
       # assertion diffs are the likely way it'd leak) before anything below
@@ -85,7 +90,10 @@ jobs:
         if: always()
         run: |
           if [ -n "$SECRET_VALUE" ] && [ -f /tmp/canary-output.txt ]; then
-            sed -i "s/${SECRET_VALUE}/<redacted>/g" /tmp/canary-output.txt
+            # A sed s/// replace breaks (and fails open, unredacted) if the
+            # secret value contains the delimiter. A literal string replace
+            # has no delimiter to collide with.
+            python3 -c 'import os, pathlib; p = pathlib.Path("/tmp/canary-output.txt"); p.write_text(p.read_text().replace(os.environ["SECRET_VALUE"], "<redacted>"))'
           fi
         env:
           SECRET_VALUE: ${{ secrets[matrix.secret_name] }}
@@ -117,9 +125,22 @@ jobs:
             exit 0
           fi
 
+          # Anything other than an actual probe failure (e.g. "skipped",
+          # because the secret-verify step above failed first) is a config
+          # problem, not a broken source -- don't misfile it as one. The
+          # verify step's own ::error:: is the signal for that case.
+          if [ "$PROBE_OUTCOME" != "failure" ]; then
+            echo "Probe outcome was '${PROBE_OUTCOME}', not a real probe failure; not evaluating for filing."
+            exit 0
+          fi
+
           # Failure. Consecutive-failure count has no state file to live in,
-          # so read it off the previous completed run of this workflow.
+          # so read it off the previous completed run of this workflow --
+          # scoped to the branch the schedule actually runs on, so a
+          # workflow_dispatch test run from a feature branch (this PR
+          # included) can't join or break the real streak.
           PREV_RUN_ID=$(gh run list --repo "$REPO" --workflow sources-canary.yml \
+            --branch "$DEFAULT_BRANCH" \
             --json databaseId,status --jq '[.[] | select(.status == "completed")][0].databaseId // empty' \
             --limit 10)
 
@@ -141,6 +162,7 @@ jobs:
         env:
           PLUGIN: ${{ matrix.plugin }}
           REPO: ${{ github.repository }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch || 'main' }}
           PROBE_OUTCOME: ${{ steps.probe.outcome }}
           TAIL: ${{ steps.tail.outputs.tail }}
           GH_TOKEN: ${{ github.token }}
