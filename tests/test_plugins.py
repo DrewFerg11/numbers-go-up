@@ -7,14 +7,12 @@ from numbers_go_up import plugins
 
 FIXTURES_DIR = Path(__file__).resolve().parent / "fixtures" / "plugins"
 
-
 def _config(plugin_dir=None, plugins_config=None, poll=None):
     return {
         "plugin_dir": plugin_dir,
         "plugins": plugins_config or {},
         "poll": poll or {"default_interval": 1800},
     }
-
 
 def _user_dir_with_no_poll_plugin(tmp_path):
     """A user plugin with no POLL_INTERVAL_SECONDS, so the configured
@@ -27,7 +25,6 @@ def _user_dir_with_no_poll_plugin(tmp_path):
         "def collect(config, http): raise NotImplementedError\n"
     )
     return user_dir
-
 
 class TestLoadPluginFromPath:
     def test_loads_a_valid_module(self):
@@ -49,46 +46,35 @@ class TestLoadPluginFromPath:
 
         assert module is None
 
-
 class TestValidatePluginContract:
     def test_valid_plugin_passes(self):
         module = plugins.load_plugin_from_path(FIXTURES_DIR / "valid.py")
-
         metrics = plugins.validate_plugin_contract("valid", module)
-
         assert metrics == module.METRICS
 
     def test_missing_collect_is_rejected(self, caplog):
         module = plugins.load_plugin_from_path(FIXTURES_DIR / "no_collect.py")
-
         with caplog.at_level("WARNING"):
             metrics = plugins.validate_plugin_contract("no_collect", module)
-
         assert metrics is None
 
     def test_bad_kind_is_rejected(self, caplog):
         module = plugins.load_plugin_from_path(FIXTURES_DIR / "bad_kind.py")
-
         with caplog.at_level("WARNING"):
             metrics = plugins.validate_plugin_contract("bad_kind", module)
-
         assert metrics is None
 
     def test_key_not_prefixed_with_plugin_name_is_rejected(self, caplog):
         module = plugins.load_plugin_from_path(FIXTURES_DIR / "bad_prefix.py")
-
         with caplog.at_level("WARNING"):
             metrics = plugins.validate_plugin_contract("bad_prefix", module)
-
         assert metrics is None
 
     def test_missing_metrics_is_rejected(self, caplog):
         module = ModuleType("no_metrics")
         module.collect = lambda config, http: {}
-
         with caplog.at_level("WARNING"):
             metrics = plugins.validate_plugin_contract("no_metrics", module)
-
         assert metrics is None
 
     def test_pattern_key_with_one_whole_segment_placeholder_is_accepted(self):
@@ -101,9 +87,7 @@ class TestValidatePluginContract:
                 "unit": "downloads",
             }
         }
-
         metrics = plugins.validate_plugin_contract("mw", module)
-
         assert metrics == module.METRICS
 
     def test_pattern_with_two_placeholders_is_rejected(self, caplog):
@@ -112,10 +96,8 @@ class TestValidatePluginContract:
         module.METRICS = {
             "mw.{a}.{b}.count": {"kind": "gauge", "label": "X", "unit": ""}
         }
-
         with caplog.at_level("WARNING"):
             metrics = plugins.validate_plugin_contract("mw", module)
-
         assert metrics is None
 
     def test_placeholder_not_occupying_a_whole_segment_is_rejected(self, caplog):
@@ -124,10 +106,8 @@ class TestValidatePluginContract:
         module.METRICS = {
             "mw.model{id}.count": {"kind": "gauge", "label": "X", "unit": ""}
         }
-
         with caplog.at_level("WARNING"):
             metrics = plugins.validate_plugin_contract("mw", module)
-
         assert metrics is None
 
     def test_same_shape_patterns_differing_only_in_final_segment_do_not_overlap(
@@ -201,11 +181,9 @@ class TestValidatePluginContract:
 
         assert metrics == module.METRICS
 
-
 class TestDiscoverPlugins:
     def test_discovers_builtin_plugins(self):
         config = _config()
-
         loaded = plugins.discover_plugins(
             {**config, "plugins": {"valid": {"enabled": True}}},
             builtin_dir=FIXTURES_DIR,
@@ -237,15 +215,16 @@ class TestDiscoverPlugins:
         # Also proves discovery never even attempts to import it: the
         # fixture file has invalid syntax and would raise if imported.
         config = _config(plugins_config={"underscored": {"enabled": True}})
-
         with caplog.at_level(logging.WARNING):
             loaded = plugins.discover_plugins(config, builtin_dir=FIXTURES_DIR)
 
         assert [p.name for p in loaded] == []
+
         # Discovery must not even attempt to import underscore-prefixed
         # files: nothing about _underscored was logged (an attempted
         # import of its invalid syntax would log an error).
         assert "_underscored" not in caplog.text
+
         # Direct proof: the loader was called for every non-underscore
         # fixture file but never for _underscored.py.
         with patch.object(
@@ -379,7 +358,7 @@ class TestDiscoverPlugins:
             plugins_config={"valid": {"enabled": True, "poll_interval": 0}}
         )
 
-        with caplog.at_level(logging.WARNING):
+        with caplog.at_level("WARNING"):
             loaded = plugins.discover_plugins(config, builtin_dir=FIXTURES_DIR)
 
         assert loaded[0].interval_seconds == 300
@@ -398,7 +377,7 @@ class TestDiscoverPlugins:
             plugins_config={"no_poll": {"enabled": True}},
         )
 
-        with caplog.at_level(logging.WARNING):
+        with caplog.at_level("WARNING"):
             loaded = plugins.discover_plugins(config, builtin_dir=FIXTURES_DIR)
 
         assert loaded[0].interval_seconds == 300
@@ -419,7 +398,7 @@ class TestDiscoverPlugins:
             },
         )
 
-        with caplog.at_level(logging.WARNING):
+        with caplog.at_level("WARNING"):
             loaded = plugins.discover_plugins(config, builtin_dir=FIXTURES_DIR)
 
         assert [p.name for p in loaded] == ["no_poll", "valid"]
@@ -436,7 +415,7 @@ class TestDiscoverPlugins:
             plugins_config={"no_poll": {"enabled": True}},
         )
 
-        with caplog.at_level(logging.WARNING):
+        with caplog.at_level("WARNING"):
             loaded = plugins.discover_plugins(config, builtin_dir=FIXTURES_DIR)
 
         assert loaded[0].interval_seconds == 300
@@ -449,7 +428,7 @@ class TestDiscoverPlugins:
             plugins_config={"valid": {"enabled": True, "poll_interval": True}}
         )
 
-        with caplog.at_level(logging.WARNING):
+        with caplog.at_level("WARNING"):
             loaded = plugins.discover_plugins(config, builtin_dir=FIXTURES_DIR)
 
         assert loaded[0].interval_seconds == 1800
@@ -470,7 +449,6 @@ class TestDiscoverPlugins:
         loaded = plugins.discover_plugins(_config())
 
         assert loaded == []
-
 
 class TestNonMappingPluginConfigEntry:
     # _deep_merge only type-checks the top-level keys, so a per-plugin
@@ -542,7 +520,6 @@ class TestNonMappingPluginConfigEntry:
             if record.levelno >= logging.WARNING
         )
 
-
 class TestResolveMetric:
     METRICS = {
         "mw.profile.likes": {"kind": "gauge", "label": "Likes", "unit": "likes"},
@@ -580,3 +557,38 @@ class TestResolveMetric:
         # shaped like it could match this plugin's pattern, must never
         # resolve against another plugin's own METRICS dict.
         assert plugins.resolve_metric("other.model.123.downloads", self.METRICS) is None
+
+    def test_exact_entry_beats_an_overlapping_pattern_regardless_of_order(self):
+        # Pins resolve_metric's precedence rule: an exact METRICS entry
+        # wins over a pattern template that also matches the same concrete
+        # key. The pattern is deliberately declared first -- if the
+        # exact-wins branch ever slipped behind the pattern scan, dict
+        # order would silently decide, and the subject would be written
+        # with the pattern's kind, which is then pinned forever (surfacing
+        # later as inexplicable Home Assistant metadata, not an error).
+        metrics = {
+            "mw.model.{id}.downloads": {
+                "kind": "cumulative",
+                "label": "Downloads",
+                "unit": "downloads",
+            },
+            "mw.model.3070072.downloads": {
+                "kind": "gauge",
+                "label": "Flagship",
+                "unit": "downloads",
+            },
+        }
+        result = plugins.resolve_metric("mw.model.3070072.downloads", metrics)
+        assert result == (
+            "mw.model.3070072.downloads",
+            metrics["mw.model.3070072.downloads"],
+        )
+        # Control: the same key does match the pattern when it is the
+        # only entry, so the precedence assertion above is discriminating
+        # rather than vacuous.
+        pattern_only = {
+            "mw.model.{id}.downloads": metrics["mw.model.{id}.downloads"],
+        }
+        assert plugins.resolve_metric(
+            "mw.model.3070072.downloads", pattern_only
+        ) == ("mw.model.{id}.downloads", metrics["mw.model.{id}.downloads"])
