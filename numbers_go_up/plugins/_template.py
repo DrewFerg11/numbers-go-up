@@ -21,10 +21,20 @@ METRICS = {
         "unit": "downloads",  # required, may be ""
         "icon": "mdi:download",  # optional
     },
+    # A pattern entry: subjects (here, "{id}") are only known at poll time,
+    # e.g. a list of repos or models read from config or from the source
+    # itself. Exactly one {placeholder}, occupying a whole dot-separated
+    # segment. kind/unit/icon are fixed here and can never be overridden by
+    # collect()'s return -- only label/attrs can be, per subject, per poll.
+    "_template.thing.{id}.count": {
+        "kind": "gauge",
+        "label": "Thing Count",
+        "unit": "things",
+    },
 }
 
 
-def collect(config: dict, http) -> dict[str, int | float]:
+def collect(config: dict, http) -> dict[str, int | float | dict]:
     """Fetch and return {metric_key: value} for every key in METRICS.
 
     config: this plugin's own section of config["plugins"] (its
@@ -32,6 +42,13 @@ def collect(config: dict, http) -> dict[str, int | float]:
     e.g. a user ID).
     http: the shared HTTP client from numbers_go_up.http. Plugins never
     construct their own client.
+
+    A value may be a plain number, or a dict {"value": ..., "label": ...,
+    "attrs": {...}} to set a per-subject label/attrs for a pattern key
+    (e.g. {"_template.thing.42.count": {"value": 7, "label": "Widget 42",
+    "attrs": {"id": 42}}}). A pattern key not returned on a fully
+    successful poll is deactivated (its history is kept); returning it
+    again reactivates it.
     """
     raise NotImplementedError
 

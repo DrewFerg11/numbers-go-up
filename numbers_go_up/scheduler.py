@@ -14,6 +14,7 @@ threaded through here too.
 from __future__ import annotations
 
 import dataclasses
+import json
 import logging
 import math
 import random
@@ -27,7 +28,7 @@ import httpx
 from apscheduler.executors.pool import ThreadPoolExecutor
 from apscheduler.schedulers.background import BackgroundScheduler
 
-from numbers_go_up import storage
+from numbers_go_up import plugins, storage
 from numbers_go_up.config import ConfigError
 from numbers_go_up.http import Blocked, RateLimited
 from numbers_go_up.plugins import LoadedPlugin, discover_plugins
@@ -106,12 +107,98 @@ def run_plugin_once(
 
     samples_written = 0
     violations: list[str] = []
+    returned_keys: set[str] = set()
 
     try:
-        for key, value in result.items():
-            if key not in plugin.metrics:
+        # Resolve every key exactly once (not once for the cardinality count
+        # and again for the write loop): each entry pairs the raw poll
+        # result with its already-looked-up METRICS match, so neither
+        # resolve_metric() nor its regex compile (cached, but still a
+        # dict-order scan) runs twice per key.
+        resolved = [
+            (key, raw_value, plugins.resolve_metric(key, plugin.metrics))
+            for key, raw_value in result.items()
+        ]
+
+        # Cardinality guard: count *before* writing anything, so a runaway
+        # pattern match (a paging bug, a source dumping its whole database)
+        # never creates a single extra series this run rather than being
+        # truncated partway through. Exact keys are never counted or
+        # capped -- only pattern-matched keys can grow unboundedly.
+        pattern_match_count = sum(
+            1
+            for _, _, match in resolved
+            if match is not None and plugins.is_pattern_key(match[0])
+        )
+        cardinality_ok = pattern_match_count <= plugins.MAX_PATTERN_KEYS_PER_RUN
+        if not cardinality_ok:
+            violations.append(
+                f"plugin returned {pattern_match_count} pattern-matched keys, "
+                f"exceeding the cardinality cap of "
+                f"{plugins.MAX_PATTERN_KEYS_PER_RUN}"
+            )
+
+        for key, raw_value, match in resolved:
+            if match is None:
                 violations.append(f"{key!r} is not declared in this plugin's METRICS")
                 continue
+            declared_key, meta = match
+            is_pattern = plugins.is_pattern_key(declared_key)
+            if is_pattern and not cardinality_ok:
+                # Already reported once, above; don't create any of the
+                # series that pushed this run over the cap.
+                continue
+
+            label = meta.get("label")
+            unit = meta.get("unit")
+            icon = meta.get("icon")
+            attrs: dict[str, Any] | None = None
+
+            if isinstance(raw_value, dict):
+                if "kind" in raw_value or "unit" in raw_value:
+                    violations.append(
+                        f"{key!r}: 'kind'/'unit' cannot be set per poll "
+                        "(fixed by the plugin's METRICS pattern)"
+                    )
+                    continue
+                if "value" not in raw_value:
+                    violations.append(f"{key!r}: metadata dict is missing 'value'")
+                    continue
+                value = raw_value["value"]
+
+                if "label" in raw_value:
+                    candidate_label = raw_value["label"]
+                    if not isinstance(candidate_label, str):
+                        violations.append(
+                            f"{key!r}: 'label' must be a string, got "
+                            f"{candidate_label!r}"
+                        )
+                        continue
+                    label = candidate_label
+
+                if "attrs" in raw_value:
+                    candidate_attrs = raw_value["attrs"]
+                    if not isinstance(candidate_attrs, dict):
+                        violations.append(
+                            f"{key!r}: 'attrs' must be a dict, got {candidate_attrs!r}"
+                        )
+                        continue
+                    try:
+                        # allow_nan=False: the default True lets
+                        # {"ts": float("nan")} through here (json.dumps
+                        # accepts NaN/Infinity by default) only to blow up
+                        # later -- FastAPI's response serializer re-dumps
+                        # with allow_nan=False, so a NaN/Infinity attr
+                        # would 500 the whole /api/metrics catalogue
+                        # instead of failing as a contract violation here.
+                        json.dumps(candidate_attrs, allow_nan=False)
+                    except (TypeError, ValueError):
+                        violations.append(f"{key!r}: 'attrs' must be JSON-serializable")
+                        continue
+                    attrs = candidate_attrs
+            else:
+                value = raw_value
+
             if isinstance(value, bool) or not isinstance(value, int | float):
                 violations.append(f"{key!r} value {value!r} is not int or float")
                 continue
@@ -119,17 +206,18 @@ def run_plugin_once(
                 violations.append(f"{key!r} value {value!r} is not finite")
                 continue
 
-            meta = plugin.metrics[key]
             series_id = storage.get_or_create_series(
                 db_path,
                 key,
                 plugin.name,
                 meta["kind"],
-                meta.get("label"),
-                meta.get("unit"),
-                meta.get("icon"),
+                label,
+                unit,
+                icon,
                 now,
+                attrs=attrs,
             )
+            returned_keys.add(key)
             if storage.record_sample(db_path, series_id, now, value, heartbeat_seconds):
                 samples_written += 1
     except Exception as exc:
@@ -173,12 +261,49 @@ def run_plugin_once(
             run_id=run_id, status="error", samples_written=samples_written, error=error
         )
 
+    _reconcile_pattern_series(db_path, plugin, returned_keys)
+
     storage.finish_run(
         db_path, run_id, "ok", None, samples_written=samples_written, finished_at=now
     )
     return RunResult(
         run_id=run_id, status="ok", samples_written=samples_written, error=None
     )
+
+
+def _reconcile_pattern_series(
+    db_path: str | Path, plugin: LoadedPlugin, returned_keys: set[str]
+) -> None:
+    """Deactivate/reactivate pattern-matched series after a fully successful run.
+
+    Only called once a run is known to be status "ok" with zero contract
+    violations (Failure Handling: a Cloudflare 403 must never retire every
+    subject at once). A series is only touched here if its key currently
+    matches one of the plugin's *pattern* METRICS entries -- exact keys are
+    never auto-deactivated, and a series whose pattern was removed from the
+    plugin entirely (a code change, not a poll) is left alone too.
+
+    All flips for this run are applied in one transaction (see
+    :func:`storage.set_series_active_bulk`) rather than one connection and
+    commit per series, so a crash mid-sweep can't leave some subjects
+    deactivated and others not until a later successful poll happens to
+    repair it.
+    """
+    activate_ids: list[int] = []
+    deactivate_ids: list[int] = []
+
+    for row in storage.series_for_plugin(db_path, plugin.name):
+        key = row["metric_key"]
+        match = plugins.resolve_metric(key, plugin.metrics)
+        if match is None or not plugins.is_pattern_key(match[0]):
+            continue
+
+        should_be_active = key in returned_keys
+        if bool(row["active"]) == should_be_active:
+            continue
+        (activate_ids if should_be_active else deactivate_ids).append(row["id"])
+
+    storage.set_series_active_bulk(db_path, activate_ids, deactivate_ids)
 
 
 def compute_backoff_delay_seconds(

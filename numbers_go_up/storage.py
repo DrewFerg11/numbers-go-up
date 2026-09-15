@@ -9,6 +9,7 @@ threads by default, and we don't disable that check.
 from __future__ import annotations
 
 import contextlib
+import json
 import logging
 import sqlite3
 from collections.abc import Iterable
@@ -54,6 +55,7 @@ def get_or_create_series(
     unit: str | None,
     icon: str | None,
     now: int,
+    attrs: dict | None = None,
 ) -> int:
     """Return the series id for ``metric_key``, creating it if needed.
 
@@ -62,6 +64,12 @@ def get_or_create_series(
     ``kind`` is not: flipping cumulative <-> gauge changes Home Assistant's
     downstream statistics, so a mismatch is logged and the originally stored
     kind wins.
+
+    ``attrs``, when given, is merged into the stored ``metric_series.attrs``
+    JSON object (new keys added, existing keys overwritten) rather than
+    replacing it wholesale -- a poll that reports a subset of attrs must not
+    erase attrs a previous poll wrote. ``None`` (the default) leaves the
+    stored attrs untouched.
     """
     if kind not in VALID_KINDS:
         raise ValueError(f"kind must be one of {sorted(VALID_KINDS)}, got {kind!r}")
@@ -75,10 +83,10 @@ def get_or_create_series(
             (metric_key, plugin_name, kind, label, unit, icon, now),
         )
         row = conn.execute(
-            "SELECT id, kind FROM metric_series WHERE metric_key = ?",
+            "SELECT id, kind, attrs FROM metric_series WHERE metric_key = ?",
             (metric_key,),
         ).fetchone()
-        series_id, stored_kind = row
+        series_id, stored_kind, stored_attrs_json = row
 
         if stored_kind != kind:
             logger.warning(
@@ -89,10 +97,31 @@ def get_or_create_series(
                 stored_kind,
             )
 
+        if attrs:
+            try:
+                merged_attrs = (
+                    json.loads(stored_attrs_json) if stored_attrs_json else {}
+                )
+            except json.JSONDecodeError:
+                merged_attrs = {}
+            # A hand-edited row (or a future buggy writer) could hold
+            # valid-but-non-object JSON ("[1,2]", "3"); .update() on
+            # anything but a dict raises AttributeError, which would
+            # escape into run_plugin_once's blanket except and abort the
+            # rest of the poll -- exactly what the scheduler-boundary
+            # validation of the *new* attrs is there to prevent. Treat a
+            # corrupt stored value as "start fresh" instead.
+            if not isinstance(merged_attrs, dict):
+                merged_attrs = {}
+            merged_attrs.update(attrs)
+            attrs_json = json.dumps(merged_attrs)
+        else:
+            attrs_json = stored_attrs_json
+
         conn.execute(
             "UPDATE metric_series SET plugin_name = ?, label = ?, unit = ?, "
-            "icon = ? WHERE id = ?",
-            (plugin_name, label, unit, icon, series_id),
+            "icon = ?, attrs = ? WHERE id = ?",
+            (plugin_name, label, unit, icon, attrs_json, series_id),
         )
         conn.commit()
         return series_id
@@ -336,7 +365,7 @@ def list_series(db_path: str | Path) -> list[sqlite3.Row]:
 
 def list_all_series(db_path: str | Path) -> list[sqlite3.Row]:
     """Every metric_series row, active or not, ordered by metric_key,
-    ``active`` column included.
+    ``active`` and ``attrs`` columns included.
 
     The catalogue for /api/metrics, which reports on every series that
     ever existed -- including a retired one whose plugin has since been
@@ -347,8 +376,61 @@ def list_all_series(db_path: str | Path) -> list[sqlite3.Row]:
         conn.row_factory = sqlite3.Row
         return conn.execute(
             "SELECT id, metric_key, plugin_name, kind, label, unit, icon, "
-            "last_value, last_seen, active FROM metric_series ORDER BY metric_key"
+            "last_value, last_seen, active, attrs FROM metric_series "
+            "ORDER BY metric_key"
         ).fetchall()
+
+
+def series_for_plugin(db_path: str | Path, plugin_name: str) -> list[sqlite3.Row]:
+    """Every metric_series row (active or not) for ``plugin_name``, with
+    just ``id``, ``metric_key`` and ``active`` -- what the pattern-series
+    lifecycle reconciliation in the scheduler needs after a successful run.
+    """
+    with contextlib.closing(connect(db_path)) as conn:
+        conn.row_factory = sqlite3.Row
+        return conn.execute(
+            "SELECT id, metric_key, active FROM metric_series WHERE plugin_name = ?",
+            (plugin_name,),
+        ).fetchall()
+
+
+def set_series_active_bulk(
+    db_path: str | Path, activate_ids: Iterable[int], deactivate_ids: Iterable[int]
+) -> None:
+    """Flip ``metric_series.active`` for many series in one transaction.
+
+    The first writer of this column (#54): deactivating keeps a pattern
+    series' history intact while dropping it from
+    :func:`list_series`/``/api/stats/latest``; reactivating brings it back
+    when the plugin returns the key again on a later successful poll.
+
+    Used by the scheduler's pattern-series lifecycle reconciliation, which
+    can touch many series after one poll (a MakerWorld-style plugin with
+    hundreds of subjects). A single transaction rather than one
+    connection+commit per series means the whole sweep is atomic -- a
+    crash mid-sweep can no longer leave some subjects deactivated and
+    others not until the next successful poll happens to repair it.
+    """
+    activate_ids = list(activate_ids)
+    deactivate_ids = list(deactivate_ids)
+    if not activate_ids and not deactivate_ids:
+        return
+
+    with contextlib.closing(connect(db_path)) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        if activate_ids:
+            placeholders = ",".join("?" for _ in activate_ids)
+            conn.execute(
+                f"UPDATE metric_series SET active = 1 WHERE id IN ({placeholders})",
+                activate_ids,
+            )
+        if deactivate_ids:
+            placeholders = ",".join("?" for _ in deactivate_ids)
+            conn.execute(
+                f"UPDATE metric_series SET active = 0 WHERE id IN ({placeholders})",
+                deactivate_ids,
+            )
+        conn.commit()
 
 
 def get_series_by_key(db_path: str | Path, metric_key: str) -> sqlite3.Row | None:

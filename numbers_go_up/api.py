@@ -9,6 +9,7 @@ recomputed per request or imported as a module-level global.
 
 from __future__ import annotations
 
+import json
 import time
 from datetime import UTC, datetime
 from typing import Any
@@ -137,6 +138,25 @@ def stats_delta(
     }
 
 
+def _parse_attrs(attrs_json: str | None) -> dict[str, Any]:
+    """Best-effort parse of ``metric_series.attrs``.
+
+    The column is ``NOT NULL DEFAULT '{}'`` and every writer
+    (``get_or_create_series``) validates before storing, so this should
+    never actually be invalid JSON -- but this is the one endpoint that
+    reports on every series that ever existed, including ones no plugin
+    will ever rewrite, so a corrupt row (a hand-edited DB, a bug in some
+    future writer) degrades to an empty dict rather than 500ing the whole
+    catalogue.
+    """
+    if not attrs_json:
+        return {}
+    try:
+        return json.loads(attrs_json)
+    except json.JSONDecodeError:
+        return {}
+
+
 @router.get("/metrics")
 def list_metrics(request: Request) -> dict[str, Any]:
     db_path = request.app.state.config["storage"]["path"]
@@ -152,6 +172,7 @@ def list_metrics(request: Request) -> dict[str, Any]:
             "last_value": row["last_value"],
             "last_seen": _iso(row["last_seen"]),
             "active": bool(row["active"]),
+            "attrs": _parse_attrs(row["attrs"]),
         }
         for row in storage.list_all_series(db_path)
     ]

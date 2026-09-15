@@ -1,3 +1,4 @@
+import json
 import logging
 import sqlite3
 import threading
@@ -1288,3 +1289,452 @@ class TestFailureLogging:
         warnings = self._records(caplog, logging.WARNING)
         assert len(warnings) == 1
         assert "contract violation" in warnings[0].getMessage()
+
+
+class TestPatternMetrics:
+    def test_pattern_key_is_accepted_and_creates_a_series(self, db_path):
+        plugin = _load_fixture_plugin("_fake_dynamic.py", config={"items": {"42": 7}})
+
+        result = scheduler.run_plugin_once(
+            db_path, plugin, http=None, now=1000, heartbeat_seconds=86400
+        )
+
+        assert result.status == "ok"
+        series = storage.get_series_by_key(db_path, "fake_dynamic.item.42.value")
+        assert series is not None
+        assert series["kind"] == "cumulative"
+        assert series["unit"] == "things"
+
+    def test_value_dict_overrides_label_and_sets_attrs(self, db_path):
+        module = ModuleType("dyn")
+        module.METRICS = {
+            "dyn.item.{id}.value": {
+                "kind": "gauge",
+                "label": "Default Label",
+                "unit": "things",
+            }
+        }
+
+        def collect(config, http):
+            return {
+                "dyn.item.42.value": {
+                    "value": 7,
+                    "label": "Widget 42",
+                    "attrs": {"model_id": 42, "url": "https://example.invalid/42"},
+                }
+            }
+
+        module.collect = collect
+        plugin = _plugin_from_module("dyn", module, module.METRICS)
+
+        result = scheduler.run_plugin_once(
+            db_path, plugin, http=None, now=1000, heartbeat_seconds=86400
+        )
+
+        assert result.status == "ok"
+        series = storage.get_series_by_key(db_path, "dyn.item.42.value")
+        assert series["label"] == "Widget 42"
+
+        conn = sqlite3.connect(str(db_path))
+        try:
+            attrs_json = conn.execute(
+                "SELECT attrs FROM metric_series WHERE id = ?", (series["id"],)
+            ).fetchone()[0]
+        finally:
+            conn.close()
+
+        assert json.loads(attrs_json) == {
+            "model_id": 42,
+            "url": "https://example.invalid/42",
+        }
+
+    def test_kind_in_value_dict_is_a_contract_violation(self, db_path):
+        module = ModuleType("dyn2")
+        module.METRICS = {
+            "dyn2.item.{id}.value": {
+                "kind": "gauge",
+                "label": "Item",
+                "unit": "things",
+            }
+        }
+
+        def collect(config, http):
+            return {"dyn2.item.1.value": {"value": 1, "kind": "cumulative"}}
+
+        module.collect = collect
+        plugin = _plugin_from_module("dyn2", module, module.METRICS)
+
+        result = scheduler.run_plugin_once(
+            db_path, plugin, http=None, now=1000, heartbeat_seconds=86400
+        )
+
+        assert result.status == "error"
+        assert result.samples_written == 0
+        assert "kind" in result.error
+
+    def test_unit_in_value_dict_is_a_contract_violation(self, db_path):
+        module = ModuleType("dyn3")
+        module.METRICS = {
+            "dyn3.item.{id}.value": {
+                "kind": "gauge",
+                "label": "Item",
+                "unit": "things",
+            }
+        }
+
+        def collect(config, http):
+            return {"dyn3.item.1.value": {"value": 1, "unit": "widgets"}}
+
+        module.collect = collect
+        plugin = _plugin_from_module("dyn3", module, module.METRICS)
+
+        result = scheduler.run_plugin_once(
+            db_path, plugin, http=None, now=1000, heartbeat_seconds=86400
+        )
+
+        assert result.status == "error"
+        assert result.samples_written == 0
+
+    def test_cardinality_cap_is_enforced(self, db_path, monkeypatch):
+        monkeypatch.setattr(plugins, "MAX_PATTERN_KEYS_PER_RUN", 2)
+        module = ModuleType("many")
+        module.METRICS = {
+            "many.item.{id}.value": {"kind": "gauge", "label": "Item", "unit": ""}
+        }
+
+        def collect(config, http):
+            return {f"many.item.{i}.value": i for i in range(5)}
+
+        module.collect = collect
+        plugin = _plugin_from_module("many", module, module.METRICS)
+
+        result = scheduler.run_plugin_once(
+            db_path, plugin, http=None, now=1000, heartbeat_seconds=86400
+        )
+
+        assert result.status == "error"
+        assert result.samples_written == 0
+        assert "cardinality" in result.error or "exceeding the cardinality" in (
+            result.error or ""
+        )
+        assert storage.get_series_by_key(db_path, "many.item.0.value") is None
+
+    def test_exact_keys_are_never_counted_or_capped(self, db_path, monkeypatch):
+        # Pins the documented half of the cardinality guard that has no
+        # other coverage: when the cap trips, an exact key must still be
+        # written and survive reconciliation (unlike every pattern key,
+        # which is skipped this run) rather than being swept up by a
+        # regression that caps "any returned key" instead of just
+        # pattern-matched ones.
+        monkeypatch.setattr(plugins, "MAX_PATTERN_KEYS_PER_RUN", 2)
+        module = ModuleType("mixed")
+        module.METRICS = {
+            "mixed.exact.count": {"kind": "gauge", "label": "Exact", "unit": ""},
+            "mixed.item.{id}.value": {"kind": "gauge", "label": "Item", "unit": ""},
+        }
+
+        def collect(config, http):
+            return {
+                "mixed.exact.count": 7,
+                **{f"mixed.item.{i}.value": i for i in range(5)},
+            }
+
+        module.collect = collect
+        plugin = _plugin_from_module("mixed", module, module.METRICS)
+
+        result = scheduler.run_plugin_once(
+            db_path, plugin, http=None, now=1000, heartbeat_seconds=86400
+        )
+
+        assert result.status == "error"
+        assert storage.get_series_by_key(db_path, "mixed.item.0.value") is None
+        exact_series = storage.get_series_by_key(db_path, "mixed.exact.count")
+        assert exact_series is not None
+        assert exact_series["last_value"] == 7
+
+
+class TestValueDictAttrsAndLabelValidation:
+    def test_non_str_label_is_a_contract_violation_not_a_crash(self, db_path):
+        module = ModuleType("badlabel")
+        module.METRICS = {
+            "badlabel.item.{id}.value": {"kind": "gauge", "label": "Item", "unit": ""}
+        }
+
+        def collect(config, http):
+            return {"badlabel.item.1.value": {"value": 1, "label": {"en": "Widget"}}}
+
+        module.collect = collect
+        plugin = _plugin_from_module("badlabel", module, module.METRICS)
+
+        result = scheduler.run_plugin_once(
+            db_path, plugin, http=None, now=1000, heartbeat_seconds=86400
+        )
+
+        assert result.status == "error"
+        assert result.samples_written == 0
+        assert "label" in result.error
+        assert storage.get_series_by_key(db_path, "badlabel.item.1.value") is None
+
+    def test_non_dict_attrs_is_a_contract_violation_not_a_crash(self, db_path):
+        module = ModuleType("badattrs")
+        module.METRICS = {
+            "badattrs.item.{id}.value": {"kind": "gauge", "label": "Item", "unit": ""}
+        }
+
+        def collect(config, http):
+            return {
+                "badattrs.item.1.value": {"value": 1, "attrs": ["not", "a", "dict"]}
+            }
+
+        module.collect = collect
+        plugin = _plugin_from_module("badattrs", module, module.METRICS)
+
+        result = scheduler.run_plugin_once(
+            db_path, plugin, http=None, now=1000, heartbeat_seconds=86400
+        )
+
+        assert result.status == "error"
+        assert result.samples_written == 0
+        assert "attrs" in result.error
+
+    def test_unserializable_attrs_is_a_contract_violation_not_a_crash(self, db_path):
+        module = ModuleType("unserializable")
+        module.METRICS = {
+            "unserializable.item.{id}.value": {
+                "kind": "gauge",
+                "label": "Item",
+                "unit": "",
+            }
+        }
+
+        def collect(config, http):
+            return {
+                "unserializable.item.1.value": {
+                    "value": 1,
+                    "attrs": {"ts": object()},
+                }
+            }
+
+        module.collect = collect
+        plugin = _plugin_from_module("unserializable", module, module.METRICS)
+
+        result = scheduler.run_plugin_once(
+            db_path, plugin, http=None, now=1000, heartbeat_seconds=86400
+        )
+
+        assert result.status == "error"
+        assert result.samples_written == 0
+        assert "attrs" in result.error
+
+    def test_nan_in_attrs_is_a_contract_violation_not_a_later_500(self, db_path):
+        # json.dumps() accepts NaN/Infinity by default, so a plain
+        # "is it JSON-serializable" check lets these through -- only for
+        # FastAPI's response serializer to re-dump the stored value with
+        # allow_nan=False and 500 the whole /api/metrics catalogue later.
+        # Must be rejected here, at the same per-key contract-violation
+        # boundary as every other bad attrs value.
+        module = ModuleType("nan_attrs")
+        module.METRICS = {
+            "nan_attrs.item.{id}.value": {
+                "kind": "gauge",
+                "label": "Item",
+                "unit": "",
+            }
+        }
+
+        def collect(config, http):
+            return {
+                "nan_attrs.item.1.value": {
+                    "value": 1,
+                    "attrs": {"ratio": float("nan")},
+                }
+            }
+
+        module.collect = collect
+        plugin = _plugin_from_module("nan_attrs", module, module.METRICS)
+
+        result = scheduler.run_plugin_once(
+            db_path, plugin, http=None, now=1000, heartbeat_seconds=86400
+        )
+
+        assert result.status == "error"
+        assert result.samples_written == 0
+        assert "attrs" in result.error
+        assert storage.get_series_by_key(db_path, "nan_attrs.item.1.value") is None
+
+    def test_infinite_value_in_attrs_is_a_contract_violation(self, db_path):
+        module = ModuleType("inf_attrs")
+        module.METRICS = {
+            "inf_attrs.item.{id}.value": {
+                "kind": "gauge",
+                "label": "Item",
+                "unit": "",
+            }
+        }
+
+        def collect(config, http):
+            return {
+                "inf_attrs.item.1.value": {
+                    "value": 1,
+                    "attrs": {"ratio": float("inf")},
+                }
+            }
+
+        module.collect = collect
+        plugin = _plugin_from_module("inf_attrs", module, module.METRICS)
+
+        result = scheduler.run_plugin_once(
+            db_path, plugin, http=None, now=1000, heartbeat_seconds=86400
+        )
+
+        assert result.status == "error"
+        assert result.samples_written == 0
+        assert "attrs" in result.error
+
+    def test_a_bad_key_never_aborts_a_run_that_has_other_good_keys(self, db_path):
+        # The whole point of treating this as a per-key contract violation
+        # instead of letting the exception escape: one bad key must not
+        # cost the samples from every other key in the same poll.
+        module = ModuleType("partly_bad")
+        module.METRICS = {
+            "partly_bad.item.{id}.value": {
+                "kind": "gauge",
+                "label": "Item",
+                "unit": "",
+            }
+        }
+
+        def collect(config, http):
+            return {
+                "partly_bad.item.1.value": {"value": 1, "attrs": {"ts": object()}},
+                "partly_bad.item.2.value": 2,
+            }
+
+        module.collect = collect
+        plugin = _plugin_from_module("partly_bad", module, module.METRICS)
+
+        result = scheduler.run_plugin_once(
+            db_path, plugin, http=None, now=1000, heartbeat_seconds=86400
+        )
+
+        assert result.status == "error"
+        assert result.samples_written == 1
+        assert storage.get_series_by_key(db_path, "partly_bad.item.2.value") is not None
+
+
+class TestPatternSeriesLifecycle:
+    def test_a_pattern_key_missing_from_a_successful_run_is_deactivated(self, db_path):
+        plugin = _load_fixture_plugin(
+            "_fake_dynamic.py", config={"items": {"1": 10, "2": 20}}
+        )
+        scheduler.run_plugin_once(
+            db_path, plugin, http=None, now=1000, heartbeat_seconds=86400
+        )
+        assert (
+            storage.get_series_by_key(db_path, "fake_dynamic.item.1.value") is not None
+        )
+        assert (
+            storage.get_series_by_key(db_path, "fake_dynamic.item.2.value") is not None
+        )
+
+        # Model "2" is no longer returned -- a successful run must retire it.
+        plugin2 = _load_fixture_plugin("_fake_dynamic.py", config={"items": {"1": 11}})
+        result = scheduler.run_plugin_once(
+            db_path, plugin2, http=None, now=1300, heartbeat_seconds=86400
+        )
+
+        assert result.status == "ok"
+        assert (
+            storage.get_series_by_key(db_path, "fake_dynamic.item.1.value") is not None
+        )
+        assert storage.get_series_by_key(db_path, "fake_dynamic.item.2.value") is None
+
+        # History is kept, not deleted.
+        conn = sqlite3.connect(str(db_path))
+        try:
+            row = conn.execute(
+                "SELECT active FROM metric_series WHERE metric_key = ?",
+                ("fake_dynamic.item.2.value",),
+            ).fetchone()
+        finally:
+            conn.close()
+        assert row is not None
+        assert row[0] == 0
+
+    def test_a_reactivated_key_becomes_active_again(self, db_path):
+        plugin_both = _load_fixture_plugin(
+            "_fake_dynamic.py", config={"items": {"1": 10, "2": 20}}
+        )
+        plugin_only_one = _load_fixture_plugin(
+            "_fake_dynamic.py", config={"items": {"1": 11}}
+        )
+
+        scheduler.run_plugin_once(
+            db_path, plugin_both, http=None, now=1000, heartbeat_seconds=86400
+        )
+        scheduler.run_plugin_once(
+            db_path, plugin_only_one, http=None, now=1300, heartbeat_seconds=86400
+        )
+        assert storage.get_series_by_key(db_path, "fake_dynamic.item.2.value") is None
+
+        result = scheduler.run_plugin_once(
+            db_path, plugin_both, http=None, now=1600, heartbeat_seconds=86400
+        )
+
+        assert result.status == "ok"
+        assert (
+            storage.get_series_by_key(db_path, "fake_dynamic.item.2.value") is not None
+        )
+
+    def test_no_deactivation_after_a_failed_run(self, db_path):
+        plugin_both = _load_fixture_plugin(
+            "_fake_dynamic.py", config={"items": {"1": 10, "2": 20}}
+        )
+        scheduler.run_plugin_once(
+            db_path, plugin_both, http=None, now=1000, heartbeat_seconds=86400
+        )
+
+        module = ModuleType("fake_dynamic")
+        module.METRICS = plugin_both.metrics
+
+        def collect(config, http):
+            raise RuntimeError("source is down")
+
+        module.collect = collect
+        failing_plugin = _plugin_from_module(
+            "fake_dynamic", module, plugin_both.metrics
+        )
+
+        result = scheduler.run_plugin_once(
+            db_path, failing_plugin, http=None, now=1300, heartbeat_seconds=86400
+        )
+
+        assert result.status == "error"
+        assert (
+            storage.get_series_by_key(db_path, "fake_dynamic.item.1.value") is not None
+        )
+        assert (
+            storage.get_series_by_key(db_path, "fake_dynamic.item.2.value") is not None
+        )
+
+    def test_exact_keys_are_never_auto_deactivated(self, db_path):
+        # fake_constant.demo.value is an exact (non-pattern) METRICS key.
+        plugin = _load_fixture_plugin("_fake_constant.py")
+        scheduler.run_plugin_once(
+            db_path, plugin, http=None, now=1000, heartbeat_seconds=86400
+        )
+
+        # A run that returns nothing must not retire the exact-key series.
+        module = ModuleType("fake_constant")
+        module.METRICS = plugin.metrics
+        module.collect = lambda config, http: {}
+        empty_plugin = _plugin_from_module("fake_constant", module, plugin.metrics)
+
+        result = scheduler.run_plugin_once(
+            db_path, empty_plugin, http=None, now=1300, heartbeat_seconds=86400
+        )
+
+        assert result.status == "ok"
+        assert (
+            storage.get_series_by_key(db_path, "fake_constant.demo.value") is not None
+        )

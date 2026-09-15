@@ -53,49 +53,142 @@ class TestLoadPluginFromPath:
 class TestValidatePluginContract:
     def test_valid_plugin_passes(self):
         module = plugins.load_plugin_from_path(FIXTURES_DIR / "valid.py")
-
         metrics = plugins.validate_plugin_contract("valid", module)
-
         assert metrics == module.METRICS
 
     def test_missing_collect_is_rejected(self, caplog):
         module = plugins.load_plugin_from_path(FIXTURES_DIR / "no_collect.py")
-
-        with caplog.at_level("WARNING"):
+        with caplog.at_level(logging.WARNING):
             metrics = plugins.validate_plugin_contract("no_collect", module)
-
         assert metrics is None
 
     def test_bad_kind_is_rejected(self, caplog):
         module = plugins.load_plugin_from_path(FIXTURES_DIR / "bad_kind.py")
-
-        with caplog.at_level("WARNING"):
+        with caplog.at_level(logging.WARNING):
             metrics = plugins.validate_plugin_contract("bad_kind", module)
-
         assert metrics is None
 
     def test_key_not_prefixed_with_plugin_name_is_rejected(self, caplog):
         module = plugins.load_plugin_from_path(FIXTURES_DIR / "bad_prefix.py")
-
-        with caplog.at_level("WARNING"):
+        with caplog.at_level(logging.WARNING):
             metrics = plugins.validate_plugin_contract("bad_prefix", module)
-
         assert metrics is None
 
     def test_missing_metrics_is_rejected(self, caplog):
         module = ModuleType("no_metrics")
         module.collect = lambda config, http: {}
-
-        with caplog.at_level("WARNING"):
+        with caplog.at_level(logging.WARNING):
             metrics = plugins.validate_plugin_contract("no_metrics", module)
+        assert metrics is None
+
+    def test_pattern_key_with_one_whole_segment_placeholder_is_accepted(self):
+        module = ModuleType("mw")
+        module.collect = lambda config, http: {}
+        module.METRICS = {
+            "mw.model.{id}.downloads": {
+                "kind": "cumulative",
+                "label": "Downloads",
+                "unit": "downloads",
+            }
+        }
+        metrics = plugins.validate_plugin_contract("mw", module)
+        assert metrics == module.METRICS
+
+    def test_pattern_with_two_placeholders_is_rejected(self, caplog):
+        module = ModuleType("mw")
+        module.collect = lambda config, http: {}
+        module.METRICS = {
+            "mw.{a}.{b}.count": {"kind": "gauge", "label": "X", "unit": ""}
+        }
+        with caplog.at_level(logging.WARNING):
+            metrics = plugins.validate_plugin_contract("mw", module)
+        assert metrics is None
+
+    def test_placeholder_not_occupying_a_whole_segment_is_rejected(self, caplog):
+        module = ModuleType("mw")
+        module.collect = lambda config, http: {}
+        module.METRICS = {
+            "mw.model{id}.count": {"kind": "gauge", "label": "X", "unit": ""}
+        }
+        with caplog.at_level(logging.WARNING):
+            metrics = plugins.validate_plugin_contract("mw", module)
+        assert metrics is None
+
+    def test_same_shape_patterns_differing_only_in_final_segment_do_not_overlap(
+        self, caplog
+    ):
+        module = ModuleType("mw")
+        module.collect = lambda config, http: {}
+        module.METRICS = {
+            "mw.model.{id}.downloads": {
+                "kind": "cumulative",
+                "label": "Downloads",
+                "unit": "downloads",
+            },
+            "mw.model.{id}.likes": {
+                "kind": "gauge",
+                "label": "Likes",
+                "unit": "likes",
+            },
+        }
+
+        # Same shape, different metric name at the end -- these don't
+        # overlap (the last segment always differs), so this is the
+        # control case proving the check isn't just rejecting every
+        # multi-pattern plugin.
+        metrics = plugins.validate_plugin_contract("mw", module)
+
+        assert metrics == module.METRICS
+
+    def test_two_patterns_that_could_match_the_same_key_are_rejected(self, caplog):
+        module = ModuleType("mw")
+        module.collect = lambda config, http: {}
+        module.METRICS = {
+            "mw.a.{id}.count": {"kind": "gauge", "label": "A", "unit": ""},
+            # Each pattern has exactly one placeholder (so the earlier
+            # single-placeholder check passes both individually), but at
+            # different positions. A placeholder can match another
+            # pattern's literal segment ("a"/"b" both satisfy
+            # [a-z0-9_-]+), so "mw.a.b.count" matches this one with
+            # id="b" *and* the one below with other="a" -- which one wins
+            # is undefined (dict order).
+            "mw.{other}.b.count": {"kind": "gauge", "label": "B", "unit": ""},
+        }
+
+        with caplog.at_level(logging.WARNING):
+            metrics = plugins.validate_plugin_contract("mw", module)
 
         assert metrics is None
+        assert "overlap" in caplog.text
+
+    def test_patterns_with_different_literal_segments_do_not_overlap(self):
+        module = ModuleType("mw")
+        module.collect = lambda config, http: {}
+        module.METRICS = {
+            "mw.a.{id}.count": {"kind": "gauge", "label": "A", "unit": ""},
+            "mw.b.{id}.count": {"kind": "gauge", "label": "B", "unit": ""},
+        }
+
+        metrics = plugins.validate_plugin_contract("mw", module)
+
+        assert metrics == module.METRICS
+
+    def test_patterns_with_different_segment_counts_do_not_overlap(self):
+        module = ModuleType("mw")
+        module.collect = lambda config, http: {}
+        module.METRICS = {
+            "mw.{id}.count": {"kind": "gauge", "label": "A", "unit": ""},
+            "mw.{id}.sub.count": {"kind": "gauge", "label": "B", "unit": ""},
+        }
+
+        metrics = plugins.validate_plugin_contract("mw", module)
+
+        assert metrics == module.METRICS
 
 
 class TestDiscoverPlugins:
     def test_discovers_builtin_plugins(self):
         config = _config()
-
         loaded = plugins.discover_plugins(
             {**config, "plugins": {"valid": {"enabled": True}}},
             builtin_dir=FIXTURES_DIR,
@@ -127,15 +220,16 @@ class TestDiscoverPlugins:
         # Also proves discovery never even attempts to import it: the
         # fixture file has invalid syntax and would raise if imported.
         config = _config(plugins_config={"underscored": {"enabled": True}})
-
         with caplog.at_level(logging.WARNING):
             loaded = plugins.discover_plugins(config, builtin_dir=FIXTURES_DIR)
 
         assert [p.name for p in loaded] == []
+
         # Discovery must not even attempt to import underscore-prefixed
         # files: nothing about _underscored was logged (an attempted
         # import of its invalid syntax would log an error).
         assert "_underscored" not in caplog.text
+
         # Direct proof: the loader was called for every non-underscore
         # fixture file but never for _underscored.py.
         with patch.object(
@@ -257,7 +351,7 @@ class TestDiscoverPlugins:
             plugins_config={"valid": {"enabled": True, "poll_interval": 60}}
         )
 
-        with caplog.at_level("WARNING"):
+        with caplog.at_level(logging.WARNING):
             loaded = plugins.discover_plugins(config, builtin_dir=FIXTURES_DIR)
 
         assert loaded[0].interval_seconds == 300
@@ -430,4 +524,79 @@ class TestNonMappingPluginConfigEntry:
             "must be a mapping" in record.getMessage()
             for record in caplog.records
             if record.levelno >= logging.WARNING
+        )
+
+
+class TestResolveMetric:
+    METRICS = {
+        "mw.profile.likes": {"kind": "gauge", "label": "Likes", "unit": "likes"},
+        "mw.model.{id}.downloads": {
+            "kind": "cumulative",
+            "label": "Downloads",
+            "unit": "downloads",
+        },
+    }
+
+    def test_exact_key_matches_itself(self):
+        result = plugins.resolve_metric("mw.profile.likes", self.METRICS)
+
+        assert result == ("mw.profile.likes", self.METRICS["mw.profile.likes"])
+
+    def test_pattern_key_matches_a_concrete_subject(self):
+        result = plugins.resolve_metric("mw.model.3070072.downloads", self.METRICS)
+
+        assert result == (
+            "mw.model.{id}.downloads",
+            self.METRICS["mw.model.{id}.downloads"],
+        )
+
+    def test_placeholder_value_outside_allowed_charset_does_not_match(self):
+        assert (
+            plugins.resolve_metric("mw.model.HasCaps.downloads", self.METRICS) is None
+        )
+        assert plugins.resolve_metric("mw.model..downloads", self.METRICS) is None
+
+    def test_unknown_key_matches_nothing(self):
+        assert plugins.resolve_metric("mw.unknown.thing", self.METRICS) is None
+
+    def test_another_plugins_key_never_matches(self):
+        # Isolation: a key from a different plugin's namespace, even one
+        # shaped like it could match this plugin's pattern, must never
+        # resolve against another plugin's own METRICS dict.
+        assert plugins.resolve_metric("other.model.123.downloads", self.METRICS) is None
+
+    def test_exact_entry_beats_an_overlapping_pattern_regardless_of_order(self):
+        # Pins resolve_metric's precedence rule: an exact METRICS entry
+        # wins over a pattern template that also matches the same concrete
+        # key. The pattern is deliberately declared first -- if the
+        # exact-wins branch ever slipped behind the pattern scan, dict
+        # order would silently decide, and the subject would be written
+        # with the pattern's kind, which is then pinned forever (surfacing
+        # later as inexplicable Home Assistant metadata, not an error).
+        metrics = {
+            "mw.model.{id}.downloads": {
+                "kind": "cumulative",
+                "label": "Downloads",
+                "unit": "downloads",
+            },
+            "mw.model.3070072.downloads": {
+                "kind": "gauge",
+                "label": "Flagship",
+                "unit": "downloads",
+            },
+        }
+        result = plugins.resolve_metric("mw.model.3070072.downloads", metrics)
+        assert result == (
+            "mw.model.3070072.downloads",
+            metrics["mw.model.3070072.downloads"],
+        )
+        # Control: the same key does match the pattern when it is the
+        # only entry, so the precedence assertion above is discriminating
+        # rather than vacuous.
+        pattern_only = {
+            "mw.model.{id}.downloads": metrics["mw.model.{id}.downloads"],
+        }
+        assert plugins.resolve_metric("mw.model.3070072.downloads", pattern_only) == (
+            "mw.model.{id}.downloads",
+            metrics["mw.model.{id}.downloads"],
         )

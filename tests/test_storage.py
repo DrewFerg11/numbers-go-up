@@ -1,3 +1,4 @@
+import json
 import sqlite3
 
 import pytest
@@ -131,6 +132,103 @@ class TestGetOrCreateSeries:
             storage.get_or_create_series(
                 db_path, "demo.thing.count", "demo", "counter", "Count", "", "", 1000
             )
+
+    def test_attrs_are_merged_not_replaced_wholesale(self, db_path):
+        series_id = storage.get_or_create_series(
+            db_path,
+            "demo.thing.count",
+            "demo",
+            "gauge",
+            "Count",
+            "",
+            "",
+            1000,
+            attrs={"a": 1},
+        )
+        storage.get_or_create_series(
+            db_path,
+            "demo.thing.count",
+            "demo",
+            "gauge",
+            "Count",
+            "",
+            "",
+            2000,
+            attrs={"b": 2},
+        )
+
+        conn = sqlite3.connect(str(db_path))
+        try:
+            stored = conn.execute(
+                "SELECT attrs FROM metric_series WHERE id = ?", (series_id,)
+            ).fetchone()[0]
+        finally:
+            conn.close()
+        assert json.loads(stored) == {"a": 1, "b": 2}
+
+    def test_attrs_none_leaves_stored_attrs_untouched(self, db_path):
+        series_id = storage.get_or_create_series(
+            db_path,
+            "demo.thing.count",
+            "demo",
+            "gauge",
+            "Count",
+            "",
+            "",
+            1000,
+            attrs={"a": 1},
+        )
+        storage.get_or_create_series(
+            db_path, "demo.thing.count", "demo", "gauge", "Count", "", "", 2000
+        )
+
+        conn = sqlite3.connect(str(db_path))
+        try:
+            stored = conn.execute(
+                "SELECT attrs FROM metric_series WHERE id = ?", (series_id,)
+            ).fetchone()[0]
+        finally:
+            conn.close()
+        assert json.loads(stored) == {"a": 1}
+
+    def test_non_object_stored_attrs_are_replaced_instead_of_crashing(self, db_path):
+        # A hand-edited row (or a future buggy writer) could leave
+        # valid-but-non-object JSON in attrs ("[1,2]", "3"). merging a new
+        # dict into that must not raise AttributeError and abort the
+        # caller (run_plugin_once's poll loop) -- it should just treat the
+        # corrupt value as empty and start fresh.
+        series_id = storage.get_or_create_series(
+            db_path, "demo.thing.count", "demo", "gauge", "Count", "", "", 1000
+        )
+        conn = sqlite3.connect(str(db_path))
+        try:
+            conn.execute(
+                "UPDATE metric_series SET attrs = ? WHERE id = ?", ("[1,2]", series_id)
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        storage.get_or_create_series(
+            db_path,
+            "demo.thing.count",
+            "demo",
+            "gauge",
+            "Count",
+            "",
+            "",
+            2000,
+            attrs={"a": 1},
+        )
+
+        conn = sqlite3.connect(str(db_path))
+        try:
+            stored = conn.execute(
+                "SELECT attrs FROM metric_series WHERE id = ?", (series_id,)
+            ).fetchone()[0]
+        finally:
+            conn.close()
+        assert json.loads(stored) == {"a": 1}
 
 
 class TestRecordSample:
