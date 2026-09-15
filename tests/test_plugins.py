@@ -7,12 +7,14 @@ from numbers_go_up import plugins
 
 FIXTURES_DIR = Path(__file__).resolve().parent / "fixtures" / "plugins"
 
+
 def _config(plugin_dir=None, plugins_config=None, poll=None):
     return {
         "plugin_dir": plugin_dir,
         "plugins": plugins_config or {},
         "poll": poll or {"default_interval": 1800},
     }
+
 
 def _user_dir_with_no_poll_plugin(tmp_path):
     """A user plugin with no POLL_INTERVAL_SECONDS, so the configured
@@ -25,6 +27,7 @@ def _user_dir_with_no_poll_plugin(tmp_path):
         "def collect(config, http): raise NotImplementedError\n"
     )
     return user_dir
+
 
 class TestLoadPluginFromPath:
     def test_loads_a_valid_module(self):
@@ -45,6 +48,7 @@ class TestLoadPluginFromPath:
             module = plugins.load_plugin_from_path(FIXTURES_DIR / "broken_import.py")
 
         assert module is None
+
 
 class TestValidatePluginContract:
     def test_valid_plugin_passes(self):
@@ -180,6 +184,7 @@ class TestValidatePluginContract:
         metrics = plugins.validate_plugin_contract("mw", module)
 
         assert metrics == module.METRICS
+
 
 class TestDiscoverPlugins:
     def test_discovers_builtin_plugins(self):
@@ -450,6 +455,7 @@ class TestDiscoverPlugins:
 
         assert loaded == []
 
+
 class TestNonMappingPluginConfigEntry:
     # _deep_merge only type-checks the top-level keys, so a per-plugin
     # entry that isn't a mapping (e.g. plugins: {ticker: "on"} — a quoted
@@ -520,6 +526,7 @@ class TestNonMappingPluginConfigEntry:
             if record.levelno >= logging.WARNING
         )
 
+
 class TestResolveMetric:
     METRICS = {
         "mw.profile.likes": {"kind": "gauge", "label": "Likes", "unit": "likes"},
@@ -589,6 +596,7 @@ class TestResolveMetric:
         pattern_only = {
             "mw.model.{id}.downloads": metrics["mw.model.{id}.downloads"],
         }
-        assert plugins.resolve_metric(
-            "mw.model.3070072.downloads", pattern_only
-        ) == ("mw.model.{id}.downloads", metrics["mw.model.{id}.downloads"])
+        assert plugins.resolve_metric("mw.model.3070072.downloads", pattern_only) == (
+            "mw.model.{id}.downloads",
+            metrics["mw.model.{id}.downloads"],
+        )
