@@ -1,0 +1,29 @@
+{
+  "total": 2,
+  "hits": [
+    {
+      "id": 1000001,
+      "title": "Placeholder Model One",
+      "slug": "placeholder-model-one",
+      "downloadCount": 120,
+      "printCount": 40,
+      "likeCount": 15,
+      "collectionCount": 3,
+      "commentCount": 2,
+      "shareCount": 0,
+      "readCount": 0
+    },
+    {
+      "id": 1000002,
+      "title": "Placeholder Model Two",
+      "slug": "placeholder-model-two",
+      "downloadCount": 218,
+      "printCount": 61,
+      "likeCount": 27,
+      "collectionCount": 4,
+      "commentCount": 5,
+      "shareCount": 0,
+      "readCount": 0
+    }
+  ]
+}

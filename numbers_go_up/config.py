@@ -56,6 +56,10 @@ EXAMPLE_CONFIG = """\
 #     enabled: true              # every plugin is OFF until explicitly enabled
 #     user_id: "your-makerworld-user-id"
 #     poll_interval: 1800
+#     models:
+#       enabled: false           # opt-in: adds one paged listing request/poll
+#       include: []              # model IDs to track; empty = every published model
+#       max: 50                  # cardinality guard, applied after filtering
 """
 
 
