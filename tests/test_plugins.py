@@ -54,26 +54,26 @@ class TestValidatePluginContract:
 
     def test_missing_collect_is_rejected(self, caplog):
         module = plugins.load_plugin_from_path(FIXTURES_DIR / "no_collect.py")
-        with caplog.at_level("WARNING"):
+        with caplog.at_level(logging.WARNING):
             metrics = plugins.validate_plugin_contract("no_collect", module)
         assert metrics is None
 
     def test_bad_kind_is_rejected(self, caplog):
         module = plugins.load_plugin_from_path(FIXTURES_DIR / "bad_kind.py")
-        with caplog.at_level("WARNING"):
+        with caplog.at_level(logging.WARNING):
             metrics = plugins.validate_plugin_contract("bad_kind", module)
         assert metrics is None
 
     def test_key_not_prefixed_with_plugin_name_is_rejected(self, caplog):
         module = plugins.load_plugin_from_path(FIXTURES_DIR / "bad_prefix.py")
-        with caplog.at_level("WARNING"):
+        with caplog.at_level(logging.WARNING):
             metrics = plugins.validate_plugin_contract("bad_prefix", module)
         assert metrics is None
 
     def test_missing_metrics_is_rejected(self, caplog):
         module = ModuleType("no_metrics")
         module.collect = lambda config, http: {}
-        with caplog.at_level("WARNING"):
+        with caplog.at_level(logging.WARNING):
             metrics = plugins.validate_plugin_contract("no_metrics", module)
         assert metrics is None
 
@@ -96,7 +96,7 @@ class TestValidatePluginContract:
         module.METRICS = {
             "mw.{a}.{b}.count": {"kind": "gauge", "label": "X", "unit": ""}
         }
-        with caplog.at_level("WARNING"):
+        with caplog.at_level(logging.WARNING):
             metrics = plugins.validate_plugin_contract("mw", module)
         assert metrics is None
 
@@ -106,7 +106,7 @@ class TestValidatePluginContract:
         module.METRICS = {
             "mw.model{id}.count": {"kind": "gauge", "label": "X", "unit": ""}
         }
-        with caplog.at_level("WARNING"):
+        with caplog.at_level(logging.WARNING):
             metrics = plugins.validate_plugin_contract("mw", module)
         assert metrics is None
 
@@ -151,7 +151,7 @@ class TestValidatePluginContract:
             "mw.{other}.b.count": {"kind": "gauge", "label": "B", "unit": ""},
         }
 
-        with caplog.at_level("WARNING"):
+        with caplog.at_level(logging.WARNING):
             metrics = plugins.validate_plugin_contract("mw", module)
 
         assert metrics is None
@@ -346,7 +346,7 @@ class TestDiscoverPlugins:
             plugins_config={"valid": {"enabled": True, "poll_interval": 60}}
         )
 
-        with caplog.at_level("WARNING"):
+        with caplog.at_level(logging.WARNING):
             loaded = plugins.discover_plugins(config, builtin_dir=FIXTURES_DIR)
 
         assert loaded[0].interval_seconds == 300
@@ -358,7 +358,7 @@ class TestDiscoverPlugins:
             plugins_config={"valid": {"enabled": True, "poll_interval": 0}}
         )
 
-        with caplog.at_level("WARNING"):
+        with caplog.at_level(logging.WARNING):
             loaded = plugins.discover_plugins(config, builtin_dir=FIXTURES_DIR)
 
         assert loaded[0].interval_seconds == 300
@@ -377,7 +377,7 @@ class TestDiscoverPlugins:
             plugins_config={"no_poll": {"enabled": True}},
         )
 
-        with caplog.at_level("WARNING"):
+        with caplog.at_level(logging.WARNING):
             loaded = plugins.discover_plugins(config, builtin_dir=FIXTURES_DIR)
 
         assert loaded[0].interval_seconds == 300
@@ -398,7 +398,7 @@ class TestDiscoverPlugins:
             },
         )
 
-        with caplog.at_level("WARNING"):
+        with caplog.at_level(logging.WARNING):
             loaded = plugins.discover_plugins(config, builtin_dir=FIXTURES_DIR)
 
         assert [p.name for p in loaded] == ["no_poll", "valid"]
@@ -415,7 +415,7 @@ class TestDiscoverPlugins:
             plugins_config={"no_poll": {"enabled": True}},
         )
 
-        with caplog.at_level("WARNING"):
+        with caplog.at_level(logging.WARNING):
             loaded = plugins.discover_plugins(config, builtin_dir=FIXTURES_DIR)
 
         assert loaded[0].interval_seconds == 300
@@ -428,7 +428,7 @@ class TestDiscoverPlugins:
             plugins_config={"valid": {"enabled": True, "poll_interval": True}}
         )
 
-        with caplog.at_level("WARNING"):
+        with caplog.at_level(logging.WARNING):
             loaded = plugins.discover_plugins(config, builtin_dir=FIXTURES_DIR)
 
         assert loaded[0].interval_seconds == 1800
