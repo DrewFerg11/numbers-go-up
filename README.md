@@ -121,6 +121,12 @@ backoff when asked to slow down.
 You are responsible for complying with the terms of any service you point this
 at. See [NOTICE.md](NOTICE.md) for the full statement.
 
+**Documented exception:** MakerWorld can optionally track your own published
+models' counters, next to its eight profile counters
+(`plugins.makerworld.models` in [`config.yaml.example`](config.yaml.example)).
+It's opt-in and adds one paged listing request per poll — still public data
+about your own account, still no auth — on top of the one profile request.
+
 ## License
 
 MIT — see [LICENSE](LICENSE).
