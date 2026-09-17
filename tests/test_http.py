@@ -97,6 +97,88 @@ class TestBuildClient:
         assert str(exc_info.value).startswith(http.BLOCKED_ERROR_PREFIX)
         assert exc_info.value.response.status_code == 403
 
+    def test_403_with_ratelimit_remaining_zero_raises_rate_limited_not_blocked(self):
+        # GitHub's primary rate limit returns HTTP 403 with
+        # x-ratelimit-remaining: 0 -- generic handling, not hostname-gated,
+        # so any source sending these headers gets the same treatment.
+        client = http.build_client(
+            transport=httpx.MockTransport(
+                lambda r: httpx.Response(
+                    403,
+                    headers={
+                        "x-ratelimit-remaining": "0",
+                        "x-ratelimit-reset": "9999999999",
+                    },
+                )
+            )
+        )
+
+        with pytest.raises(http.RateLimited) as exc_info:
+            client.get("https://example.invalid/")
+
+        assert not str(exc_info.value).startswith(http.BLOCKED_ERROR_PREFIX)
+
+    def test_403_with_ratelimit_remaining_zero_uses_reset_as_retry_after(self):
+        # http.py doesn't get to control "now" (it calls
+        # parse_epoch_retry_after without one), so the reset time has to be
+        # relative to the real clock, not a fixed date in the past.
+        reset = datetime.now(UTC) + timedelta(seconds=300)
+        client = http.build_client(
+            transport=httpx.MockTransport(
+                lambda r: httpx.Response(
+                    403,
+                    headers={
+                        "x-ratelimit-remaining": "0",
+                        "x-ratelimit-reset": str(int(reset.timestamp())),
+                    },
+                )
+            )
+        )
+
+        with pytest.raises(http.RateLimited) as exc_info:
+            client.get("https://example.invalid/")
+
+        assert exc_info.value.retry_after == pytest.approx(300.0, abs=1.0)
+
+    def test_403_with_nonzero_ratelimit_remaining_still_raises_blocked(self):
+        client = http.build_client(
+            transport=httpx.MockTransport(
+                lambda r: httpx.Response(403, headers={"x-ratelimit-remaining": "5"})
+            )
+        )
+
+        with pytest.raises(http.Blocked):
+            client.get("https://example.invalid/")
+
+    def test_403_with_huge_ratelimit_reset_still_raises_rate_limited(self):
+        # A bogus/huge x-ratelimit-reset must not crash the response hook
+        # with an unhandled ValueError/OverflowError from inside
+        # parse_epoch_retry_after -- it degrades to retry_after=None.
+        client = http.build_client(
+            transport=httpx.MockTransport(
+                lambda r: httpx.Response(
+                    403,
+                    headers={
+                        "x-ratelimit-remaining": "0",
+                        "x-ratelimit-reset": "9" * 20,
+                    },
+                )
+            )
+        )
+
+        with pytest.raises(http.RateLimited) as exc_info:
+            client.get("https://example.invalid/")
+
+        assert exc_info.value.retry_after is None
+
+    def test_plain_403_with_no_ratelimit_headers_still_raises_blocked(self):
+        client = http.build_client(
+            transport=httpx.MockTransport(lambda r: httpx.Response(403))
+        )
+
+        with pytest.raises(http.Blocked):
+            client.get("https://example.invalid/")
+
     def test_blocked_is_an_http_status_error(self):
         # Plugins that already expect a 403 to raise HTTPStatusError (via
         # raise_for_status) keep working unchanged.
@@ -174,3 +256,37 @@ class TestParseRetryAfter:
         header_value = email.utils.format_datetime(past, usegmt=True)
 
         assert http.parse_retry_after(header_value, now=now) == 0.0
+
+
+class TestParseEpochRetryAfter:
+    def test_none_returns_none(self):
+        assert http.parse_epoch_retry_after(None) is None
+
+    def test_future_epoch_seconds(self):
+        now = datetime(2026, 1, 1, tzinfo=UTC)
+        reset = now + timedelta(seconds=300)
+
+        assert http.parse_epoch_retry_after(
+            str(int(reset.timestamp())), now=now
+        ) == pytest.approx(300.0, abs=1.0)
+
+    def test_past_epoch_returns_zero_not_negative(self):
+        now = datetime(2026, 1, 1, tzinfo=UTC)
+        past = now - timedelta(seconds=60)
+
+        assert http.parse_epoch_retry_after(str(int(past.timestamp())), now=now) == 0.0
+
+    def test_unparseable_value_returns_none(self):
+        assert http.parse_epoch_retry_after("not a number") is None
+
+    def test_unicode_digit_characters_return_none_not_valueerror(self):
+        assert http.parse_epoch_retry_after("²") is None
+        assert http.parse_epoch_retry_after("١٢٣") is None
+
+    def test_huge_numeric_value_returns_none_not_raise(self):
+        # All-digit strings pass the isdigit() gate but can still overflow
+        # datetime.fromtimestamp (ValueError) or the platform's time_t
+        # (OverflowError) -- must return None like any other unparseable
+        # value, not crash the response hook every plugin's client shares.
+        assert http.parse_epoch_retry_after("9" * 14) is None
+        assert http.parse_epoch_retry_after("9" * 20) is None

@@ -2,8 +2,7 @@
 # ci-test.yml deliberately excludes -- see its `-m "not live"` comment.
 #
 # Each source is its own matrix entry so one plugin's 403 can't mask another
-# plugin's parse break, and adding a source is a one-line change. Only
-# `makerworld` exists today.
+# plugin's parse break, and adding a source is a one-line change.
 #
 # Filing policy (see docs/gh-workflows if this disagrees):
 #   - A single failure is noise -- MakerWorld and TikTok both 403 GitHub's
@@ -45,6 +44,8 @@ jobs:
         include:
           - plugin: makerworld
             secret_name: NGU_CANARY_MAKERWORLD_UID
+          - plugin: github
+            secret_name: NGU_CANARY_GITHUB_REPO
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -76,12 +77,21 @@ jobs:
           # Export under the matrix's own secret name, not a hardcoded one --
           # a second plugin's matrix entry must not have to touch this line.
           export "${SECRET_NAME}=${SECRET_VALUE}"
+          # GitHub is the one plugin that takes an optional token, and this
+          # workflow already has one for free: the job's own GITHUB_TOKEN.
+          # Using it keeps the canary off the unauthenticated 60/hr budget,
+          # which Azure's shared runner IPs can otherwise exhaust from
+          # unrelated traffic before this probe even runs.
+          if [ "$PLUGIN" = "github" ]; then
+            export NGU_GITHUB_TOKEN="$GH_ACTIONS_TOKEN"
+          fi
           pytest -q -m live -k "$PLUGIN" 2>&1 | tee /tmp/canary-output.txt
           exit "${PIPESTATUS[0]}"
         env:
           PLUGIN: ${{ matrix.plugin }}
           SECRET_NAME: ${{ matrix.secret_name }}
           SECRET_VALUE: ${{ secrets[matrix.secret_name] }}
+          GH_ACTIONS_TOKEN: ${{ github.token }}
 
       # Scrub the secret value out of the captured output (tracebacks and
       # assertion diffs are the likely way it'd leak) before anything below

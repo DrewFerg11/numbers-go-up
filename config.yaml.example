@@ -27,3 +27,11 @@
 #       enabled: false           # opt-in: adds one paged listing request/poll
 #       include: []              # model IDs to track; empty = every published model
 #       max: 50                  # cardinality guard, applied after filtering
+#
+#   github:
+#     enabled: true              # every plugin is OFF until explicitly enabled
+#     repos: ["owner/name"]      # "owner/name" strings; renames are followed
+#     release_downloads: false   # true adds paged release-asset requests/poll
+#     max: 20                    # cardinality guard on repos
+#     # Optional token: set the NGU_GITHUB_TOKEN env var, never here, to
+#     # raise the unauthenticated 60/hr budget to 5,000/hr.
