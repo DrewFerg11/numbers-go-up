@@ -25,6 +25,7 @@ from numbers_go_up.api import (
     _parse_attrs,
     _plugin_statuses,
 )
+from numbers_go_up.http import BLOCKED_ERROR_PREFIX
 from numbers_go_up.plugins import is_pattern_key, resolve_metric
 
 logger = logging.getLogger(__name__)
@@ -279,5 +280,6 @@ def dashboard_index(
             "ranges": VALID_RANGES,
             "any_enabled": any_enabled,
             "unhealthy_failure_threshold": DEFAULT_UNHEALTHY_FAILURES,
+            "blocked_error_prefix": BLOCKED_ERROR_PREFIX,
         },
     )

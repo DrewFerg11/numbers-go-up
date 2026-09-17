@@ -92,6 +92,22 @@ def test_index_exposes_the_unhealthy_failure_threshold_to_the_client(tmp_path):
     assert f'data-unhealthy-threshold="{DEFAULT_UNHEALTHY_FAILURES}"' in response.text
 
 
+def test_index_exposes_the_blocked_error_prefix_to_the_client(tmp_path):
+    # dashboard.js checks last_error against this prefix (matching
+    # api._unhealthy_reason's own check) rather than trusting `status`
+    # alone -- a blocked plugin stays scheduled and retried, so its newest
+    # run can read "polling" (in flight) while last_error still carries
+    # the prior blocked result. Checking status alone would let the dot
+    # go green/grey exactly when /health/plugins reports it unhealthy.
+    from numbers_go_up.http import BLOCKED_ERROR_PREFIX
+
+    client, _ = client_for(tmp_path)
+
+    response = client.get("/")
+
+    assert f'data-blocked-prefix="{BLOCKED_ERROR_PREFIX}"' in response.text
+
+
 def test_index_tiles_and_row_labels_have_no_href_before_the_detail_page_ships(
     tmp_path,
 ):
@@ -107,6 +123,19 @@ def test_index_tiles_and_row_labels_have_no_href_before_the_detail_page_ships(
 
     assert '.href = "/m/' not in js
     assert 'removeAttribute("href")' in js
+
+
+def test_status_class_checks_last_error_not_just_status(tmp_path):
+    # No JS test runner in this repo, so this pins the source: statusClass
+    # must key off `last_error` (matching api._unhealthy_reason's own
+    # blocked check), not `plugin.status === "blocked"` alone -- a blocked
+    # plugin stays scheduled, so a retry in flight reports status
+    # "polling" while last_error still says blocked. Fails loudly if a
+    # future edit reverts to the status-only check.
+    js = (dashboard.STATIC_DIR / "js" / "dashboard.js").read_text()
+
+    assert "plugin.last_error" in js
+    assert "BLOCKED_PREFIX" in js
 
 
 def test_index_renders_with_every_plugin_failing(tmp_path):

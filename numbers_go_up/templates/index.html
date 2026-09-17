@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}numbers-go-up — Overview{% endblock %}
 {% block body %}
-<div class="app" data-initial-range="{{ range }}" data-unhealthy-threshold="{{ unhealthy_failure_threshold }}">
+<div class="app" data-initial-range="{{ range }}" data-unhealthy-threshold="{{ unhealthy_failure_threshold }}" data-blocked-prefix="{{ blocked_error_prefix }}">
   <header class="topbar">
     <div class="brand">
       <span class="brand-mark" aria-hidden="true">&#9650;</span>
