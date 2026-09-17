@@ -1,0 +1,98 @@
+{% extends "base.html" %}
+{% block title %}numbers-go-up — Overview{% endblock %}
+{% block body %}
+<div class="app" data-initial-range="{{ range }}" data-unhealthy-threshold="{{ unhealthy_failure_threshold }}" data-blocked-prefix="{{ blocked_error_prefix }}">
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true">&#9650;</span>
+      <span class="brand-name">numbers-go-up</span>
+    </div>
+    <nav class="range-switcher" role="tablist" aria-label="Time range">
+      {% for r in ranges %}
+      <button type="button" class="range-btn" data-range="{{ r }}" role="tab"
+        aria-selected="{{ 'true' if r == range else 'false' }}">{{ r }}</button>
+      {% endfor %}
+    </nav>
+    <div class="topbar-right">
+      <span class="updated-label" id="updated-label">Updated &mdash;</span>
+      <button type="button" class="theme-toggle" id="theme-toggle" aria-label="Toggle theme">&#9680;</button>
+    </div>
+  </header>
+
+  <main>
+    <section class="empty-state" id="empty-state" hidden>
+      <h2>No metrics yet</h2>
+      <p>
+        Enable a plugin in <code>config.yaml</code> to start collecting.
+        See the
+        <a href="https://github.com/DrewFerg11/numbers-go-up#running-it" rel="noopener noreferrer">README</a>
+        for setup.
+      </p>
+    </section>
+
+    <section class="index-strip" id="index-strip" aria-label="Pinned metrics"></section>
+
+    <section class="watchlist" id="watchlist" aria-label="All metrics">
+      <div class="watchlist-header">
+        <span class="col-metric">Metric</span>
+        <span class="col-trend">{{ range }} Trend</span>
+        <span class="col-last">Last</span>
+        <span class="col-change">Change</span>
+        <span class="col-highlow">High/Low</span>
+        <span class="col-updated">Upd</span>
+      </div>
+      <div id="watchlist-body"></div>
+    </section>
+  </main>
+
+  <footer class="status-line" id="status-line" aria-label="Plugin status"></footer>
+</div>
+
+<template id="tile-template">
+  <a class="tile" href="#">
+    <div class="tile-plugin"></div>
+    <div class="tile-label"></div>
+    <div class="tile-value-row">
+      <span class="tile-value"></span>
+      <span class="tile-change"></span>
+    </div>
+    <svg class="tile-spark" width="100%" height="28" preserveAspectRatio="none"></svg>
+  </a>
+</template>
+
+<template id="group-template">
+  <div class="watchlist-group">
+    <div class="group-header">
+      <span class="group-name"></span>
+      <span class="group-count"></span>
+    </div>
+    <div class="group-rows"></div>
+    <button type="button" class="fold-toggle" hidden></button>
+  </div>
+</template>
+
+<template id="row-template">
+  <div class="watchlist-row" tabindex="0">
+    <div class="col-metric">
+      <a class="row-label" href="#"></a>
+      <span class="stale-chip" hidden>STALE</span>
+      <div class="row-key"></div>
+    </div>
+    <svg class="col-trend row-spark" width="100%" height="24" preserveAspectRatio="none"></svg>
+    <span class="col-last row-last"></span>
+    <span class="col-change row-change"></span>
+    <span class="col-highlow row-highlow"></span>
+    <span class="col-updated row-updated"></span>
+  </div>
+</template>
+
+<template id="status-dot-template">
+  <span class="status-dot" title="">
+    <span class="dot"></span>
+    <span class="dot-name"></span>
+  </span>
+</template>
+{% endblock %}
+{% block scripts %}
+<script src="/static/js/dashboard.js"></script>
+{% endblock %}

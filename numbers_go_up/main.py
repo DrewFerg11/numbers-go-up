@@ -4,8 +4,9 @@ from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from fastapi.staticfiles import StaticFiles
 
-from numbers_go_up import __version__, api, http, migrate, scheduler
+from numbers_go_up import __version__, api, dashboard, http, migrate, scheduler
 from numbers_go_up.config import load_config
 from numbers_go_up.plugins import discover_plugin_names, discover_plugins
 
@@ -84,8 +85,15 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # plugins, so this covers exactly the ones the stale rule needs an
     # interval for. build_scheduler() below discovers again to build its
     # jobs; the duplicate work happens once at startup, not per request.
+    enabled_plugins = discover_plugins(config)
     app.state.plugin_intervals = {
-        plugin.name: plugin.interval_seconds for plugin in discover_plugins(config)
+        plugin.name: plugin.interval_seconds for plugin in enabled_plugins
+    }
+    # The dashboard overview needs each plugin's METRICS to tell a pattern
+    # series (e.g. per-model) from a static one -- same one-time discovery,
+    # no extra module execution per request.
+    app.state.plugin_metrics = {
+        plugin.name: plugin.metrics for plugin in enabled_plugins
     }
     # /api/plugins reports on every discovered plugin, enabled or not, but
     # must not discover per request: discovery executes every plugin module
@@ -111,6 +119,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 app = FastAPI(title="numbers-go-up", version=__version__, lifespan=lifespan)
 app.include_router(api.router)
 app.include_router(api.health_router)
+app.include_router(dashboard.router)
+app.mount("/static", StaticFiles(directory=str(dashboard.STATIC_DIR)), name="static")
 
 
 @app.get("/health")

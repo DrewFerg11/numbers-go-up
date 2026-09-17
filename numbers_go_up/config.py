@@ -77,6 +77,10 @@ EXAMPLE_CONFIG = """\
 #         id: "UCxxxxxxxxxxxxxxxxxxxxxx"   # case-sensitive; not a handle/URL
 #     max: 5                     # cardinality guard on channels
 #     # Required: set the NGU_YOUTUBE_API_KEY env var, never here.
+#
+# dashboard:
+#   pinned: []        # up to 6 metric keys for the index strip
+#                      # empty = first 4 cumulative metrics
 """
 
 
@@ -100,6 +104,9 @@ def _defaults(data_dir: str) -> dict[str, Any]:
             "port": 8080,
         },
         "plugins": {},
+        "dashboard": {
+            "pinned": [],
+        },
     }
 
 
