@@ -150,6 +150,27 @@ class TestBuildClient:
         with pytest.raises(http.Blocked):
             client.get("https://example.invalid/")
 
+    def test_403_with_huge_ratelimit_reset_still_raises_rate_limited(self):
+        # A bogus/huge x-ratelimit-reset must not crash the response hook
+        # with an unhandled ValueError/OverflowError from inside
+        # parse_epoch_retry_after -- it degrades to retry_after=None.
+        client = http.build_client(
+            transport=httpx.MockTransport(
+                lambda r: httpx.Response(
+                    403,
+                    headers={
+                        "x-ratelimit-remaining": "0",
+                        "x-ratelimit-reset": "9" * 20,
+                    },
+                )
+            )
+        )
+
+        with pytest.raises(http.RateLimited) as exc_info:
+            client.get("https://example.invalid/")
+
+        assert exc_info.value.retry_after is None
+
     def test_plain_403_with_no_ratelimit_headers_still_raises_blocked(self):
         client = http.build_client(
             transport=httpx.MockTransport(lambda r: httpx.Response(403))
@@ -261,3 +282,11 @@ class TestParseEpochRetryAfter:
     def test_unicode_digit_characters_return_none_not_valueerror(self):
         assert http.parse_epoch_retry_after("²") is None
         assert http.parse_epoch_retry_after("١٢٣") is None
+
+    def test_huge_numeric_value_returns_none_not_raise(self):
+        # All-digit strings pass the isdigit() gate but can still overflow
+        # datetime.fromtimestamp (ValueError) or the platform's time_t
+        # (OverflowError) -- must return None like any other unparseable
+        # value, not crash the response hook every plugin's client shares.
+        assert http.parse_epoch_retry_after("9" * 14) is None
+        assert http.parse_epoch_retry_after("9" * 20) is None

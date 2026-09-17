@@ -112,7 +112,15 @@ def parse_epoch_retry_after(
         return None
 
     reference = now if now is not None else datetime.now(UTC)
-    reset = datetime.fromtimestamp(float(value), tz=UTC)
+    try:
+        reset = datetime.fromtimestamp(float(value), tz=UTC)
+    except (ValueError, OverflowError, OSError):
+        # A syntactically-numeric header can still be out of range for
+        # datetime (ValueError) or the platform's time_t (OverflowError on
+        # CPython, OSError on some platforms) -- a bogus/huge reset header
+        # must return None like any other unparseable value, not crash the
+        # response hook every plugin's client shares.
+        return None
     return max((reset - reference).total_seconds(), 0.0)
 
 

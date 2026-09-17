@@ -24,6 +24,7 @@ import json
 import logging
 import os
 import re
+from urllib.parse import urlparse
 
 import httpx
 
@@ -259,6 +260,16 @@ def _fetch_release_downloads(http, headers: dict[str, str], repo: str) -> int:
         next_url = _parse_link_next(response.headers.get("Link"))
         if not next_url:
             break
+        # The token (when set) rides in `headers` on every page, including
+        # this manually-followed one -- follow_redirects doesn't help here
+        # since this isn't a redirect, so a Link header pointing off
+        # api.github.com (a compromised or misbehaving front end) must not
+        # silently receive it.
+        if urlparse(next_url).hostname != _API_HOST:
+            raise ValueError(
+                f"GitHub releases for {repo}: refusing to follow a Link "
+                f"'next' URL off {_API_HOST}: {next_url!r}"
+            )
         url = next_url
         params = None  # the next URL already carries its own query string
     else:

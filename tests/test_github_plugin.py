@@ -282,6 +282,34 @@ class TestReleaseDownloads:
                 _client(handler),
             )
 
+    def test_link_next_off_host_is_refused_not_followed(self):
+        # A Link: rel="next" header pointing anywhere but api.github.com
+        # must never be followed with the same headers -- that's where an
+        # Authorization token would leak if a front end misbehaved.
+        repo_body = _repo_body()
+        releases = _fixture("github_releases.json")
+        requests = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            requests.append(request)
+            if request.url.path.endswith("/releases"):
+                return httpx.Response(
+                    200,
+                    json=releases[:1],
+                    headers={"Link": '<https://evil.invalid/next>; rel="next"'},
+                )
+            return httpx.Response(200, json=repo_body)
+
+        with pytest.raises(ValueError, match="evil.invalid"):
+            github.collect(
+                {"repos": ["example-owner/example-repo"], "release_downloads": True},
+                _client(handler),
+            )
+
+        # Only the repo lookup and the first (legitimate) releases page --
+        # never a request to the off-host URL.
+        assert not any("evil.invalid" in str(r.url) for r in requests)
+
     def test_missing_assets_field_fails_the_whole_poll(self):
         repo_body = _repo_body()
 
