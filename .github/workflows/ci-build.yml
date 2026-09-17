@@ -54,7 +54,11 @@ jobs:
             if curl -fsS localhost:8080/health >/dev/null 2>&1; then break; fi
             sleep 1
           done
-          UID_IN_CONTAINER=$(docker exec ngu-default id -u)
+          # `docker exec` runs as the image's configured USER (root, so the
+          # entrypoint can drop privileges) regardless of what PID 1 is
+          # actually running as -- stat PID 1's own /proc entry instead of
+          # `id -u` to see its real credentials.
+          UID_IN_CONTAINER=$(docker exec ngu-default stat -c '%u' /proc/1)
           if [ "$UID_IN_CONTAINER" != "1000" ]; then
             echo "::error::Expected UID 1000 inside the container, got $UID_IN_CONTAINER"
             docker logs ngu-default
@@ -73,8 +77,8 @@ jobs:
             if curl -fsS localhost:8080/health >/dev/null 2>&1; then break; fi
             sleep 1
           done
-          UID_IN_CONTAINER=$(docker exec ngu-puid id -u)
-          GID_IN_CONTAINER=$(docker exec ngu-puid id -g)
+          UID_IN_CONTAINER=$(docker exec ngu-puid stat -c '%u' /proc/1)
+          GID_IN_CONTAINER=$(docker exec ngu-puid stat -c '%g' /proc/1)
           if [ "$UID_IN_CONTAINER" != "1026" ] || [ "$GID_IN_CONTAINER" != "100" ]; then
             echo "::error::Expected 1026:100 inside the container, got ${UID_IN_CONTAINER}:${GID_IN_CONTAINER}"
             docker logs ngu-puid
