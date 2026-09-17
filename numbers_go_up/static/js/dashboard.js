@@ -23,10 +23,20 @@
   var rowTemplate = document.getElementById("row-template");
   var statusDotTemplate = document.getElementById("status-dot-template");
 
+  var chartHeader = document.getElementById("chart-header");
+  var chartStats = document.getElementById("chart-stats");
+  var moversList = document.getElementById("movers-list");
+  var moversTitle = document.getElementById("movers-title");
+  var latestChangesList = document.getElementById("latest-changes-list");
+  var chart = window.NguChart
+    ? new window.NguChart(document.getElementById("big-chart"))
+    : null;
+
   var state = {
     range: app.dataset.initialRange || "1M",
     lastFetchedAt: null,
     refreshTimer: null,
+    metricsByKey: {},
   };
 
   // Same threshold /health/plugins uses (api.DEFAULT_UNHEALTHY_FAILURES),
@@ -149,6 +159,7 @@
     url.searchParams.set("m", key);
     window.history.replaceState({}, "", url);
     highlightSelection(key);
+    loadChartFor(key);
   }
 
   function highlightSelection(key) {
@@ -363,25 +374,127 @@
     updatedLabel.textContent = "● Updated " + label;
   }
 
+  function renderMovers(metrics) {
+    while (moversList.firstChild) moversList.removeChild(moversList.firstChild);
+    moversTitle.textContent = "Biggest moves · " + state.range;
+
+    var candidates = metrics.filter(function (m) {
+      return m.change_pct !== null && m.change_pct !== undefined && m.change_pct !== 0;
+    });
+    candidates.sort(function (a, b) {
+      return Math.abs(b.change_pct) - Math.abs(a.change_pct);
+    });
+
+    candidates.slice(0, 5).forEach(function (metric) {
+      var li = document.createElement("li");
+      var label = document.createElement("span");
+      label.textContent = metric.label || metric.key;
+      var pct = document.createElement("span");
+      pct.textContent =
+        (metric.change_pct > 0 ? "+" : "") + metric.change_pct + "%";
+      pct.className = "value-" + directionOf(metric);
+      li.appendChild(label);
+      li.appendChild(pct);
+      li.addEventListener("click", function () {
+        setSelectedKey(metric.key);
+      });
+      moversList.appendChild(li);
+    });
+  }
+
+  function renderLatestChanges(changes, metricsByKey) {
+    while (latestChangesList.firstChild) {
+      latestChangesList.removeChild(latestChangesList.firstChild);
+    }
+    (changes || []).slice(0, 6).forEach(function (change) {
+      var metric = metricsByKey[change.key];
+      var li = document.createElement("li");
+      var label = document.createElement("span");
+      label.textContent = (metric && (metric.label || metric.key)) || change.key;
+      var amount = document.createElement("span");
+      var sign = change.change > 0 ? "+" : "";
+      amount.textContent = sign + formatValue(change.change) + " · " + relativeTime(change.ts);
+      amount.className = "value-" + directionOf({ change: change.change });
+      li.appendChild(label);
+      li.appendChild(amount);
+      latestChangesList.appendChild(li);
+    });
+  }
+
+  function loadChartFor(key) {
+    var metric = state.metricsByKey[key];
+    if (!chart || !metric) return;
+
+    chartHeader.textContent = "";
+    var pluginSpan = document.createElement("span");
+    pluginSpan.className = "chart-header-label";
+    pluginSpan.textContent = (metric.plugin || "").toUpperCase() + " · " + (metric.label || metric.key);
+    chartHeader.appendChild(pluginSpan);
+
+    fetch(
+      "/api/stats/history?metric=" +
+        encodeURIComponent(key) +
+        "&range=" +
+        encodeURIComponent(state.range)
+    )
+      .then(function (response) {
+        if (!response.ok) throw new Error("history fetch failed: " + response.status);
+        return response.json();
+      })
+      .then(function (data) {
+        var points = data.points.map(function (p) {
+          return [p.ts, p.value];
+        });
+        chart.render(points, {
+          direction: metric.stale ? "stale" : directionOf(metric),
+          unit: metric.unit,
+        });
+        window.renderChangeBars(document.getElementById("chart-bars"), data.bars);
+        chartStats.textContent = "";
+        [
+          ["OPEN", formatValue(metric.open)],
+          ["HIGH", formatValue(metric.high)],
+          ["LOW", formatValue(metric.low)],
+          ["CHANGES", metric.changes],
+        ].forEach(function (pair) {
+          var span = document.createElement("span");
+          var b = document.createElement("b");
+          b.textContent = pair[1];
+          span.appendChild(document.createTextNode(pair[0] + " "));
+          span.appendChild(b);
+          chartStats.appendChild(span);
+        });
+      })
+      .catch(function (err) {
+        console.error(err);
+      });
+  }
+
   function render(data) {
     var metricsByKey = {};
     data.metrics.forEach(function (m) {
       metricsByKey[m.key] = m;
     });
+    state.metricsByKey = metricsByKey;
 
     emptyState.hidden = data.metrics.length > 0;
     indexStrip.hidden = data.metrics.length === 0;
     document.getElementById("watchlist").hidden = data.metrics.length === 0;
+    document.getElementById("middle-band").hidden = data.metrics.length === 0;
 
     renderIndexStrip(data.pinned, metricsByKey);
     renderWatchlist(data.metrics);
     renderStatusLine(data.plugins);
+    renderMovers(data.metrics);
+    renderLatestChanges(data.recent_changes, metricsByKey);
 
     state.lastFetchedAt = Date.now();
     updateUpdatedLabel();
 
     var current = selectedKey();
-    highlightSelection(current && metricsByKey[current] ? current : data.pinned[0]);
+    var selected = current && metricsByKey[current] ? current : data.pinned[0];
+    highlightSelection(selected);
+    if (selected) loadChartFor(selected);
   }
 
   function fetchOverview() {

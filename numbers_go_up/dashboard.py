@@ -13,6 +13,7 @@ import sqlite3
 import time
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse
@@ -21,6 +22,8 @@ from fastapi.templating import Jinja2Templates
 from numbers_go_up import storage
 from numbers_go_up.api import (
     DEFAULT_UNHEALTHY_FAILURES,
+    RANGE_HOURS,
+    VALID_RANGES,
     _is_stale,
     _parse_attrs,
     _plugin_statuses,
@@ -38,25 +41,23 @@ STATIC_DIR = PACKAGE_DIR / "static"
 
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 
-# Range bounds in hours, per the overview endpoint contract. ALL has no
-# fixed bound -- each series starts at its own first sample.
-RANGE_HOURS = {
-    "1D": 24,
-    "1W": 24 * 7,
-    "1M": 24 * 30,
-    "3M": 24 * 90,
-    "1Y": 24 * 365,
-}
-VALID_RANGES = (*RANGE_HOURS, "ALL")
 DEFAULT_RANGE = "1M"
 
 MAX_PINNED = 6
 DEFAULT_PINNED_COUNT = 4
 MAX_SPARK_POINTS = 60
+RECENT_CHANGES_LIMIT = 10
+RECORDED_CHANGES_LIMIT = 20
 
 # Keys we've already warned about missing from ``dashboard.pinned`` -- keeps
 # a bad config entry from spamming a log line on every request.
 _warned_missing_pinned: set[str] = set()
+
+
+def _format_number(value: float) -> float | int:
+    """Render a whole-numbered float (samples are stored as REAL even for
+    integer-valued metrics) without a trailing ``.0`` in the template."""
+    return int(value) if value == int(value) else value
 
 
 def _format_iso(ts: int | None) -> str | None:
@@ -240,6 +241,8 @@ def build_overview(request: Request, range_key: str) -> dict[str, Any]:
     metrics_by_key = {metric["key"]: metric for metric in metrics}
     pinned = _resolve_pinned(config, metrics_by_key)
 
+    changes = storage.recent_changes(db_path, RECENT_CHANGES_LIMIT)
+
     return {
         "timestamp": _format_iso(now),
         "range": range_key,
@@ -247,6 +250,15 @@ def build_overview(request: Request, range_key: str) -> dict[str, Any]:
         "pinned": pinned,
         "plugins": _plugin_statuses(request),
         "metrics": metrics,
+        "recent_changes": [
+            {
+                "key": row["metric_key"],
+                "ts": _format_iso(row["ts"]),
+                "value": row["value"],
+                "change": row["change"],
+            }
+            for row in changes
+        ],
     }
 
 
@@ -281,5 +293,136 @@ def dashboard_index(
             "any_enabled": any_enabled,
             "unhealthy_failure_threshold": DEFAULT_UNHEALTHY_FAILURES,
             "blocked_error_prefix": BLOCKED_ERROR_PREFIX,
+        },
+    )
+
+
+def _breadcrumb_group(pattern: str | None) -> str | None:
+    """The breadcrumb's third segment for a pattern series -- "Models" for
+    ``...model.{id}...``, "Repos" for ``...repo.{id}...``, and generically
+    the pluralized literal segment right before the placeholder for any
+    other pattern. None for a static (non-pattern) series.
+    """
+    if pattern is None:
+        return None
+    segments = pattern.split(".")
+    for i, segment in enumerate(segments):
+        if segment.startswith("{") and segment.endswith("}") and i > 0:
+            noun = segments[i - 1]
+            if noun.endswith("y"):
+                return noun[:-1].capitalize() + "ies"
+            return noun.capitalize() + "s"
+    return None
+
+
+def _safe_url(attrs: dict[str, Any]) -> str | None:
+    """``attrs.url`` if it exists and is an ``https`` URL, else None.
+
+    Any other scheme (``javascript:``, plain ``http:``, ...) is dropped --
+    this is the one guard against a plugin-supplied URL becoming an
+    "Open on {source}" link that does something other than navigate.
+    """
+    url = attrs.get("url")
+    if not isinstance(url, str):
+        return None
+    return url if urlparse(url).scheme == "https" else None
+
+
+@router.get("/m/{metric_key}", response_class=HTMLResponse)
+def metric_detail(
+    request: Request, metric_key: str, range: str = Query(DEFAULT_RANGE)
+) -> HTMLResponse:
+    range_key = range if range in VALID_RANGES else DEFAULT_RANGE
+    config = request.app.state.config
+    db_path = config["storage"]["path"]
+
+    row = storage.get_any_series_by_key(db_path, metric_key)
+    if row is None or row["last_value"] is None:
+        raise HTTPException(status_code=404, detail=f"Unknown metric {metric_key!r}")
+
+    now = int(time.time())
+    if range_key == "ALL":
+        start = row["first_seen"]
+    else:
+        start = now - RANGE_HOURS[range_key] * 3600
+    stats = storage.range_stats(db_path, row["id"], start, now)
+
+    open_value = stats["open"] if stats["open"] is not None else row["last_value"]
+    value = row["last_value"]
+    change = value - open_value
+    change_pct = None if open_value == 0 else round((change / open_value) * 100, 2)
+
+    points = list(stats["points"])
+    values = [v for _, v in points] or [value]
+    high = max(max(values), value)
+    span_days = max((now - start) / 86400, 1)
+    avg_per_day = round((value - open_value) / span_days, 2)
+    best_day_change = None
+    if len(points) >= 2:
+        by_day: dict[int, float] = {}
+        for ts, v in points:
+            by_day[ts // 86400] = v
+        day_values = [v for _, v in sorted(by_day.items())]
+        daily_changes = [
+            b - a for a, b in zip(day_values, day_values[1:], strict=False)
+        ]
+        if daily_changes:
+            best_day_change = max(daily_changes)
+
+    metrics_for_plugin = _plugin_metrics_for(request, row["plugin_name"])
+    resolved = resolve_metric(row["metric_key"], metrics_for_plugin)
+    pattern = resolved[0] if resolved and is_pattern_key(resolved[0]) else None
+
+    intervals = getattr(request.app.state, "plugin_intervals", {})
+    default_interval = config["poll"]["default_interval"]
+    interval = intervals.get(row["plugin_name"], default_interval)
+    stale = _is_stale(db_path, row["plugin_name"], row["last_seen"], interval, now)
+
+    attrs = _parse_attrs(row["attrs"])
+    recorded = storage.recorded_changes(
+        db_path, row["id"], start, now, RECORDED_CHANGES_LIMIT
+    )
+
+    metric = {
+        "key": row["metric_key"],
+        "plugin": row["plugin_name"],
+        "pattern": pattern,
+        "breadcrumb_group": _breadcrumb_group(pattern),
+        "label": row["label"],
+        "kind": row["kind"],
+        "unit": row["unit"],
+        "attrs": attrs,
+        "url": _safe_url(attrs),
+        "value": _format_number(value),
+        "open": _format_number(open_value),
+        "change": _format_number(change),
+        "change_pct": change_pct,
+        "high": _format_number(high),
+        "avg_per_day": avg_per_day,
+        "best_day_change": (
+            None if best_day_change is None else _format_number(best_day_change)
+        ),
+        "changes": stats["changes"],
+        "first_seen": _format_iso(row["first_seen"]),
+        "updated": _format_iso(row["last_seen"]),
+        "stale": stale,
+        "active": bool(row["active"]),
+        "recorded_changes": [
+            {
+                "ts": _format_iso(r["ts"]),
+                "value": _format_number(r["value"]),
+                "change": _format_number(r["change"]),
+            }
+            for r in recorded
+        ],
+    }
+
+    return templates.TemplateResponse(
+        request,
+        "detail.html",
+        {
+            "range": range_key,
+            "ranges": VALID_RANGES,
+            "metric": metric,
         },
     )

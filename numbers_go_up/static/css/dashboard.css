@@ -244,6 +244,76 @@ a {
   margin-top: 6px;
 }
 
+/* --- Overview middle band (chart + movers + latest changes) --------- */
+
+.middle-band {
+  margin-bottom: var(--gap);
+}
+
+.chart-header {
+  font-size: 13px;
+  color: var(--text-muted);
+  margin-bottom: 4px;
+}
+
+.chart-header .chart-header-label {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.side-panels {
+  display: flex;
+  flex-direction: column;
+  gap: var(--gap);
+}
+
+.movers-panel,
+.latest-changes-panel {
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px;
+  flex: 1;
+}
+
+.movers-panel h2,
+.latest-changes-panel h2 {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+  margin: 0 0 8px;
+}
+
+.movers-panel ol {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  counter-reset: movers;
+}
+
+.movers-panel li {
+  display: flex;
+  justify-content: space-between;
+  padding: 4px 0;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.latest-changes-panel ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.latest-changes-panel li {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 4px 0;
+  font-size: 12px;
+}
+
 /* --- Watchlist ---------------------------------------------------- */
 
 .watchlist {
@@ -375,6 +445,150 @@ a {
   .col-updated {
     display: none;
   }
+}
+
+/* --- Detail page / shared chart panel -------------------------------- */
+
+.breadcrumb {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  color: var(--text-muted);
+  font-size: 12px;
+  margin: 16px 0 8px;
+}
+
+.breadcrumb a {
+  color: var(--accent);
+}
+
+.detail-header {
+  display: flex;
+  align-items: center;
+  gap: var(--gap);
+  flex-wrap: wrap;
+  margin-bottom: 4px;
+}
+
+.detail-header h1 {
+  font-size: 20px;
+  margin: 0;
+}
+
+.detail-key {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.open-source-link {
+  margin-left: auto;
+  color: var(--accent);
+  font-size: 13px;
+}
+
+.detail-value-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin: 8px 0 16px;
+}
+
+.detail-value {
+  font-size: 32px;
+  font-weight: 700;
+}
+
+.detail-unit {
+  color: var(--text-muted);
+}
+
+.chart-layout {
+  display: grid;
+  grid-template-columns: 2fr 1fr;
+  gap: var(--gap);
+}
+
+@media (max-width: 640px) {
+  .chart-layout {
+    grid-template-columns: 1fr;
+  }
+}
+
+.chart-panel {
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px;
+}
+
+.big-chart {
+  height: 280px;
+}
+
+.chart-bars {
+  height: 60px;
+  margin-top: 4px;
+}
+
+.stats-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  margin-top: 12px;
+  font-size: 12px;
+  color: var(--text-muted);
+  border-top: 1px solid var(--border);
+  padding-top: 10px;
+}
+
+.stats-row b {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.stats-row b.mono {
+  font-family: var(--font-mono);
+  font-weight: 400;
+}
+
+.recorded-changes {
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px;
+}
+
+.recorded-changes h2 {
+  font-size: 13px;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  margin: 0 0 8px;
+}
+
+.recorded-changes ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.recorded-changes li {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  gap: 8px;
+  padding: 5px 0;
+  border-top: 1px solid var(--border);
+  font-size: 12px;
+}
+
+.recorded-changes li:first-child {
+  border-top: none;
+}
+
+.rc-note {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-top: 8px;
 }
 
 /* --- Status line ---------------------------------------------------- */

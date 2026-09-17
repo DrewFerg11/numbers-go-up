@@ -276,6 +276,106 @@ def test_history_invalid_hours_422(tmp_path, params):
     assert response.status_code == 422
 
 
+def test_history_range_all_returns_from_first_sample(tmp_path):
+    client, db_path = client_for(tmp_path)
+    now = int(time.time())
+    series_id = seed_series(db_path, "acme.series", now=now - 400 * DAY)
+    storage.record_sample(db_path, series_id, now - 400 * DAY, 1, DAY)
+    storage.record_sample(db_path, series_id, now, 2, DAY)
+
+    response = client.get(
+        "/api/stats/history", params={"metric": "acme.series", "range": "ALL"}
+    )
+
+    assert response.status_code == 200
+    points = response.json()["points"]
+    assert points[0]["value"] == 1
+    assert points[-1]["value"] == 2
+
+
+def test_history_range_and_hours_together_422(tmp_path):
+    client, _ = client_for(tmp_path)
+
+    response = client.get(
+        "/api/stats/history",
+        params={"metric": "acme.series", "hours": 24, "range": "1D"},
+    )
+
+    assert response.status_code == 422
+
+
+def test_history_neither_range_nor_hours_422(tmp_path):
+    client, _ = client_for(tmp_path)
+
+    response = client.get("/api/stats/history", params={"metric": "acme.series"})
+
+    assert response.status_code == 422
+
+
+def test_history_invalid_range_422(tmp_path):
+    client, _ = client_for(tmp_path)
+
+    response = client.get(
+        "/api/stats/history", params={"metric": "acme.series", "range": "5Y"}
+    )
+
+    assert response.status_code == 422
+
+
+def test_history_named_range_still_works_like_hours(tmp_path):
+    client, db_path = client_for(tmp_path)
+    now = int(time.time())
+    series_id = seed_series(db_path, "acme.series", now=now - HOUR)
+    storage.record_sample(db_path, series_id, now - HOUR, 1, HOUR)
+    storage.record_sample(db_path, series_id, now, 2, HOUR)
+
+    by_hours = client.get(
+        "/api/stats/history", params={"metric": "acme.series", "hours": 24}
+    )
+    by_range = client.get(
+        "/api/stats/history", params={"metric": "acme.series", "range": "1D"}
+    )
+
+    assert by_hours.json()["points"] == by_range.json()["points"]
+
+
+def test_history_bars_excludes_empty_buckets(tmp_path):
+    # 1M buckets to 1 day (BAR_BUCKET_SECONDS), so three samples 3+ days
+    # apart land in three separate, non-adjacent buckets, and the days
+    # between them are simply absent from `bars` rather than zero-filled.
+    client, db_path = client_for(tmp_path)
+    now = int(time.time())
+    series_id = seed_series(db_path, "acme.series", now=now - 10 * DAY)
+    storage.record_sample(db_path, series_id, now - 10 * DAY, 10, DAY)
+    storage.record_sample(db_path, series_id, now - 5 * DAY, 15, DAY)
+    storage.record_sample(db_path, series_id, now, 20, DAY)
+
+    response = client.get(
+        "/api/stats/history", params={"metric": "acme.series", "range": "1M"}
+    )
+
+    bars = response.json()["bars"]
+    assert len(bars) == 3
+    # The first bucket holds the opening sample itself, so its net change
+    # is 0 -- there is nothing before it to have changed from.
+    assert bars[0]["change"] == 0
+    assert bars[1]["change"] == 5
+    assert bars[2]["change"] == 5
+
+
+def test_history_bars_empty_for_single_point(tmp_path):
+    client, db_path = client_for(tmp_path)
+    now = int(time.time())
+    series_id = seed_series(db_path, "acme.flat", now=now - 5 * DAY)
+    storage.record_sample(db_path, series_id, now - 5 * DAY, 7, DAY)
+
+    response = client.get(
+        "/api/stats/history", params={"metric": "acme.flat", "range": "1W"}
+    )
+
+    assert response.json()["bars"] == []
+
+
 # --- /api/stats/delta -----------------------------------------------------
 
 

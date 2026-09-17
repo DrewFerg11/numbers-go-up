@@ -503,3 +503,182 @@ def test_overview_plugins_status_matches_health_thresholds(tmp_path):
     plugin = next(p for p in response.json()["plugins"] if p["name"] == "acme")
     assert plugin["status"] == "ok"
     assert plugin["consecutive_failures"] == 0
+
+
+# --- recent_changes on the overview --------------------------------------
+
+
+def test_overview_recent_changes_excludes_zero_change_heartbeats(tmp_path):
+    client, db_path = client_for(tmp_path)
+    now = int(time.time())
+    series_id = seed_series(db_path, "acme.widgets", now=now - DAY)
+    storage.record_sample(db_path, series_id, now - DAY, 5, HOUR)
+    storage.record_sample(db_path, series_id, now - HOUR, 5, HOUR)
+    storage.record_sample(db_path, series_id, now, 9, HOUR)
+
+    response = client.get("/api/stats/overview")
+
+    changes = response.json()["recent_changes"]
+    assert len(changes) == 1
+    assert changes[0]["key"] == "acme.widgets"
+    assert changes[0]["change"] == 4
+
+
+def test_overview_recent_changes_respects_limit_and_order(tmp_path):
+    client, db_path = client_for(tmp_path)
+    now = int(time.time())
+    series_id = seed_series(db_path, "acme.widgets", now=now - 20 * HOUR)
+    for i in range(15):
+        storage.record_sample(db_path, series_id, now - (14 - i) * HOUR, i + 1, 1)
+
+    response = client.get("/api/stats/overview")
+
+    changes = response.json()["recent_changes"]
+    assert len(changes) == 10
+    assert changes == sorted(changes, key=lambda c: c["ts"], reverse=True)
+
+
+# --- /m/{metric_key} -------------------------------------------------------
+
+
+def test_detail_unknown_key_404(tmp_path):
+    client, _ = client_for(tmp_path)
+
+    response = client.get("/m/nope.does.not.exist")
+
+    assert response.status_code == 404
+
+
+def test_detail_known_key_renders(tmp_path):
+    client, db_path = client_for(tmp_path)
+    now = int(time.time())
+    series_id = seed_series(db_path, "acme.widgets", now=now - 5 * DAY)
+    storage.record_sample(db_path, series_id, now - 5 * DAY, 10, DAY)
+    storage.record_sample(db_path, series_id, now, 20, DAY)
+
+    response = client.get("/m/acme.widgets")
+
+    assert response.status_code == 200
+    assert "acme.widgets" in response.text
+
+
+def test_detail_inactive_series_renders_with_chip(tmp_path):
+    client, db_path = client_for(tmp_path)
+    now = int(time.time())
+    series_id = seed_series(db_path, "acme.retired", now=now - DAY)
+    storage.record_sample(db_path, series_id, now - DAY, 5, DAY)
+    conn = storage.connect(db_path)
+    try:
+        conn.execute("UPDATE metric_series SET active = 0 WHERE id = ?", (series_id,))
+        conn.commit()
+    finally:
+        conn.close()
+
+    response = client.get("/m/acme.retired")
+
+    assert response.status_code == 200
+    assert "INACTIVE" in response.text
+
+
+def test_detail_https_url_rendered_as_link(tmp_path):
+    client, db_path = client_for(tmp_path)
+    now = int(time.time())
+    storage.get_or_create_series(
+        db_path,
+        "acme.widgets",
+        "acme",
+        "cumulative",
+        "Widgets",
+        "u",
+        "i",
+        now,
+        attrs={"url": "https://example.com/widgets"},
+    )
+    storage.record_sample(
+        db_path,
+        storage.get_series_by_key(db_path, "acme.widgets")["id"],
+        now,
+        5,
+        DAY,
+    )
+
+    response = client.get("/m/acme.widgets")
+
+    assert 'href="https://example.com/widgets"' in response.text
+
+
+def test_detail_javascript_url_not_rendered_as_link(tmp_path):
+    client, db_path = client_for(tmp_path)
+    now = int(time.time())
+    storage.get_or_create_series(
+        db_path,
+        "acme.widgets",
+        "acme",
+        "cumulative",
+        "Widgets",
+        "u",
+        "i",
+        now,
+        attrs={"url": "javascript:alert(1)"},
+    )
+    storage.record_sample(
+        db_path,
+        storage.get_series_by_key(db_path, "acme.widgets")["id"],
+        now,
+        5,
+        DAY,
+    )
+
+    response = client.get("/m/acme.widgets")
+
+    assert "javascript:" not in response.text
+
+
+def test_detail_http_url_not_rendered_as_link(tmp_path):
+    client, db_path = client_for(tmp_path)
+    now = int(time.time())
+    storage.get_or_create_series(
+        db_path,
+        "acme.widgets",
+        "acme",
+        "cumulative",
+        "Widgets",
+        "u",
+        "i",
+        now,
+        attrs={"url": "http://example.com/widgets"},
+    )
+    storage.record_sample(
+        db_path,
+        storage.get_series_by_key(db_path, "acme.widgets")["id"],
+        now,
+        5,
+        DAY,
+    )
+
+    response = client.get("/m/acme.widgets")
+
+    assert 'href="http://example.com/widgets"' not in response.text
+
+
+def test_detail_breadcrumb_group_for_pattern_series(tmp_path):
+    metrics = {
+        "acme.model.{id}.downloads": {
+            "kind": "cumulative",
+            "label": "Downloads",
+            "unit": "u",
+        }
+    }
+    client, db_path = client_for(
+        tmp_path,
+        plugins_config={"acme": {"enabled": True}},
+        plugin_metrics={"acme": metrics},
+    )
+    now = int(time.time())
+    series_id = seed_series(db_path, "acme.model.1.downloads", now=now)
+    storage.record_sample(db_path, series_id, now, 5, DAY)
+
+    response = client.get("/m/acme.model.1.downloads")
+
+    assert response.status_code == 200
+    assert "Models" in response.text

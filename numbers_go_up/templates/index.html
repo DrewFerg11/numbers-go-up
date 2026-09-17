@@ -32,6 +32,25 @@
 
     <section class="index-strip" id="index-strip" aria-label="Pinned metrics"></section>
 
+    <section class="chart-layout middle-band" id="middle-band" aria-label="Selected metric chart">
+      <section class="chart-panel">
+        <div class="chart-header" id="chart-header"></div>
+        <div class="big-chart" id="big-chart"></div>
+        <div class="chart-bars" id="chart-bars"></div>
+        <div class="stats-row" id="chart-stats"></div>
+      </section>
+      <aside class="side-panels">
+        <div class="movers-panel">
+          <h2 id="movers-title">Biggest moves</h2>
+          <ol id="movers-list"></ol>
+        </div>
+        <div class="latest-changes-panel">
+          <h2>Latest changes</h2>
+          <ul id="latest-changes-list"></ul>
+        </div>
+      </aside>
+    </section>
+
     <section class="watchlist" id="watchlist" aria-label="All metrics">
       <div class="watchlist-header">
         <span class="col-metric">Metric</span>
@@ -94,5 +113,8 @@
 </template>
 {% endblock %}
 {% block scripts %}
+<link rel="stylesheet" href="/static/vendor/uplot/uPlot.min.css" />
+<script src="/static/vendor/uplot/uPlot.iife.min.js"></script>
+<script src="/static/js/chart.js"></script>
 <script src="/static/js/dashboard.js"></script>
 {% endblock %}

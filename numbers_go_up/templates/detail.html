@@ -1,0 +1,91 @@
+{% extends "base.html" %}
+{% block title %}{{ metric.label }} — numbers-go-up{% endblock %}
+{% block body %}
+<div class="app detail-page" data-metric-key="{{ metric.key }}" data-initial-range="{{ range }}">
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true">&#9650;</span>
+      <span class="brand-name">numbers-go-up</span>
+    </div>
+    <div class="topbar-right">
+      <button type="button" class="theme-toggle" id="theme-toggle" aria-label="Toggle theme">&#9680;</button>
+    </div>
+  </header>
+
+  <main>
+    <nav class="breadcrumb" aria-label="Breadcrumb">
+      <a href="/?range={{ range }}">Overview</a>
+      <span aria-hidden="true">&rsaquo;</span>
+      <span>{{ metric.plugin }}</span>
+      {% if metric.breadcrumb_group %}
+      <span aria-hidden="true">&rsaquo;</span>
+      <span>{{ metric.breadcrumb_group }}</span>
+      {% endif %}
+    </nav>
+
+    <div class="detail-header">
+      <div>
+        <h1>{{ metric.label }}</h1>
+        <div class="detail-key">{{ metric.key }}</div>
+        {% if not metric.active %}<span class="stale-chip" style="display:inline-block">INACTIVE</span>{% endif %}
+        {% if metric.stale %}<span class="stale-chip" style="display:inline-block">STALE</span>{% endif %}
+      </div>
+      <nav class="range-switcher" role="tablist" aria-label="Time range">
+        {% for r in ranges %}
+        <button type="button" class="range-btn" data-range="{{ r }}" role="tab"
+          aria-selected="{{ 'true' if r == range else 'false' }}">{{ r }}</button>
+        {% endfor %}
+      </nav>
+      {% if metric.url %}
+      <a class="open-source-link" href="{{ metric.url }}" rel="noopener noreferrer">
+        Open on {{ metric.plugin }} &#8599;
+      </a>
+      {% endif %}
+    </div>
+
+    <div class="detail-value-row">
+      <span class="detail-value" id="detail-value">{{ metric.value }}</span>
+      <span class="detail-unit">{{ metric.unit }}</span>
+      <span class="detail-change" id="detail-change"></span>
+    </div>
+
+    <div class="chart-layout">
+      <section class="chart-panel">
+        <div class="big-chart" id="big-chart"></div>
+        <div class="chart-bars" id="chart-bars"></div>
+        <div class="stats-row">
+          <span>OPEN <b id="stat-open">{{ metric.open }}</b></span>
+          <span>HIGH <b id="stat-high">{{ metric.high }}</b></span>
+          <span>AVG/DAY <b id="stat-avg">{{ metric.avg_per_day }}</b></span>
+          <span>BEST DAY <b id="stat-best">{{ metric.best_day_change if metric.best_day_change is not none else "—" }}</b></span>
+          <span>FIRST SEEN <b>{{ metric.first_seen }}</b></span>
+          <span>KEY <b class="mono">{{ metric.key }}</b></span>
+        </div>
+      </section>
+      <aside class="recorded-changes" aria-label="Recorded changes">
+        <h2>Recorded changes</h2>
+        <ul>
+          {% for change in metric.recorded_changes %}
+          <li>
+            <span class="rc-time">{{ change.ts }}</span>
+            <span class="rc-value">{{ change.value }}</span>
+            <span class="rc-change {{ 'value-up' if change.change > 0 else ('value-down' if change.change < 0 else 'value-flat') }}">
+              {{ "+%d"|format(change.change) if change.change > 0 else change.change }}
+            </span>
+          </li>
+          {% else %}
+          <li class="rc-empty">No changes recorded in this range.</li>
+          {% endfor %}
+        </ul>
+        <p class="rc-note">Only changes (plus a daily heartbeat) are stored.</p>
+      </aside>
+    </div>
+  </main>
+</div>
+{% endblock %}
+{% block scripts %}
+<link rel="stylesheet" href="/static/vendor/uplot/uPlot.min.css" />
+<script src="/static/vendor/uplot/uPlot.iife.min.js"></script>
+<script src="/static/js/chart.js"></script>
+<script src="/static/js/detail.js"></script>
+{% endblock %}
