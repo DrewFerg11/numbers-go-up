@@ -92,6 +92,30 @@ def parse_retry_after(value: str | None, now: datetime | None = None) -> float |
     return max((parsed - reference).total_seconds(), 0.0)
 
 
+def parse_epoch_retry_after(
+    value: str | None, now: datetime | None = None
+) -> float | None:
+    """Parse an ``X-RateLimit-Reset``-style header: epoch seconds.
+
+    Returns seconds from ``now`` until that epoch (never negative), or None
+    if ``value`` is missing or unparseable. Separate from
+    :func:`parse_retry_after` because this header is always a bare epoch
+    timestamp, never an HTTP-date or a delta -- GitHub's primary rate limit
+    is the first source to use it, but the shape is generic, not
+    GitHub-specific.
+    """
+    if value is None:
+        return None
+
+    value = value.strip()
+    if not (value.isascii() and value.isdigit()):
+        return None
+
+    reference = now if now is not None else datetime.now(UTC)
+    reset = datetime.fromtimestamp(float(value), tz=UTC)
+    return max((reset - reference).total_seconds(), 0.0)
+
+
 def build_client(transport: httpx.BaseTransport | None = None) -> httpx.Client:
     """Build the one shared HTTP client every plugin's ``collect()`` uses.
 
@@ -106,7 +130,12 @@ def build_client(transport: httpx.BaseTransport | None = None) -> httpx.Client:
       failed poll — the next scheduled run is the retry.
     - HTTP 429 is turned into :class:`RateLimited` and HTTP 403 into
       :class:`Blocked` here; every other status is left to the plugin's
-      own ``raise_for_status()``.
+      own ``raise_for_status()``. The one exception: a 403 that carries
+      ``X-RateLimit-Remaining: 0`` is a primary rate limit (GitHub's shape,
+      but handled generically, not special-cased to a hostname) rather than
+      a block, so it becomes :class:`RateLimited` with
+      ``X-RateLimit-Reset`` as the retry time instead of surfacing as
+      ``blocked``.
 
     ``transport`` lets tests substitute ``httpx.MockTransport`` — no
     network access in anything this module's tests do.
@@ -130,6 +159,11 @@ def build_client(transport: httpx.BaseTransport | None = None) -> httpx.Client:
                 parse_retry_after(response.headers.get("Retry-After")), response
             )
         if response.status_code == 403:
+            if response.headers.get("x-ratelimit-remaining") == "0":
+                raise RateLimited(
+                    parse_epoch_retry_after(response.headers.get("x-ratelimit-reset")),
+                    response,
+                )
             raise Blocked(response)
 
     client.event_hooks["response"] = [_on_response]

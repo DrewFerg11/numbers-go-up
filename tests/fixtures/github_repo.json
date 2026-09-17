@@ -1,0 +1,36 @@
+{
+  "id": 100000001,
+  "node_id": "R_placeholder1",
+  "name": "example-repo",
+  "full_name": "example-owner/example-repo",
+  "private": false,
+  "owner": {
+    "login": "example-owner",
+    "id": 200000001,
+    "type": "Organization"
+  },
+  "html_url": "https://github.com/example-owner/example-repo",
+  "description": "A placeholder repository used for offline plugin tests.",
+  "fork": false,
+  "url": "https://api.github.com/repos/example-owner/example-repo",
+  "created_at": "2020-01-01T00:00:00Z",
+  "updated_at": "2026-09-01T12:00:00Z",
+  "pushed_at": "2026-09-08T08:00:00Z",
+  "homepage": null,
+  "size": 4096,
+  "stargazers_count": 1543,
+  "watchers_count": 1543,
+  "language": "Python",
+  "forks_count": 87,
+  "archived": false,
+  "disabled": false,
+  "open_issues_count": 23,
+  "license": {
+    "key": "mit",
+    "name": "MIT License"
+  },
+  "topics": ["home-automation", "self-hosted"],
+  "default_branch": "main",
+  "network_count": 87,
+  "subscribers_count": 42
+}

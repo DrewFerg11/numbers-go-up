@@ -1,0 +1,65 @@
+[
+  {
+    "id": 300000003,
+    "tag_name": "v1.2.0",
+    "name": "v1.2.0",
+    "draft": false,
+    "prerelease": false,
+    "created_at": "2026-08-01T00:00:00Z",
+    "published_at": "2026-08-01T01:00:00Z",
+    "assets": [
+      {
+        "id": 400000005,
+        "name": "example-repo-linux-amd64.tar.gz",
+        "download_count": 512
+      },
+      {
+        "id": 400000006,
+        "name": "example-repo-darwin-amd64.tar.gz",
+        "download_count": 128
+      }
+    ]
+  },
+  {
+    "id": 300000002,
+    "tag_name": "v1.1.0",
+    "name": "v1.1.0",
+    "draft": false,
+    "prerelease": false,
+    "created_at": "2026-06-01T00:00:00Z",
+    "published_at": "2026-06-01T01:00:00Z",
+    "assets": [
+      {
+        "id": 400000004,
+        "name": "example-repo-linux-amd64.tar.gz",
+        "download_count": 301
+      }
+    ]
+  },
+  {
+    "id": 300000001,
+    "tag_name": "v1.0.0",
+    "name": "v1.0.0",
+    "draft": false,
+    "prerelease": false,
+    "created_at": "2026-04-01T00:00:00Z",
+    "published_at": "2026-04-01T01:00:00Z",
+    "assets": [
+      {
+        "id": 400000001,
+        "name": "example-repo-linux-amd64.tar.gz",
+        "download_count": 90
+      },
+      {
+        "id": 400000002,
+        "name": "example-repo-darwin-amd64.tar.gz",
+        "download_count": 45
+      },
+      {
+        "id": 400000003,
+        "name": "example-repo-windows-amd64.zip",
+        "download_count": 21
+      }
+    ]
+  }
+]

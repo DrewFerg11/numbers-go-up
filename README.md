@@ -31,8 +31,8 @@ so you can ask what changed, how fast, and since when.
 
 | Source | Status |
 |---|---|
-| MakerWorld | First plugin — in progress |
-| GitHub | Planned |
+| MakerWorld | Shipped |
+| GitHub | Shipped |
 | YouTube | Planned |
 | TikTok | Planned |
 | Anything else | Write a plugin — that's the point |
@@ -126,6 +126,30 @@ models' counters, next to its eight profile counters
 (`plugins.makerworld.models` in [`config.yaml.example`](config.yaml.example)).
 It's opt-in and adds one paged listing request per poll — still public data
 about your own account, still no auth — on top of the one profile request.
+
+**Documented exception:** GitHub makes one request per configured repo plus
+paged release listings, against the official, documented API — the only
+source in this project with that status. Every other source here is
+unofficial.
+
+### GitHub
+
+Tracks stars, forks, watchers, and open issues (which include open pull
+requests) per repo, plus optional release-asset download totals, via the
+official REST API. Configure `plugins.github.repos` with one or more
+`"owner/name"` strings (see
+[`config.yaml.example`](config.yaml.example)).
+
+- **Token (optional):** set the `NGU_GITHUB_TOKEN` environment variable,
+  never in `config.yaml`, to raise the unauthenticated rate limit (60
+  requests/hour) to 5,000/hour. It's sent only to `api.github.com`.
+- **Renamed or transferred repos:** GitHub redirects the old `owner/name` to
+  the new one and this plugin follows it. Series are keyed by the repo's
+  permanent numeric ID, not by name, so history survives a rename.
+- **Known limitation:** `release_downloads` sums `download_count` across
+  every release. Deleting a release lowers that sum. Storage doesn't reject
+  a falling cumulative series, and Home Assistant will read the drop as a
+  counter reset — this is expected, not a bug.
 
 ## License
 
