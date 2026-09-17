@@ -28,9 +28,10 @@ import httpx
 from apscheduler.executors.pool import ThreadPoolExecutor
 from apscheduler.schedulers.background import BackgroundScheduler
 
-from numbers_go_up import plugins, storage
+from numbers_go_up import mqtt, plugins, storage
 from numbers_go_up.config import ConfigError
 from numbers_go_up.http import Blocked, RateLimited
+from numbers_go_up.mqtt import Publisher
 from numbers_go_up.plugins import LoadedPlugin, discover_plugins
 
 logger = logging.getLogger(__name__)
@@ -55,6 +56,11 @@ class RunResult:
     # The exception behind an "error" run, when there was one (a contract
     # violation has none) -- kept so the scheduler can log what failed.
     exception: BaseException | None = None
+    # Every metric_key the plugin returned and passed validation this run,
+    # whether or not a sample was actually written (store-on-change is a
+    # storage.py concern). The MQTT publisher hook uses this to know which
+    # series to publish state for after a successful poll.
+    returned_keys: frozenset[str] = dataclasses.field(default_factory=frozenset)
 
 
 def run_plugin_once(
@@ -242,6 +248,7 @@ def run_plugin_once(
             samples_written=samples_written,
             error=error,
             exception=exc,
+            returned_keys=frozenset(returned_keys),
         )
 
     if violations:
@@ -258,7 +265,11 @@ def run_plugin_once(
             finished_at=now,
         )
         return RunResult(
-            run_id=run_id, status="error", samples_written=samples_written, error=error
+            run_id=run_id,
+            status="error",
+            samples_written=samples_written,
+            error=error,
+            returned_keys=frozenset(returned_keys),
         )
 
     _reconcile_pattern_series(db_path, plugin, returned_keys)
@@ -267,7 +278,11 @@ def run_plugin_once(
         db_path, run_id, "ok", None, samples_written=samples_written, finished_at=now
     )
     return RunResult(
-        run_id=run_id, status="ok", samples_written=samples_written, error=None
+        run_id=run_id,
+        status="ok",
+        samples_written=samples_written,
+        error=None,
+        returned_keys=frozenset(returned_keys),
     )
 
 
@@ -435,6 +450,24 @@ def _log_success(streaks: dict[str, _FailureStreak], plugin_name: str) -> None:
         )
 
 
+def _notify_publisher(
+    publisher: Publisher,
+    plugin_name: str,
+    status: str,
+    returned_keys: frozenset[str],
+) -> None:
+    """Call the MQTT publisher hook, defensively: a publish failure must
+    never fail a plugin run. ``MqttPublisher.on_poll_finished`` already
+    catches everything internally; this is belt-and-braces for any other
+    ``Publisher`` implementation (including a test double)."""
+    try:
+        publisher.on_poll_finished(plugin_name, status, returned_keys)
+    except Exception:
+        logger.exception(
+            "MQTT publisher hook raised for plugin %s; ignoring", plugin_name
+        )
+
+
 def _run_scheduled_plugin(
     scheduler: BackgroundScheduler,
     job_id: str,
@@ -444,9 +477,12 @@ def _run_scheduled_plugin(
     http: Any,
     heartbeat_seconds: int,
     failure_streaks: dict[str, _FailureStreak] | None = None,
+    publisher: Publisher | None = None,
 ) -> None:
     if failure_streaks is None:
         failure_streaks = {}
+    if publisher is None:
+        publisher = mqtt.NoopPublisher()
     try:
         result = run_plugin_once(
             db_path, plugin, http, int(time.time()), heartbeat_seconds
@@ -471,6 +507,7 @@ def _run_scheduled_plugin(
         scheduler.modify_job(
             job_id, next_run_time=datetime.now() + timedelta(seconds=delay)
         )
+        _notify_publisher(publisher, plugin.name, "error", frozenset())
     else:
         # Success or an ordinary error: no backoff (Failure Handling #4),
         # and any 429/403 streak is broken -- reset the counter.
@@ -490,6 +527,7 @@ def _run_scheduled_plugin(
                 f"contract violation: {result.error}",
                 None,
             )
+        _notify_publisher(publisher, plugin.name, result.status, result.returned_keys)
 
 
 def _validated_jitter_fraction(value: Any) -> float:
@@ -524,7 +562,9 @@ def _validated_jitter_fraction(value: Any) -> float:
     return fraction
 
 
-def build_scheduler(config: dict[str, Any], http: Any = None) -> BackgroundScheduler:
+def build_scheduler(
+    config: dict[str, Any], http: Any = None, publisher: Publisher | None = None
+) -> BackgroundScheduler:
     """Build (but don't start) one interval job per enabled plugin.
 
     A single-threaded executor is deliberate: it makes ``max_instances=1``
@@ -552,6 +592,8 @@ def build_scheduler(config: dict[str, Any], http: Any = None) -> BackgroundSched
     jitter_fraction = _validated_jitter_fraction(
         config.get("poll", {}).get("jitter_fraction", DEFAULT_JITTER_FRACTION)
     )
+    if publisher is None:
+        publisher = mqtt.NoopPublisher()
 
     scheduler = BackgroundScheduler(executors={"default": ThreadPoolExecutor(10)})
     backoff_state: dict[str, int] = {}
@@ -579,6 +621,7 @@ def build_scheduler(config: dict[str, Any], http: Any = None) -> BackgroundSched
                 http,
                 heartbeat_seconds,
                 failure_streaks,
+                publisher,
             ],
         )
         logger.info(

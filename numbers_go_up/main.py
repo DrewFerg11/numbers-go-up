@@ -5,7 +5,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
-from numbers_go_up import __version__, api, http, migrate, scheduler
+from numbers_go_up import __version__, api, http, migrate, mqtt, scheduler
 from numbers_go_up.config import load_config
 from numbers_go_up.plugins import discover_plugin_names, discover_plugins
 
@@ -96,7 +96,18 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.plugin_names = discover_plugin_names(config)
 
     shared_http_client = http.build_client()
-    job_scheduler = scheduler.build_scheduler(config, http=shared_http_client)
+
+    # Built (and started) whether or not config["mqtt"] is set -- a
+    # NoopPublisher when it's absent, so nothing downstream ever branches on
+    # "is MQTT on". A broker that's unreachable never fails startup: the
+    # client just keeps retrying on its own network thread.
+    mqtt_publisher = mqtt.build_publisher(config, app.state.plugin_intervals)
+    app.state.mqtt_publisher = mqtt_publisher
+    mqtt_publisher.start()
+
+    job_scheduler = scheduler.build_scheduler(
+        config, http=shared_http_client, publisher=mqtt_publisher
+    )
     app.state.scheduler = job_scheduler
     job_scheduler.start()
     try:
@@ -105,6 +116,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         # wait=False: shutdown must not hang on an in-flight collect() --
         # Python can't safely kill a thread, so we just stop waiting on it.
         job_scheduler.shutdown(wait=False)
+        mqtt_publisher.stop()
         shared_http_client.close()
 
 

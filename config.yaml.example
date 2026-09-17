@@ -35,3 +35,12 @@
 #     max: 20                    # cardinality guard on repos
 #     # Optional token: set the NGU_GITHUB_TOKEN env var, never here, to
 #     # raise the unauthenticated 60/hr budget to 5,000/hr.
+
+# mqtt:                          # omit this whole block to keep MQTT off
+#   host: "192.168.1.x"          # required; no default -- no block, no connection
+#   port: 1883
+#   username: "ngu"              # optional
+#   tls: false                   # true = TLS with system CAs (usually port 8883)
+#   discovery_prefix: "homeassistant"
+#   topic_prefix: "numbers-go-up"
+#   # Password: set the NGU_MQTT_PASSWORD env var, never here.

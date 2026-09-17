@@ -151,6 +151,59 @@ official REST API. Configure `plugins.github.repos` with one or more
   a falling cumulative series, and Home Assistant will read the drop as a
   counter reset — this is expected, not a bug.
 
+## Home Assistant
+
+MQTT discovery is the supported way in: add an `mqtt` block to
+`config.yaml` and every active series shows up as a Home Assistant sensor
+automatically, with no YAML on the HA side, and stays in HA's long-term
+statistics with the right `state_class`.
+
+**Prerequisite:** an MQTT broker HA can also reach. If you run HA OS or
+Supervised, the Mosquitto add-on is the easy path; any broker works
+otherwise.
+
+```yaml
+mqtt:
+  host: "192.168.1.x"
+  port: 1883
+  username: "ngu"                 # optional
+  tls: false                      # true = TLS with system CAs (usually port 8883)
+  discovery_prefix: "homeassistant"
+  topic_prefix: "numbers-go-up"
+```
+
+Set the broker password via the `NGU_MQTT_PASSWORD` environment variable —
+never in `config.yaml`. Omit the whole `mqtt` block to keep MQTT off; that's
+zero connections, exactly like a plugin that's never configured.
+
+Every series becomes one sensor entity, all grouped under a single
+**numbers-go-up** device (manufacturer "numbers-go-up", model "stats
+poller") so they show up together in HA's device list instead of scattered
+across "MQTT" entities. `cumulative` metrics get `state_class:
+total_increasing`; `gauge` metrics get `state_class: measurement`.
+
+- **`expire_after`** is set to 3x that plugin's poll interval — the same
+  staleness rule `/api/plugins` and `/api/stats/latest` already use. If a
+  plugin stops polling, its entities go "unavailable" in HA instead of
+  silently freezing on the last value.
+- **Entity IDs are permanent.** An entity's `object_id`/`unique_id` is
+  derived once from its metric key (`makerworld.profile.design_downloads` →
+  `ngu_makerworld_profile_design_downloads`) and never changes, even if the
+  series' label changes later. Two different metric keys that would collide
+  on the same object_id (a `.`/`_` clash) are detected: the second one is
+  skipped with a logged error rather than silently overwriting the first.
+- **To remove everything:** disable the plugins (or delete the `mqtt` block
+  and restart), then in Home Assistant go to Settings → Devices & Services →
+  MQTT and delete the "numbers-go-up" device. Deactivating one series (e.g. a
+  MakerWorld model that's no longer published) removes just that entity —
+  its discovery config and retained state are cleared automatically — while
+  the rest of the device stays intact.
+
+**Without MQTT:** there's currently no REST-polling fallback for Home
+Assistant (a plain `rest` sensor reading `/api/stats/latest` is a possible
+future addition — not implemented here); MQTT discovery is the only
+supported integration path today.
+
 ## License
 
 MIT — see [LICENSE](LICENSE).

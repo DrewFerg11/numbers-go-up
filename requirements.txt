@@ -3,3 +3,4 @@ uvicorn[standard]
 pyyaml
 apscheduler>=3.11,<4
 httpx
+paho-mqtt>=2,<3
