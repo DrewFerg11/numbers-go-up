@@ -161,7 +161,12 @@ jobs:
       # README, which works with all four restrictions simultaneously.
       - name: Hardened runtime reaches healthy and writes the DB
         run: |
+          # --user 1000:1000 means non-root mode: the entrypoint skips its
+          # own chown (by design -- see docker-entrypoint.sh), so the host
+          # dir has to already be owned by 1000:1000, same as a real
+          # deployment following the README's non-root instructions.
           mkdir -p /tmp/ngu-hardened-data
+          sudo chown -R 1000:1000 /tmp/ngu-hardened-data
           docker run -d --name ngu-hardened \
             --read-only --tmpfs /tmp \
             --cap-drop ALL \
