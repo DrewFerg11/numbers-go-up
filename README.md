@@ -80,6 +80,27 @@ starts failing and one line when it recovers, not one per poll. Set
 
 `docker rm` the container any time — none of the above lives inside it.
 
+### Where to pull the image
+
+GHCR is the primary, canonical registry and has no pull-rate limit for
+public images:
+
+```
+ghcr.io/drewferg11/numbers-go-up:<version>
+```
+
+Tagged releases are also mirrored to Docker Hub, byte-identical (same
+digest, same architectures), for anyone who prefers to pull from there:
+
+```
+docker.io/drewferg11/numbers-go-up:<version>
+```
+
+Docker Hub's anonymous pulls are capped (100 pulls/6 h per IP as of this
+writing), which matters if you run Watchtower or another auto-updater —
+GHCR doesn't have that limit for public images, so it's the better default
+for unattended pulls.
+
 ### Timezone
 
 `TZ` is **not set by default** — the container falls back to UTC. Set it to

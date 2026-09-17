@@ -82,6 +82,22 @@ jobs:
           fi
           echo "Tag $GITHUB_REF_NAME matches numbers_go_up.__version__ ($PKG_VERSION)"
 
+      # Opt-in Docker Hub mirror (see docs/gh-workflows/README.md). A release
+      # that only half-publishes -- GHCR done, Docker Hub silently skipped
+      # because a secret was blank -- is worse than one that fails outright,
+      # so this checks before anything builds.
+      - name: Verify Docker Hub secrets when the mirror is enabled
+        if: vars.DOCKERHUB_IMAGE != ''
+        run: |
+          if [ -z "$DOCKERHUB_USERNAME" ] || [ -z "$DOCKERHUB_TOKEN" ]; then
+            echo "::error::vars.DOCKERHUB_IMAGE is set (${{ vars.DOCKERHUB_IMAGE }}) but DOCKERHUB_USERNAME and/or DOCKERHUB_TOKEN secrets are missing. Set both, or unset the variable to release to GHCR only."
+            exit 1
+          fi
+          echo "Docker Hub mirror enabled: ${{ vars.DOCKERHUB_IMAGE }}"
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+
   build:
     name: build ${{ matrix.platform }}
     needs: authorize
@@ -154,6 +170,10 @@ jobs:
       digest: ${{ steps.push.outputs.digest }}
       version: ${{ steps.meta.outputs.version }}
     steps:
+      # Only needed for the Docker Hub description sync (reads README.md),
+      # but cheap enough to always run rather than condition the checkout.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
       - name: Resolve image name
         run: echo "IMAGE=${REGISTRY}/${REPO,,}" >> "$GITHUB_ENV"
         env:
@@ -173,10 +193,23 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # Docker Hub mirror. Only logs in when vars.DOCKERHUB_IMAGE is set --
+      # forks and the default path never touch docker.io at all.
+      - uses: docker/login-action@b45d80f862d83dbcd57f89517bcf500b2ab88fb2 # v4.0.0
+        if: vars.DOCKERHUB_IMAGE != ''
+        with:
+          registry: docker.io
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
       - id: meta
         uses: docker/metadata-action@030e881283bb7a6894de51c315a6bfe6a94e05cf # v6.0.0
         with:
-          images: ${{ env.IMAGE }}
+          # Second line is dropped (metadata-action ignores blank entries)
+          # when the mirror is off, so GHCR is the only target by default.
+          images: |
+            ${{ env.IMAGE }}
+            ${{ vars.DOCKERHUB_IMAGE != '' && format('docker.io/{0}', vars.DOCKERHUB_IMAGE) || '' }}
           tags: |
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
@@ -199,12 +232,61 @@ jobs:
         env:
           VERSION: ${{ steps.meta.outputs.version }}
 
-      - name: Attest build provenance
+      # The manifest list on Docker Hub is a copy made by imagetools create
+      # above, not a rebuild -- this proves it's byte-identical to GHCR's.
+      - name: Verify Docker Hub digest matches GHCR
+        if: vars.DOCKERHUB_IMAGE != ''
+        run: |
+          DOCKERHUB_DIGEST=$(docker buildx imagetools inspect \
+            "docker.io/${DOCKERHUB_IMAGE}:${VERSION}" --format '{{json .Manifest}}' | jq -r .digest)
+          if [ "$DOCKERHUB_DIGEST" != "$GHCR_DIGEST" ]; then
+            echo "::error::Docker Hub digest ($DOCKERHUB_DIGEST) does not match GHCR digest ($GHCR_DIGEST)"
+            exit 1
+          fi
+          echo "Docker Hub digest matches GHCR: $GHCR_DIGEST"
+        env:
+          DOCKERHUB_IMAGE: ${{ vars.DOCKERHUB_IMAGE }}
+          VERSION: ${{ steps.meta.outputs.version }}
+          GHCR_DIGEST: ${{ steps.push.outputs.digest }}
+
+      - name: Attest build provenance (GHCR)
         uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
         with:
           subject-name: ${{ env.IMAGE }}
           subject-digest: ${{ steps.push.outputs.digest }}
           push-to-registry: true
+
+      - name: Attest build provenance (Docker Hub)
+        if: vars.DOCKERHUB_IMAGE != ''
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
+        with:
+          subject-name: docker.io/${{ vars.DOCKERHUB_IMAGE }}
+          subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: true
+
+      # peter-evans/dockerhub-description isn't from a GitHub-owned or
+      # verified creator, which this repo's Actions policy restricts to --
+      # a plain API call needs no such allowlisting and uses the same token.
+      - name: Sync Docker Hub description from README
+        if: vars.DOCKERHUB_IMAGE != ''
+        run: |
+          JWT=$(curl -sS -X POST https://hub.docker.com/v2/users/login/ \
+            -H "Content-Type: application/json" \
+            -d "$(jq -n --arg u "$DOCKERHUB_USERNAME" --arg p "$DOCKERHUB_TOKEN" '{username:$u,password:$p}')" \
+            | jq -r .token)
+          if [ -z "$JWT" ] || [ "$JWT" = "null" ]; then
+            echo "::error::Docker Hub login failed; not updating the repository description."
+            exit 1
+          fi
+          jq -n --rawfile full README.md '{full_description: $full}' > /tmp/dockerhub-description.json
+          curl -sS -X PATCH "https://hub.docker.com/v2/repositories/${DOCKERHUB_IMAGE}/" \
+            -H "Authorization: JWT ${JWT}" \
+            -H "Content-Type: application/json" \
+            --data @/tmp/dockerhub-description.json -o /dev/null -w '%{http_code}\n'
+        env:
+          DOCKERHUB_IMAGE: ${{ vars.DOCKERHUB_IMAGE }}
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
 
   release:
     name: GitHub Release
@@ -341,6 +423,9 @@ jobs:
             echo
             echo '```'
             echo "docker pull ${IMAGE_LOWER}:${VERSION}"
+            if [ -n "$DOCKERHUB_IMAGE" ]; then
+              echo "docker pull docker.io/${DOCKERHUB_IMAGE}:${VERSION}"
+            fi
             echo '```'
             echo
             echo "Digest: \`${DIGEST}\`"
@@ -357,6 +442,7 @@ jobs:
           PLUGINS: ${{ steps.stats.outputs.plugins }}
           DIFFSTAT: ${{ steps.stats.outputs.diffstat }}
           IMAGE_MB: ${{ steps.imagesize.outputs.mb }}
+          DOCKERHUB_IMAGE: ${{ vars.DOCKERHUB_IMAGE }}
 
       - name: Create release
         run: |
