@@ -147,6 +147,8 @@ def _build_metric(
 
     change = value - open_value
     change_pct = None if open_value == 0 else round((change / open_value) * 100, 2)
+    span_days = max((now - start) / 86400, 1)
+    avg_per_day = round(change / span_days, 2)
 
     interval = intervals.get(row["plugin_name"], default_interval)
     stale = _is_stale(db_path, row["plugin_name"], row["last_seen"], interval, now)
@@ -170,6 +172,7 @@ def _build_metric(
         "change_pct": change_pct,
         "high": high,
         "low": low,
+        "avg_per_day": avg_per_day,
         "changes": stats["changes"],
         "updated": _format_iso(row["last_seen"]),
         "stale": stale,

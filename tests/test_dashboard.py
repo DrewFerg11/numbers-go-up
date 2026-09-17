@@ -108,21 +108,18 @@ def test_index_exposes_the_blocked_error_prefix_to_the_client(tmp_path):
     assert f'data-blocked-prefix="{BLOCKED_ERROR_PREFIX}"' in response.text
 
 
-def test_index_tiles_and_row_labels_have_no_href_before_the_detail_page_ships(
-    tmp_path,
-):
-    # /m/{key} (the detail page) isn't a route this PR registers -- it
-    # ships in a stacked follow-up. The static template's placeholder
-    # anchors use href="#" only as a template default; dashboard.js must
-    # strip it at render time so a left-click, middle-click, or "open in
-    # new tab" on a tile or watchlist row can't 404. This can't watch the
-    # client-side removeAttribute() call directly (no JS test runner in
-    # this repo), so it pins the static asset's source instead -- it
-    # fails loudly if a future edit reintroduces a hardcoded /m/ href.
+def test_index_tile_has_no_href_but_row_label_links_to_detail_page(tmp_path):
+    # The detail page (/m/{key}) now exists (this PR). Per spec, the
+    # watchlist row's metric name is a link to it; the index tile stays a
+    # pure selector (clicking a pinned tile shouldn't navigate away from
+    # the overview). This can't watch the client-side DOM directly (no JS
+    # test runner in this repo), so it pins the static asset's source --
+    # it fails loudly if a future edit drops the row link or adds a tile
+    # link back.
     js = (dashboard.STATIC_DIR / "js" / "dashboard.js").read_text()
 
-    assert '.href = "/m/' not in js
-    assert 'removeAttribute("href")' in js
+    assert 'node.removeAttribute("href")' in js
+    assert 'label.href = "/m/' in js
 
 
 def test_status_class_checks_last_error_not_just_status(tmp_path):
@@ -136,6 +133,42 @@ def test_status_class_checks_last_error_not_just_status(tmp_path):
 
     assert "plugin.last_error" in js
     assert "BLOCKED_PREFIX" in js
+
+
+def test_chart_js_implements_the_stale_dashed_tail(tmp_path):
+    # No JS test runner in this repo. The overview and detail acceptance
+    # criteria both require a stale series to draw a grey dashed
+    # continuation after its last good poll, not just a uniformly grey
+    # line -- pin that render() actually branches on staleSinceTs (a
+    # documented-but-unimplemented opts field was the exact regression a
+    # prior review caught) and that callers pass a real per-point
+    # direction rather than collapsing it to a flat "stale" color.
+    chart_js = (dashboard.STATIC_DIR / "js" / "chart.js").read_text()
+    dashboard_js = (dashboard.STATIC_DIR / "js" / "dashboard.js").read_text()
+
+    assert "opts.staleSinceTs" in chart_js
+    assert "direction: directionOf(metric)" in dashboard_js
+    assert 'direction: metric.stale ? "stale"' not in dashboard_js
+
+    # A stale series' history stops at its last good poll -- there's no
+    # stored point at "now" for the dashed tail to extend to, so render()
+    # must synthesize one. Caught only by manually rendering the chart in
+    # a browser: without this, staleSinceTs equals the last real point's
+    # timestamp, splitIdx lands on the final index, and no tail is drawn
+    # at all.
+    assert "Date.now()" in chart_js
+
+
+def test_theme_toggle_reloads_the_selected_chart(tmp_path):
+    # chart.js resolves colors from CSS custom properties once, at render
+    # time -- toggling the theme without re-rendering leaves the big
+    # chart and change bars showing the previous theme's colors until the
+    # next 60s auto-refresh happens to fire.
+    js = (dashboard.STATIC_DIR / "js" / "dashboard.js").read_text()
+    toggle_start = js.index('themeToggle.addEventListener("click"')
+    toggle_body = js[toggle_start : toggle_start + 800]
+
+    assert "loadChartFor(" in toggle_body
 
 
 def test_index_renders_with_every_plugin_failing(tmp_path):
@@ -309,6 +342,23 @@ def test_overview_high_low(tmp_path):
     metric = response.json()["metrics"][0]
     assert metric["high"] == 50
     assert metric["low"] == 5
+
+
+def test_overview_avg_per_day(tmp_path):
+    # Matches the detail page's own avg_per_day formula: change over the
+    # range divided by elapsed days, so the overview's stats row and the
+    # detail page's stats row can't drift apart. 1M is exactly 30 days,
+    # so a +20 change gives 20/30 = 0.666... -> 0.67.
+    client, db_path = client_for(tmp_path)
+    now = int(time.time())
+    series_id = seed_series(db_path, "acme.widgets", now=now - 30 * DAY)
+    storage.record_sample(db_path, series_id, now - 30 * DAY, 0, DAY)
+    storage.record_sample(db_path, series_id, now, 20, DAY)
+
+    response = client.get("/api/stats/overview?range=1M")
+
+    metric = response.json()["metrics"][0]
+    assert metric["avg_per_day"] == 0.67
 
 
 def test_overview_changes_counts_stored_samples_in_range(tmp_path):
@@ -578,6 +628,26 @@ def test_detail_inactive_series_renders_with_chip(tmp_path):
 
     assert response.status_code == 200
     assert "INACTIVE" in response.text
+
+
+def test_detail_exposes_stale_and_updated_to_the_client(tmp_path):
+    # detail.js reads these to draw the big chart's dashed grey
+    # continuation after the series' last good poll (chart.js
+    # staleSinceTs) -- without them the client has no way to know when a
+    # stale series' data actually stopped being current.
+    client, db_path = client_for(tmp_path, plugins_config={"acme": {"enabled": True}})
+    now = int(time.time())
+    series_id = seed_series(db_path, "acme.widgets", now=now - 2 * DAY)
+    storage.record_sample(db_path, series_id, now - 2 * DAY, 10, DAY)
+    run_id = storage.start_run(db_path, "acme", now)
+    storage.finish_run(
+        db_path, run_id, "error", "boom", samples_written=0, finished_at=now
+    )
+
+    response = client.get("/m/acme.widgets")
+
+    assert 'data-stale="true"' in response.text
+    assert 'data-updated="' in response.text
 
 
 def test_detail_https_url_rendered_as_link(tmp_path):

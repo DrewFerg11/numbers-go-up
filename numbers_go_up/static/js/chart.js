@@ -18,6 +18,13 @@
     return cssVar("--flat");
   }
 
+  // A soft area fill under the line. `color + "26"` (hex alpha) only works
+  // when the resolved custom property happens to be 6-digit hex --
+  // color-mix works for any valid CSS color the token could resolve to.
+  function areaFill(color) {
+    return "color-mix(in srgb, " + color + " 15%, transparent)";
+  }
+
   function NguChart(container) {
     this.container = container;
     this.instance = null;
@@ -30,9 +37,10 @@
     }
   };
 
-  // points: [[ts, value], ...] ascending by ts. staleSinceTs: draw a grey
-  // dashed continuation to "now" after this timestamp (the series' last
-  // good poll), or null/undefined for a healthy series.
+  // points: [[ts, value], ...] ascending by ts. staleSinceTs: the series'
+  // last good poll -- points at or after it are drawn as a second series,
+  // a grey dashed continuation to "now", instead of the real direction
+  // color. null/undefined draws a single healthy-colored line throughout.
   NguChart.prototype.render = function (points, opts) {
     opts = opts || {};
     this.destroy();
@@ -46,8 +54,67 @@
       return p[1];
     });
 
+    // A stale series' history ends at its last good poll -- there's no
+    // stored point at "now" for the dashed tail to extend to, so
+    // synthesize one (carrying the last known value forward) whenever
+    // the series is stale, per "the line continues ... to 'now'".
+    if (opts.staleSinceTs != null) {
+      var nowTs = Math.floor(Date.now() / 1000);
+      if (xs[xs.length - 1] < nowTs) {
+        xs.push(nowTs);
+        ys.push(ys[ys.length - 1]);
+      }
+    }
+
     var width = this.container.clientWidth || 600;
     var height = this.container.clientHeight || 240;
+
+    var mainSeries = {
+      label: opts.unit || "value",
+      stroke: color,
+      width: 1.5,
+      fill: areaFill(color),
+      paths: global.uPlot.paths.stepped({ align: 1 }),
+      points: { show: false },
+    };
+    var series = [{}, mainSeries];
+    var data = [xs, ys];
+
+    if (opts.staleSinceTs != null) {
+      var splitIdx = xs.findIndex(function (ts) {
+        return ts >= opts.staleSinceTs;
+      });
+      if (splitIdx === -1) splitIdx = xs.length - 1;
+
+      // The boundary point is duplicated into both series (not just the
+      // stale one) so the healthy line and the dashed tail visually meet
+      // instead of leaving a gap.
+      var hasStaleTail = splitIdx < xs.length - 1;
+      var mainYs = ys.map(function (v, i) {
+        return i <= splitIdx ? v : null;
+      });
+      var staleYs = ys.map(function (v, i) {
+        return i >= splitIdx ? v : null;
+      });
+
+      // No area fill once the line is split -- a soft fill abruptly
+      // truncated at the stale boundary reads as a rendering glitch, not
+      // as "this part of the chart is stale".
+      if (hasStaleTail) mainSeries.fill = null;
+      data = [xs, mainYs, staleYs];
+      series = [
+        {},
+        mainSeries,
+        {
+          label: "no data since last good poll",
+          stroke: cssVar("--stale"),
+          width: 1.5,
+          dash: [4, 4],
+          paths: global.uPlot.paths.stepped({ align: 1 }),
+          points: { show: false },
+        },
+      ];
+    }
 
     var uplotOpts = {
       width: width,
@@ -63,17 +130,7 @@
           grid: { stroke: cssVar("--border") },
         },
       ],
-      series: [
-        {},
-        {
-          label: opts.unit || "value",
-          stroke: color,
-          width: 1.5,
-          fill: color + "26",
-          paths: global.uPlot.paths.stepped({ align: 1 }),
-          points: { show: false },
-        },
-      ],
+      series: series,
       // Cursor point markers are on by default; explicitly setting
       // `cursor.points.show: true` crashes this uPlot build (a boolean
       // literal there conflicts with its internal default-function path),
@@ -87,13 +144,17 @@
               opts.onCursor(null);
               return;
             }
-            opts.onCursor({ ts: u.data[0][idx], value: u.data[1][idx] });
+            // With a stale tail, the value lives in whichever of the two
+            // series (main / stale) isn't null at this index.
+            var value = u.data[1][idx];
+            if (value == null && u.data[2] !== undefined) value = u.data[2][idx];
+            opts.onCursor({ ts: u.data[0][idx], value: value });
           },
         ],
       },
     };
 
-    this.instance = new global.uPlot(uplotOpts, [xs, ys], this.container);
+    this.instance = new global.uPlot(uplotOpts, data, this.container);
 
     if (!this._resizeObserver) {
       var self = this;

@@ -179,8 +179,10 @@
   function buildTile(metric) {
     var node = tileTemplate.content.firstElementChild.cloneNode(true);
     node.dataset.key = metric.key;
-    // No detail page exists yet (it ships in a stacked follow-up PR), so
-    // this stays a non-navigating selector rather than a link to a 404.
+    // The index tile is a pure selector, not a link -- the watchlist row's
+    // metric name is the spec's link to the detail page (see buildRow);
+    // having both the tile and the row navigate would make the common
+    // "click a pinned tile" gesture leave the overview unexpectedly.
     node.removeAttribute("href");
     node.querySelector(".tile-plugin").textContent = metric.plugin.toUpperCase();
     node.querySelector(".tile-label").textContent = metric.label || metric.key;
@@ -201,11 +203,10 @@
     node.dataset.key = metric.key;
     var label = node.querySelector(".row-label");
     label.textContent = metric.label || metric.key;
-    // No detail page exists yet (it ships in a stacked follow-up PR); an
-    // href here would send a left-click, middle-click, or "open in new
-    // tab" straight to a 404. The row's own click/Enter handlers below
-    // already cover selection.
-    label.removeAttribute("href");
+    // The metric name is a link to its detail page (spec); the row's own
+    // click/Enter handlers below separately cover selecting it for the
+    // big chart without navigating away.
+    label.href = "/m/" + encodeURIComponent(metric.key) + "?range=" + state.range;
     node.querySelector(".row-key").textContent = metric.key;
     if (metric.stale) {
       node.querySelector(".stale-chip").hidden = false;
@@ -446,8 +447,9 @@
           return [p.ts, p.value];
         });
         chart.render(points, {
-          direction: metric.stale ? "stale" : directionOf(metric),
+          direction: directionOf(metric),
           unit: metric.unit,
+          staleSinceTs: metric.stale ? Date.parse(metric.updated) / 1000 : null,
         });
         window.renderChangeBars(document.getElementById("chart-bars"), data.bars);
         chartStats.textContent = "";
@@ -455,6 +457,7 @@
           ["OPEN", formatValue(metric.open)],
           ["HIGH", formatValue(metric.high)],
           ["LOW", formatValue(metric.low)],
+          ["AVG/DAY", formatValue(metric.avg_per_day)],
           ["CHANGES", metric.changes],
         ].forEach(function (pair) {
           var span = document.createElement("span");
@@ -544,6 +547,12 @@
     } catch (e) {
       /* ignore */
     }
+    // The big chart and change bars resolve their colors from CSS custom
+    // properties once, at render time (chart.js's cssVar()) -- without
+    // this, they'd keep the previous theme's colors until the next 60s
+    // auto-refresh happened to re-trigger loadChartFor.
+    var current_key = selectedKey();
+    if (current_key && state.metricsByKey[current_key]) loadChartFor(current_key);
   });
 
   // --- Refresh --------------------------------------------------------

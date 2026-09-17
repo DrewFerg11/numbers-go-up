@@ -5,6 +5,8 @@
   var THEME_KEY = "ngu.theme";
   var app = document.querySelector(".detail-page");
   var metricKey = app.dataset.metricKey;
+  var isStale = app.dataset.stale === "true";
+  var staleSinceTs = isStale && app.dataset.updated ? Date.parse(app.dataset.updated) / 1000 : null;
   var state = { range: app.dataset.initialRange || "1M" };
 
   var chart = new window.NguChart(document.getElementById("big-chart"));
@@ -56,7 +58,11 @@
     document.getElementById("detail-value").textContent = formatValue(value);
     renderChangePill(value - open, open === 0 ? null : Math.round(((value - open) / open) * 10000) / 100);
 
-    chart.render(points, { direction: directionOf(value - open), unit: "" });
+    chart.render(points, {
+      direction: directionOf(value - open),
+      unit: "",
+      staleSinceTs: staleSinceTs,
+    });
     window.renderChangeBars(document.getElementById("chart-bars"), data.bars);
   }
 
