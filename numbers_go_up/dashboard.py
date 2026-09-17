@@ -7,7 +7,9 @@ route and ``/api/stats/overview``; all SQL stays in storage.py.
 
 from __future__ import annotations
 
+import contextlib
 import logging
+import sqlite3
 import time
 from pathlib import Path
 from typing import Any
@@ -112,6 +114,7 @@ def _plugin_metrics_for(
 
 def _build_metric(
     request: Request,
+    conn: sqlite3.Connection,
     row,
     range_key: str,
     now: int,
@@ -126,7 +129,7 @@ def _build_metric(
         start = row["first_seen"]
     else:
         start = now - RANGE_HOURS[range_key] * 3600
-    stats = storage.range_stats(db_path, row["id"], start, now)
+    stats = storage.range_stats_conn(conn, row["id"], start, now)
 
     open_value = stats["open"]
     value = row["last_value"]
@@ -220,13 +223,18 @@ def build_overview(request: Request, range_key: str) -> dict[str, Any]:
     )
     start = _range_bounds(range_key, now, earliest)
 
+    # One shared connection for every series' range_stats, rather than one
+    # connection (and its five PRAGMA statements) per series -- with up to
+    # 500 pattern-matched series per plugin and a 60s auto-refresh per open
+    # tab, that per-series connection cost was the dominant one here.
     metrics: list[dict[str, Any]] = []
-    for row in rows:
-        metric = _build_metric(
-            request, row, range_key, now, default_interval, intervals
-        )
-        if metric is not None:
-            metrics.append(metric)
+    with contextlib.closing(storage.connect(db_path)) as conn:
+        for row in rows:
+            metric = _build_metric(
+                request, conn, row, range_key, now, default_interval, intervals
+            )
+            if metric is not None:
+                metrics.append(metric)
 
     metrics_by_key = {metric["key"]: metric for metric in metrics}
     pinned = _resolve_pinned(config, metrics_by_key)

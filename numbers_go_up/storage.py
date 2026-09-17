@@ -492,6 +492,65 @@ def list_active_series_full(db_path: str | Path) -> list[sqlite3.Row]:
         ).fetchall()
 
 
+def range_stats_conn(
+    conn: sqlite3.Connection, series_id: int, start: int, end: int
+) -> dict[str, Any]:
+    """Same as :func:`range_stats`, against an already-open connection.
+
+    The dashboard overview calls this once per active series on every
+    request (up to the pattern-key cap of 500 per plugin); opening a fresh
+    connection per series -- each paying its own five PRAGMA statements --
+    is the dominant cost at that scale, so callers doing many of these in
+    one request should open a single connection with :func:`connect` and
+    reuse it here rather than call :func:`range_stats` in a loop.
+    """
+    anchor = conn.execute(
+        "SELECT value FROM samples WHERE series_id = ? AND ts <= ? "
+        "ORDER BY ts DESC LIMIT 1",
+        (series_id, start),
+    ).fetchone()
+
+    if anchor is not None:
+        open_value = anchor[0]
+        after_ts = start
+        points: list[tuple[int, float]] = [(start, open_value)]
+    else:
+        # No sample at or before `start`: the series is younger than
+        # the range. Its own first sample becomes `open`, and only
+        # samples strictly after that one count toward `changes` --
+        # otherwise the opening sample would be double-counted, once
+        # as `open` and once as a "change".
+        first = conn.execute(
+            "SELECT ts, value FROM samples WHERE series_id = ? ORDER BY ts ASC LIMIT 1",
+            (series_id,),
+        ).fetchone()
+        if first is None:
+            open_value = None
+            after_ts = start
+            points = []
+        else:
+            open_value = first[1]
+            after_ts = first[0]
+            points = [(first[0], open_value)]
+
+    rows = conn.execute(
+        "SELECT ts, value FROM samples WHERE series_id = ? AND ts > ? AND ts <= ? "
+        "ORDER BY ts ASC",
+        (series_id, after_ts, end),
+    ).fetchall()
+
+    points.extend((row[0], row[1]) for row in rows)
+
+    values = [value for _, value in points]
+    return {
+        "open": open_value,
+        "high": max(values) if values else None,
+        "low": min(values) if values else None,
+        "changes": len(rows),
+        "points": points,
+    }
+
+
 def range_stats(
     db_path: str | Path, series_id: int, start: int, end: int
 ) -> dict[str, Any]:
@@ -505,54 +564,14 @@ def range_stats(
     every literal sample in ``(start, end]`` -- the same shape
     :func:`history` returns, plus ``high``/``low``/``changes`` computed from
     the same rows so the overview endpoint doesn't need extra round trips.
+
+    A thin single-series wrapper around :func:`range_stats_conn` for
+    callers (tests, one-off queries) that don't already hold a connection
+    -- the dashboard overview loop uses :func:`range_stats_conn` directly
+    against one shared connection instead of calling this per series.
     """
     with contextlib.closing(connect(db_path)) as conn:
-        anchor = conn.execute(
-            "SELECT value FROM samples WHERE series_id = ? AND ts <= ? "
-            "ORDER BY ts DESC LIMIT 1",
-            (series_id, start),
-        ).fetchone()
-
-        if anchor is not None:
-            open_value = anchor[0]
-            after_ts = start
-            points: list[tuple[int, float]] = [(start, open_value)]
-        else:
-            # No sample at or before `start`: the series is younger than
-            # the range. Its own first sample becomes `open`, and only
-            # samples strictly after that one count toward `changes` --
-            # otherwise the opening sample would be double-counted, once
-            # as `open` and once as a "change".
-            first = conn.execute(
-                "SELECT ts, value FROM samples WHERE series_id = ? "
-                "ORDER BY ts ASC LIMIT 1",
-                (series_id,),
-            ).fetchone()
-            if first is None:
-                open_value = None
-                after_ts = start
-                points = []
-            else:
-                open_value = first[1]
-                after_ts = first[0]
-                points = [(first[0], open_value)]
-
-        rows = conn.execute(
-            "SELECT ts, value FROM samples WHERE series_id = ? AND ts > ? AND ts <= ? "
-            "ORDER BY ts ASC",
-            (series_id, after_ts, end),
-        ).fetchall()
-
-    points.extend((row[0], row[1]) for row in rows)
-
-    values = [value for _, value in points]
-    return {
-        "open": open_value,
-        "high": max(values) if values else None,
-        "low": min(values) if values else None,
-        "changes": len(rows),
-        "points": points,
-    }
+        return range_stats_conn(conn, series_id, start, end)
 
 
 def history(

@@ -29,6 +29,12 @@
     refreshTimer: null,
   };
 
+  // Same threshold /health/plugins uses (api.DEFAULT_UNHEALTHY_FAILURES),
+  // passed through by the server rather than duplicated as a literal here
+  // -- one source of truth, so bumping the server constant also moves the
+  // dashboard's red dot.
+  var UNHEALTHY_FAILURES = parseInt(app.dataset.unhealthyThreshold, 10) || 3;
+
   // --- Sparkline: a stepped polyline + area fill, hand-written (about 40
   // lines) rather than a charting library -- dozens of chart-library
   // instances for 30x110px sparklines would be heavier than the big chart.
@@ -159,7 +165,9 @@
   function buildTile(metric) {
     var node = tileTemplate.content.firstElementChild.cloneNode(true);
     node.dataset.key = metric.key;
-    node.href = "/m/" + encodeURIComponent(metric.key) + "?range=" + state.range;
+    // No detail page exists yet (it ships in a stacked follow-up PR), so
+    // this stays a non-navigating selector rather than a link to a 404.
+    node.removeAttribute("href");
     node.querySelector(".tile-plugin").textContent = metric.plugin.toUpperCase();
     node.querySelector(".tile-label").textContent = metric.label || metric.key;
     node.querySelector(".tile-value").textContent = formatValue(metric.value);
@@ -179,7 +187,11 @@
     node.dataset.key = metric.key;
     var label = node.querySelector(".row-label");
     label.textContent = metric.label || metric.key;
-    label.href = "/m/" + encodeURIComponent(metric.key) + "?range=" + state.range;
+    // No detail page exists yet (it ships in a stacked follow-up PR); an
+    // href here would send a left-click, middle-click, or "open in new
+    // tab" straight to a 404. The row's own click/Enter handlers below
+    // already cover selection.
+    label.removeAttribute("href");
     node.querySelector(".row-key").textContent = metric.key;
     if (metric.stale) {
       node.querySelector(".stale-chip").hidden = false;
@@ -298,10 +310,18 @@
     });
   }
 
-  function statusClass(status) {
-    if (status === "ok" || status === "polling") return "ok";
-    if (status === "disabled" || status === "pending") return "";
-    return status === "blocked" || status === "error" ? "error" : "warn";
+  // Mirrors api._unhealthy_reason's rule exactly, so the dot and
+  // /health/plugins can't disagree: blocked is unhealthy on the first
+  // failure; otherwise an in-flight retry doesn't count as one of its own
+  // consecutive failures (consecutive_failures's liveness convention
+  // counts an unfinished run, which would flag a healthy mid-poll plugin).
+  function statusClass(plugin) {
+    if (plugin.status === "blocked") return "error";
+    var failures = plugin.consecutive_failures;
+    if (plugin.status === "polling") failures = Math.max(failures - 1, 0);
+    if (failures >= UNHEALTHY_FAILURES) return "error";
+    if (failures >= 1) return "warn";
+    return plugin.status === "ok" || plugin.status === "polling" ? "ok" : "";
   }
 
   function renderStatusLine(plugins) {
@@ -312,13 +332,7 @@
       })
       .forEach(function (plugin) {
         var node = statusDotTemplate.content.firstElementChild.cloneNode(true);
-        var cls = statusClass(
-          plugin.consecutive_failures >= 3 || plugin.status === "blocked"
-            ? "error"
-            : plugin.consecutive_failures >= 1
-              ? "warn"
-              : plugin.status
-        );
+        var cls = statusClass(plugin);
         node.querySelector(".dot").className = "dot " + cls;
         node.querySelector(".dot-name").textContent =
           plugin.name + (plugin.status === "ok" ? " ok" : " " + plugin.status);
@@ -389,19 +403,12 @@
 
   // --- Theme --------------------------------------------------------
 
+  // The initial theme is already applied by an inline <script> in
+  // base.html's <head>, synchronously before first paint (avoiding a
+  // flash of the wrong theme) -- this only needs to handle the toggle.
   function applyTheme(theme) {
     document.documentElement.setAttribute("data-theme", theme);
   }
-
-  (function initTheme() {
-    var stored = null;
-    try {
-      stored = localStorage.getItem(THEME_KEY);
-    } catch (e) {
-      /* ignore */
-    }
-    applyTheme(stored || "dark");
-  })();
 
   themeToggle.addEventListener("click", function () {
     var current = document.documentElement.getAttribute("data-theme");

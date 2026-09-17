@@ -79,6 +79,36 @@ def test_index_renders_with_healthy_sample_data(tmp_path):
     assert response.status_code == 200
 
 
+def test_index_exposes_the_unhealthy_failure_threshold_to_the_client(tmp_path):
+    # dashboard.js reads this off the .app div rather than hardcoding its
+    # own copy of api.DEFAULT_UNHEALTHY_FAILURES, so the status line can't
+    # silently drift from /health/plugins' threshold.
+    from numbers_go_up.api import DEFAULT_UNHEALTHY_FAILURES
+
+    client, _ = client_for(tmp_path)
+
+    response = client.get("/")
+
+    assert f'data-unhealthy-threshold="{DEFAULT_UNHEALTHY_FAILURES}"' in response.text
+
+
+def test_index_tiles_and_row_labels_have_no_href_before_the_detail_page_ships(
+    tmp_path,
+):
+    # /m/{key} (the detail page) isn't a route this PR registers -- it
+    # ships in a stacked follow-up. The static template's placeholder
+    # anchors use href="#" only as a template default; dashboard.js must
+    # strip it at render time so a left-click, middle-click, or "open in
+    # new tab" on a tile or watchlist row can't 404. This can't watch the
+    # client-side removeAttribute() call directly (no JS test runner in
+    # this repo), so it pins the static asset's source instead -- it
+    # fails loudly if a future edit reintroduces a hardcoded /m/ href.
+    js = (dashboard.STATIC_DIR / "js" / "dashboard.js").read_text()
+
+    assert '.href = "/m/' not in js
+    assert 'removeAttribute("href")' in js
+
+
 def test_index_renders_with_every_plugin_failing(tmp_path):
     client, db_path = client_for(tmp_path, plugins_config={"acme": {"enabled": True}})
     now = int(time.time())
@@ -92,6 +122,22 @@ def test_index_renders_with_every_plugin_failing(tmp_path):
     response = client.get("/")
 
     assert response.status_code == 200
+
+
+def test_index_sets_theme_before_first_paint(tmp_path):
+    # The inline theme-setting script must be in <head>, ahead of <body>,
+    # so a stored preference applies before the page paints instead of
+    # flashing the dark default first.
+    client, _ = client_for(tmp_path)
+
+    response = client.get("/")
+
+    head_start = response.text.index("<head>")
+    head_end = response.text.index("</head>")
+    theme_script_pos = response.text.index("ngu.theme")
+    body_pos = response.text.index("<body>")
+
+    assert head_start < theme_script_pos < head_end < body_pos
 
 
 def test_index_has_no_external_asset_urls(tmp_path):

@@ -678,3 +678,52 @@ class TestHistory:
         points = storage.history(db_path, series_id, 0, 1000)
 
         assert points == []
+
+
+class TestRangeStatsConn:
+    def _series(self, db_path):
+        return storage.get_or_create_series(
+            db_path, "demo.thing.count", "demo", "cumulative", "Count", "", "", 1000
+        )
+
+    def test_matches_range_stats_against_a_shared_connection(self, db_path):
+        # range_stats_conn is the one build_overview actually calls (once
+        # per series, all against one shared connection, to avoid paying
+        # connect()'s five PRAGMA statements per series on every request);
+        # range_stats is a thin single-series wrapper around it. The two
+        # must agree.
+        series_id = self._series(db_path)
+        storage.record_sample(db_path, series_id, 1000, 5, heartbeat_seconds=100)
+        storage.record_sample(db_path, series_id, 1500, 9, heartbeat_seconds=100)
+
+        via_wrapper = storage.range_stats(db_path, series_id, 0, 2000)
+
+        conn = storage.connect(db_path)
+        try:
+            via_conn = storage.range_stats_conn(conn, series_id, 0, 2000)
+        finally:
+            conn.close()
+
+        assert via_conn == via_wrapper
+
+    def test_one_connection_serves_multiple_series(self, db_path):
+        # The actual point of range_stats_conn: the same open connection
+        # can be reused across series without reopening it.
+        first_id = storage.get_or_create_series(
+            db_path, "demo.a", "demo", "cumulative", "A", "", "", 1000
+        )
+        second_id = storage.get_or_create_series(
+            db_path, "demo.b", "demo", "cumulative", "B", "", "", 1000
+        )
+        storage.record_sample(db_path, first_id, 1000, 1, heartbeat_seconds=100)
+        storage.record_sample(db_path, second_id, 1000, 2, heartbeat_seconds=100)
+
+        conn = storage.connect(db_path)
+        try:
+            first = storage.range_stats_conn(conn, first_id, 0, 2000)
+            second = storage.range_stats_conn(conn, second_id, 0, 2000)
+        finally:
+            conn.close()
+
+        assert first["open"] == 1
+        assert second["open"] == 2

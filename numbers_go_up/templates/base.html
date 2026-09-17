@@ -5,6 +5,22 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>{% block title %}numbers-go-up{% endblock %}</title>
     <link rel="stylesheet" href="/static/css/dashboard.css" />
+    <script>
+      // Set the theme before first paint, so a light-theme visitor never
+      // sees a dark flash: this runs synchronously in <head>, ahead of
+      // the stylesheet applying and ahead of dashboard.js/detail.js's own
+      // (identically-keyed) theme toggle logic further down the page.
+      (function () {
+        try {
+          var stored = localStorage.getItem("ngu.theme");
+          if (stored === "light" || stored === "dark") {
+            document.documentElement.setAttribute("data-theme", stored);
+          }
+        } catch (e) {
+          /* private browsing / blocked storage: keep the dark default */
+        }
+      })();
+    </script>
   </head>
   <body>
     {% block body %}{% endblock %}
