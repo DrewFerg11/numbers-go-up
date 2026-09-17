@@ -173,7 +173,16 @@
   // Change bars: a small hand-rolled SVG bar strip (not a second uPlot
   // instance -- a volume-style strip is simple enough that a full chart
   // library would be overkill for it).
-  function renderBars(svgContainer, bars) {
+  //
+  // domain: {start, end} unix seconds -- the same time range the big
+  // chart's line is drawn across (its points' first/last timestamps).
+  // Bars are positioned by `bar.ts` against this domain, not by array
+  // index: _bucket_changes omits empty buckets, so under real
+  // store-on-change data (gaps between changes are the norm, not the
+  // exception) evenly spacing N bars across the strip would put a bar
+  // under the wrong point in time relative to the line above it. Falls
+  // back to the bars' own first/last ts if no domain is given.
+  function renderBars(svgContainer, bars, domain) {
     while (svgContainer.firstChild) svgContainer.removeChild(svgContainer.firstChild);
     if (!bars || bars.length === 0) return;
 
@@ -193,19 +202,22 @@
     );
     maxAbs = maxAbs || 1;
 
-    var barWidth = width / bars.length;
+    var start = domain ? domain.start : bars[0].ts;
+    var end = domain ? domain.end : bars[bars.length - 1].ts;
+    var span = Math.max(end - start, 1);
+    var barPixelWidth = Math.max((width / bars.length) * 0.6, 2);
     var upColor = cssVar("--up");
     var downColor = cssVar("--down");
 
-    bars.forEach(function (bar, i) {
+    bars.forEach(function (bar) {
       var barHeight = (Math.abs(bar.change) / maxAbs) * (height / 2 - 2);
-      var x = i * barWidth + barWidth * 0.15;
-      var w = barWidth * 0.7;
+      var centerX = ((bar.ts - start) / span) * width;
+      var x = centerX - barPixelWidth / 2;
       var y = bar.change >= 0 ? height / 2 - barHeight : height / 2;
       var rect = document.createElementNS("http://www.w3.org/2000/svg", "rect");
       rect.setAttribute("x", x.toFixed(2));
       rect.setAttribute("y", y.toFixed(2));
-      rect.setAttribute("width", w.toFixed(2));
+      rect.setAttribute("width", barPixelWidth.toFixed(2));
       rect.setAttribute("height", Math.max(barHeight, 1).toFixed(2));
       rect.setAttribute("fill", bar.change >= 0 ? upColor : downColor);
       svg.appendChild(rect);

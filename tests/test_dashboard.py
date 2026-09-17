@@ -171,6 +171,23 @@ def test_theme_toggle_reloads_the_selected_chart(tmp_path):
     assert "loadChartFor(" in toggle_body
 
 
+def test_change_bars_positioned_by_timestamp_not_array_index(tmp_path):
+    # _bucket_changes omits empty buckets, so under real store-on-change
+    # data (gaps between changes are the norm) evenly spacing N bars
+    # across the strip by index would put a bar under the wrong point in
+    # time relative to the line above it, which is drawn on a real time
+    # axis. renderBars must derive each bar's x from bar.ts against a
+    # domain, and both chart callers must pass one.
+    chart_js = (dashboard.STATIC_DIR / "js" / "chart.js").read_text()
+    dashboard_js = (dashboard.STATIC_DIR / "js" / "dashboard.js").read_text()
+    detail_js = (dashboard.STATIC_DIR / "js" / "detail.js").read_text()
+
+    assert "bar.ts - start" in chart_js
+    assert "i * barWidth" not in chart_js
+    assert "renderChangeBars(" in dashboard_js and "data.bars, {" in dashboard_js
+    assert "renderChangeBars(" in detail_js and "data.bars, {" in detail_js
+
+
 def test_index_renders_with_every_plugin_failing(tmp_path):
     client, db_path = client_for(tmp_path, plugins_config={"acme": {"enabled": True}})
     now = int(time.time())
@@ -648,6 +665,22 @@ def test_detail_exposes_stale_and_updated_to_the_client(tmp_path):
 
     assert 'data-stale="true"' in response.text
     assert 'data-updated="' in response.text
+
+
+def test_detail_recorded_change_renders_full_precision(tmp_path):
+    # Jinja's `|format("%d")` on a float truncates it (1.37 -> "1"), so a
+    # fractional recorded change used to lose its fractional part on the
+    # page even though the value column next to it kept full precision.
+    client, db_path = client_for(tmp_path)
+    now = int(time.time())
+    series_id = seed_series(db_path, "acme.widgets", kind="gauge", now=now - DAY)
+    storage.record_sample(db_path, series_id, now - DAY, 1.5, DAY)
+    storage.record_sample(db_path, series_id, now, 2.87, DAY)
+
+    response = client.get("/m/acme.widgets")
+
+    assert "+1.37" in response.text
+    assert "+1<" not in response.text
 
 
 def test_detail_https_url_rendered_as_link(tmp_path):

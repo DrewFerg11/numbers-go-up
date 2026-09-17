@@ -451,7 +451,10 @@
           unit: metric.unit,
           staleSinceTs: metric.stale ? Date.parse(metric.updated) / 1000 : null,
         });
-        window.renderChangeBars(document.getElementById("chart-bars"), data.bars);
+        window.renderChangeBars(document.getElementById("chart-bars"), data.bars, {
+          start: points.length ? points[0][0] : 0,
+          end: points.length ? points[points.length - 1][0] : 1,
+        });
         chartStats.textContent = "";
         [
           ["OPEN", formatValue(metric.open)],

@@ -63,7 +63,10 @@
       unit: "",
       staleSinceTs: staleSinceTs,
     });
-    window.renderChangeBars(document.getElementById("chart-bars"), data.bars);
+    window.renderChangeBars(document.getElementById("chart-bars"), data.bars, {
+      start: points[0][0],
+      end: points[points.length - 1][0],
+    });
   }
 
   function load() {

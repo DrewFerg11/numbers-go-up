@@ -70,7 +70,7 @@
             <span class="rc-time">{{ change.ts }}</span>
             <span class="rc-value">{{ change.value }}</span>
             <span class="rc-change {{ 'value-up' if change.change > 0 else ('value-down' if change.change < 0 else 'value-flat') }}">
-              {{ "+%d"|format(change.change) if change.change > 0 else change.change }}
+              {{ "+" ~ change.change if change.change > 0 else change.change }}
             </span>
           </li>
           {% else %}
