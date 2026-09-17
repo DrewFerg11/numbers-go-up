@@ -64,8 +64,8 @@ class FakeMqttClient:
 
     # -- test helpers, not part of the paho.Client surface --
 
-    def simulate_connect(self):
-        self.on_connect(self, None, {}, 0)
+    def simulate_connect(self, reason_code=0):
+        self.on_connect(self, None, {}, reason_code)
 
     def simulate_disconnect(self):
         self.on_disconnect(self, None, 0)
@@ -248,6 +248,13 @@ class TestDiscoveryPayload:
         payload = json.loads(fake.published_dict(topic))
         assert payload["unique_id"] == "ngu_makerworld_profile_design_downloads"
         assert payload["object_id"] == "ngu_makerworld_profile_design_downloads"
+        # object_id is deprecated in HA Core 2026.4+ in favour of
+        # default_entity_id (which must carry the domain prefix); publish
+        # both so this works whether HA is old or new.
+        assert (
+            payload["default_entity_id"]
+            == "sensor.ngu_makerworld_profile_design_downloads"
+        )
 
     def test_expire_after_is_three_times_the_plugin_interval(self, db_path):
         _seed_series(db_path, "acme.designs", value=1)
@@ -488,6 +495,46 @@ class TestDeactivationLifecycle:
         assert payload["unique_id"] == "ngu_acme_a"
         assert fake.published_dict("numbers-go-up/acme.a/state") == "42"
 
+    def test_removal_is_not_gated_on_this_polls_status(self, db_path):
+        # Deactivation is a DB fact set by a *previous* successful run's
+        # pattern-series reconciliation. A later poll that happens to fail
+        # must still publish the removal for a series it already knows was
+        # deactivated -- otherwise the entity looks frozen-but-available in
+        # HA (the process keeps publishing "online" on the availability
+        # topic) until some future successful poll notices.
+        series_id = _seed_series(db_path, "acme.a", value=1)
+        publisher, fake = _publisher(db_path)
+        publisher._connected = True
+        publisher.on_poll_finished("acme", "ok", frozenset({"acme.a"}))
+
+        storage.set_series_active_bulk(db_path, [], [series_id])
+        fake.published.clear()
+        publisher.on_poll_finished("acme", "error", frozenset())
+
+        discovery_topic = "homeassistant/sensor/numbers_go_up/ngu_acme_a/config"
+        assert fake.published_dict(discovery_topic) == b""
+        assert fake.published_dict("numbers-go-up/acme.a/state") == b""
+        assert fake.published_dict("numbers-go-up/acme.a/attrs") == b""
+
+    def test_snapshot_reconciles_a_series_deactivated_while_the_process_was_down(
+        self, db_path
+    ):
+        # _known_active starts empty on every process restart. A series
+        # deactivated while the process was down (or before this process
+        # ever touched it) must still be removed on the next full snapshot
+        # -- reconciled against the DB, not against in-memory state.
+        series_id = _seed_series(db_path, "acme.a", value=1)
+        storage.set_series_active_bulk(db_path, [], [series_id])
+
+        publisher, fake = _publisher(db_path, connected=False)
+        publisher.start()
+        fake.simulate_connect()
+
+        discovery_topic = "homeassistant/sensor/numbers_go_up/ngu_acme_a/config"
+        assert fake.published_dict(discovery_topic) == b""
+        assert fake.published_dict("numbers-go-up/acme.a/state") == b""
+        assert fake.published_dict("numbers-go-up/acme.a/attrs") == b""
+
 
 # --- connect / reconnect / HA restart --------------------------------------
 
@@ -567,6 +614,37 @@ class TestConnectionLifecycle:
         assert fake.published_dict("numbers-go-up/status") == b"offline"
         assert fake.loop_stopped is True
         assert fake.disconnected is True
+
+    def test_refused_connack_is_not_reported_as_connected(self, db_path):
+        # paho dispatches on_connect for a *refused* CONNACK too -- rc=5
+        # (not authorised) is the shape a wrong username/password takes.
+        publisher, fake = _publisher(db_path, connected=False)
+        publisher.start()
+
+        fake.simulate_connect(reason_code=5)
+
+        assert publisher.status["connected"] is False
+        assert "connect refused" in publisher.status["last_error"]
+        # No online/snapshot traffic for a connection that was refused.
+        assert fake.published_dict("numbers-go-up/status") != b"online"
+
+    def test_refused_connack_reason_code_object_with_is_failure(self, db_path):
+        # Real paho hands the callback a ReasonCode with .is_failure, not a
+        # plain int -- exercise that shape too, not just the fake's int rc.
+        publisher, fake = _publisher(db_path, connected=False)
+        publisher.start()
+
+        fake.simulate_connect(reason_code=SimpleNamespace(is_failure=True))
+
+        assert publisher.status["connected"] is False
+
+    def test_successful_connack_reason_code_object_without_failure(self, db_path):
+        publisher, fake = _publisher(db_path, connected=False)
+        publisher.start()
+
+        fake.simulate_connect(reason_code=SimpleNamespace(is_failure=False))
+
+        assert publisher.status["connected"] is True
 
 
 # --- unreachable broker at startup -----------------------------------------

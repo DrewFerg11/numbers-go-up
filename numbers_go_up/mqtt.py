@@ -278,6 +278,25 @@ class MqttPublisher:
     # -- paho callbacks ----------------------------------------------------
 
     def _on_connect(self, client, userdata, flags, reason_code, *args) -> None:
+        # on_connect fires for a *refused* CONNACK too (paho's own docs:
+        # "the call could be for a refused connection, check the
+        # reason_code"). A ReasonCode has .is_failure; the fake client in
+        # tests (and paho's own pre-VERSION2 callers) may hand in a plain
+        # int, where anything but 0 is a failure. Getting this wrong means
+        # a rejected auth (bad username/password) is reported as
+        # connected=True forever -- /api/integrations would never show the
+        # problem.
+        if getattr(reason_code, "is_failure", reason_code != 0):
+            with self._lock:
+                self._connected = False
+                self._last_error = f"connect refused: {reason_code}"
+            logger.warning(
+                "MQTT connection to %s:%s refused: %s",
+                self._host,
+                self._port,
+                reason_code,
+            )
+            return
         with self._lock:
             was_connected = self._connected
             self._connected = True
@@ -366,14 +385,15 @@ class MqttPublisher:
         payload: dict[str, Any] = {
             "name": row["label"],
             "unique_id": object_id,
-            # HA has been moving MQTT discovery from `object_id` to
-            # `default_entity_id` in recent releases. We use `object_id`
-            # here: it's still broadly supported across current HA
-            # versions and this environment has no network access to
-            # confirm the very latest docs against -- a maintainer on a
-            # newer HA build should double check whether `default_entity_id`
-            # is now preferred and adjust if so (see the PR description).
+            # `object_id` is deprecated in HA MQTT discovery as of HA Core
+            # 2026.4 -- HA logs a per-entity deprecation warning and points
+            # at `default_entity_id` instead. Publish both: `object_id` for
+            # older HA builds that don't understand `default_entity_id` yet,
+            # and `default_entity_id` (which must carry the domain prefix,
+            # per HA's own deprecation message) for current ones, so this
+            # never needs revisiting for that transition again.
             "object_id": object_id,
+            "default_entity_id": f"sensor.{object_id}",
             "state_topic": self._state_topic(row["metric_key"]),
             "json_attributes_topic": self._attrs_topic(row["metric_key"]),
             "availability_topic": self._status_topic(),
@@ -445,26 +465,38 @@ class MqttPublisher:
     # -- snapshots ----------------------------------------------------
 
     def _republish_snapshot(self) -> None:
-        """Discovery for every active series, then every state+attrs.
-        Called on connect/reconnect and when Home Assistant's own MQTT
-        integration announces ``online``. Always republishes discovery
-        (``force=True``) -- the broker's retained state may have been lost,
-        and this process may just be starting up."""
+        """Discovery for every active series, then every state+attrs, then
+        a removal for every inactive one. Called on connect/reconnect and
+        when Home Assistant's own MQTT integration announces ``online``.
+        Always republishes discovery (``force=True``) -- the broker's
+        retained state may have been lost, and this process may just be
+        starting up."""
         try:
-            rows = [
-                row for row in storage.list_all_series(self._db_path) if row["active"]
-            ]
+            rows = storage.list_all_series(self._db_path)
         except Exception:
             logger.exception("MQTT: failed to load series for snapshot republish")
             return
 
-        for row in rows:
+        active_rows = [row for row in rows if row["active"]]
+        inactive_rows = [row for row in rows if not row["active"]]
+
+        for row in active_rows:
             self._maybe_publish_discovery(row, force=True)
-        for row in rows:
+        for row in active_rows:
             # A collision loser (no object_id) has no entity to carry its
             # state -- nothing to publish it to.
             if self._object_id_for(row["metric_key"]) is not None:
                 self._publish_state(row)
+
+        # Removal is idempotent (an empty retained payload to an
+        # already-empty topic is a no-op in HA) and reconciled against the
+        # DB -- not gated on the in-memory _known_active set, which starts
+        # empty on every process restart. Without this, a series
+        # deactivated while the process was down (or before it ever
+        # published that series this run) would keep its stale retained
+        # discovery config and state/attrs in HA indefinitely.
+        for row in inactive_rows:
+            self._publish_removal(row["metric_key"])
 
     # -- scheduler hook ----------------------------------------------------
 
@@ -476,15 +508,18 @@ class MqttPublisher:
         After a successful poll: state (and, when new/changed, discovery)
         for every series the poll returned -- including unchanged values,
         since store-on-change is a storage.py concern, not this publisher's.
-        A deactivated series (the pattern-series lifecycle) gets its
-        discovery config and state/attrs cleared. After a failed poll,
-        nothing is published. Never raises -- a publish failure must never
-        fail a plugin run.
+        After a failed poll, no state or discovery is published. A
+        deactivated series (the pattern-series lifecycle) gets its
+        discovery config and state/attrs cleared regardless of this poll's
+        status -- deactivation is a DB fact set by a *previous* successful
+        run's reconciliation, not by this one, so gating it on this run's
+        status would leave a retired entity looking frozen-but-available in
+        HA (the process still publishes ``online`` on the availability
+        topic) until some future successful poll happened to notice.
+        Never raises -- a publish failure must never fail a plugin run.
         """
-        if status != "ok":
-            return
         try:
-            self._handle_poll_finished(plugin_name, returned_keys)
+            self._handle_poll_finished(plugin_name, status, returned_keys)
         except Exception as exc:
             with self._lock:
                 self._last_error = f"publish error: {exc}"
@@ -493,7 +528,7 @@ class MqttPublisher:
             )
 
     def _handle_poll_finished(
-        self, plugin_name: str, returned_keys: frozenset[str]
+        self, plugin_name: str, status: str, returned_keys: frozenset[str]
     ) -> None:
         try:
             rows = {
@@ -509,7 +544,7 @@ class MqttPublisher:
 
         for key, row in rows.items():
             if row["active"]:
-                if key in returned_keys:
+                if status == "ok" and key in returned_keys:
                     self._maybe_publish_discovery(row)
                     if self._object_id_for(key) is not None:
                         self._publish_state(row)
