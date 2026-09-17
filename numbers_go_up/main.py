@@ -5,7 +5,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
-from numbers_go_up import __version__, api, http, migrate, scheduler
+from numbers_go_up import __version__, api, http, migrate, netfs, scheduler
 from numbers_go_up.config import load_config
 from numbers_go_up.plugins import discover_plugin_names, discover_plugins
 
@@ -76,6 +76,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # imports the app, so this runs after that and nothing overwrites it.
     configure_logging()
     config = load_config()
+    netfs.check_not_network_filesystem(config["storage"]["path"])
     migrate.run_migrations(config["storage"]["path"])
 
     app.state.config = config

@@ -4,7 +4,11 @@ services:
     image: ghcr.io/drewferg11/numbers-go-up:latest
     container_name: numbers-go-up
     restart: unless-stopped
-    user: "1000:1000"
+    # Starts as root; the entrypoint chowns ./data and ./config to
+    # PUID:PGID (default 1000:1000, override to match your NAS user) and
+    # drops privileges before running anything. Set `user: "1000:1000"`
+    # instead if you'd rather manage ownership yourself -- that skips the
+    # entrypoint's privileged steps entirely.
     ports:
       - "8080:8080"
     volumes:
@@ -15,6 +19,8 @@ services:
       - NGU_DATA_DIR=/data
       - NGU_CONFIG_FILE=/config/config.yaml
       - NGU_PLUGIN_DIR=/plugins
+      - PUID=1000
+      - PGID=1000
     logging:
       driver: json-file
       options: { max-size: "10m", max-file: "3" }

@@ -48,10 +48,14 @@ disposable.
 
 ```sh
 mkdir -p data config user-plugins
-chown -R 1000:1000 data config user-plugins   # match the container's non-root user
 docker compose up -d
 curl localhost:8080/health
 ```
+
+No `chown` step needed: the container starts as root, matches `./data` and
+`./config` to your host UID/GID (`PUID`/`PGID`, both default `1000`), then
+drops to that user before running anything. See "File ownership (PUID/PGID)"
+below for NAS setups where your user isn't 1000.
 
 `/health` only says the process is up. To be alerted when a source stops
 polling, point an uptime monitor (e.g. Uptime Kuma, HTTP type) at
@@ -62,14 +66,14 @@ Logs go to the container's stderr. A failing plugin logs one warning when it
 starts failing and one line when it recovers, not one per poll. Set
 `NGU_LOG_LEVEL=DEBUG` to see every repeat.
 
-> **Heads-up:** if you skip the `chown` step, Docker creates `./data`,
-> `./config`, and `./user-plugins` as root-owned, and the container (running as
-> UID 1000) can't write to them — you'll hit permission errors once
-> storage/config land.
+Docker also knows when the app is unhealthy: the image ships a `HEALTHCHECK`
+against `/health`, so `docker ps`, `docker inspect`, and Portainer all show a
+`healthy`/`unhealthy` status without any extra config.
 
 - `./data` — the SQLite DB and migration backups. **Must be local disk, never
   an NFS/SMB share** — SQLite's WAL locking is unreliable over network
-  filesystems.
+  filesystems. The container refuses to start if it detects `./data` is on
+  one; see "Network filesystems" below.
 - `./config` — drop a `config.yaml` here (see
   [`config.yaml.example`](config.yaml.example)). If it's missing, the service
   writes a commented example next to where it looked and starts with defaults
@@ -79,6 +83,84 @@ starts failing and one line when it recovers, not one per poll. Set
   directory) so a bind mount from a clone doesn't shadow the built-ins.
 
 `docker rm` the container any time — none of the above lives inside it.
+
+### File ownership (PUID/PGID)
+
+NAS distros rarely use UID 1000 for the first user — Synology's is usually
+1026, Unraid uses `99:100`. Set `PUID`/`PGID` in `docker-compose.yml` to match
+whoever should own `./data` and `./config` on the host:
+
+```yaml
+environment:
+  - PUID=1026
+  - PGID=100
+```
+
+On startup, if the container is running as root (the default — no `user:` in
+compose), the entrypoint `chown`s `./data` and `./config` to `PUID:PGID` (only
+when the top-level owner doesn't already match, so this is a no-op on every
+boot after the first) and then drops privileges to that user before running
+anything. `PUID=0`/`PGID=0` are refused outright — the app never runs as
+root.
+
+Already setting `user: "1000:1000"` in compose? Nothing changes — the
+entrypoint detects it's already non-root and skips straight to running the
+app. Existing deployments keep working unchanged.
+
+### Hardened runtime
+
+For a locked-down compose config, add:
+
+```yaml
+read_only: true
+tmpfs: [/tmp]
+security_opt: ["no-new-privileges:true"]
+cap_drop: [ALL]
+```
+
+With `user: "1000:1000"` set (non-root mode), all four work as-is. In
+PUID/PGID mode (started as root, the default), the entrypoint needs to
+`chown` and switch users, so use this instead:
+
+```yaml
+read_only: true
+tmpfs: [/tmp]
+cap_drop: [ALL]
+cap_add: [CHOWN, SETUID, SETGID]
+# no security_opt: no-new-privileges would block setpriv from switching users.
+```
+
+Either way, nothing the app writes lives outside `/data`, `/config`, and
+`/tmp`.
+
+### Network filesystems
+
+`./data` holds the SQLite database, and SQLite's WAL locking is unreliable
+over NFS/SMB — the one deployment mistake that can silently corrupt it. At
+startup the container inspects `./data`'s mount and refuses to start with a
+clear error if it's `nfs`, `nfs4`, `cifs`, `smb3`, `smbfs`, `fuse.sshfs`, or
+`9p`. If you understand the risk and want to proceed anyway, set
+`NGU_ALLOW_NETWORK_FS=1` — it still logs a WARNING on every start.
+
+### Log rotation
+
+`docker-compose.yml` already sets:
+
+```yaml
+logging:
+  driver: json-file
+  options: { max-size: "10m", max-file: "3" }
+```
+
+Equivalent flags for a bare `docker run`:
+
+```sh
+docker run --log-driver json-file --log-opt max-size=10m --log-opt max-file=3 ...
+```
+
+Portainer stacks honor the compose `logging:` block directly. The app only
+ever logs to stdout/stderr — there are no log files inside the container to
+worry about.
 
 ### Where to pull the image
 
