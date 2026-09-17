@@ -68,6 +68,10 @@ EXAMPLE_CONFIG = """\
 #     max: 20                    # cardinality guard on repos
 #     # Optional token: set the NGU_GITHUB_TOKEN env var, never here, to
 #     # raise the unauthenticated 60/hr budget to 5,000/hr.
+#
+# dashboard:
+#   pinned: []        # up to 6 metric keys for the index strip
+#                      # empty = first 4 cumulative metrics
 """
 
 
@@ -91,6 +95,9 @@ def _defaults(data_dir: str) -> dict[str, Any]:
             "port": 8080,
         },
         "plugins": {},
+        "dashboard": {
+            "pinned": [],
+        },
     }
 
 

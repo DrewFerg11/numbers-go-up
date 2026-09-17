@@ -87,6 +87,20 @@ your own zone in `docker-compose.yml` (e.g. `TZ=America/New_York`), because it
 affects timestamp correctness in the SQLite history and the daily heartbeat
 boundary.
 
+## Dashboard
+
+`/` is a lightweight overview page — a stock-watchlist view of your own
+counters: an index strip of pinned metrics, a watchlist grouped by plugin
+with sparklines, and a status line showing each plugin's polling health.
+It's server-rendered (no build step, no CDN — everything, including fonts,
+is served from the container) and refreshes itself every 60 seconds.
+
+![Dashboard overview](docs/dashboard.png)
+
+Pin up to 6 metrics to the index strip with `dashboard.pinned` in
+`config.yaml` (see [`config.yaml.example`](config.yaml.example)); leave it
+empty and the first 4 cumulative metrics are used instead.
+
 ## Roadmap
 
 MVP is a service that builds and runs in Docker, collects from one real source,
