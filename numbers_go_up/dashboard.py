@@ -55,8 +55,13 @@ _warned_missing_pinned: set[str] = set()
 
 
 def _format_number(value: float) -> float | int:
-    """Render a whole-numbered float (samples are stored as REAL even for
-    integer-valued metrics) without a trailing ``.0`` in the template."""
+    """Render a stored REAL for the template: round away IEEE-754 noise
+    from float subtraction (``value - LAG(value)`` can yield e.g.
+    ``0.09999999999999964`` for a true ``0.1``), then drop a whole
+    number's trailing ``.0`` (samples are stored as REAL even for
+    integer-valued metrics).
+    """
+    value = round(value, 6)
     return int(value) if value == int(value) else value
 
 

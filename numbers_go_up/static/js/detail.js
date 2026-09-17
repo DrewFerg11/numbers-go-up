@@ -76,14 +76,19 @@
   }
 
   function setRange(range) {
-    state.range = range;
-    document.querySelectorAll(".range-btn").forEach(function (btn) {
-      btn.setAttribute("aria-selected", btn.dataset.range === range ? "true" : "false");
-    });
+    // A full navigation, not a client-side re-fetch: the stats row
+    // (OPEN/HIGH/AVG-DAY/BEST DAY/FIRST SEEN) and the recorded-changes
+    // table are server-rendered from the same range-dependent
+    // computation the overview endpoint duplicates client-side for its
+    // own stats row -- doing that a second time here, in JS, for a
+    // page that already round-trips to the server for /api/stats/history
+    // on every range change anyway, would be a second place for the
+    // open/high/avg-per-day/best-day math to drift from
+    // dashboard.metric_detail. A reload keeps the whole page consistent
+    // by construction.
     var url = new URL(window.location.href);
     url.searchParams.set("range", range);
-    window.history.replaceState({}, "", url);
-    load();
+    window.location.href = url.toString();
   }
 
   document.querySelectorAll(".range-btn").forEach(function (btn) {

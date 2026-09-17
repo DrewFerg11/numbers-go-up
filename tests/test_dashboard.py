@@ -188,6 +188,22 @@ def test_change_bars_positioned_by_timestamp_not_array_index(tmp_path):
     assert "renderChangeBars(" in detail_js and "data.bars, {" in detail_js
 
 
+def test_detail_range_switch_does_a_full_reload(tmp_path):
+    # detail.js only ever fetched /api/stats/history on a range switch,
+    # which refreshes the chart and headline but never the server-rendered
+    # stats row (OPEN/HIGH/AVG-DAY/BEST DAY) or the recorded-changes
+    # table -- both are range-dependent and computed only in
+    # dashboard.metric_detail, so after clicking e.g. 1D they'd silently
+    # keep describing the page's original range. A full navigation keeps
+    # the whole page consistent by construction instead of duplicating
+    # that computation in JS a second time.
+    js = (dashboard.STATIC_DIR / "js" / "detail.js").read_text()
+    set_range_start = js.index("function setRange(range)")
+    set_range_body = js[set_range_start : set_range_start + 900]
+
+    assert "window.location.href" in set_range_body
+
+
 def test_index_renders_with_every_plugin_failing(tmp_path):
     client, db_path = client_for(tmp_path, plugins_config={"acme": {"enabled": True}})
     now = int(time.time())
@@ -681,6 +697,24 @@ def test_detail_recorded_change_renders_full_precision(tmp_path):
 
     assert "+1.37" in response.text
     assert "+1<" not in response.text
+
+
+def test_detail_recorded_change_rounds_away_float_noise(tmp_path):
+    # value - LAG(value) over floats can produce IEEE-754 noise for a
+    # value that's really a round number: 10.1 - 10.0 == 0.09999999999999964
+    # in Python. That must not print verbatim (it printed fine for the
+    # value column, which is stored/read directly, but the *change* is
+    # itself a float subtraction and had no rounding pass).
+    client, db_path = client_for(tmp_path)
+    now = int(time.time())
+    series_id = seed_series(db_path, "acme.widgets", kind="gauge", now=now - DAY)
+    storage.record_sample(db_path, series_id, now - DAY, 10.0, DAY)
+    storage.record_sample(db_path, series_id, now, 10.1, DAY)
+
+    response = client.get("/m/acme.widgets")
+
+    assert "+0.1" in response.text
+    assert "0.09999999999999964" not in response.text
 
 
 def test_detail_https_url_rendered_as_link(tmp_path):
