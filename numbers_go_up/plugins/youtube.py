@@ -167,9 +167,15 @@ def _fetch_channel(http, api_key: str, channel_id: str) -> dict:
     except httpx.HTTPStatusError as exc:
         url = http_module.redact_query_param(exc.response.url)
         status = exc.response.status_code
+        # `from None`, not `from exc`: httpx.HTTPStatusError's own message
+        # embeds the full, unredacted request URL (key= included), and
+        # chaining it would put that back in traceback.format_exc() --
+        # which is exactly what the scheduler stores in plugin_runs.error
+        # and logs on an ordinary (non-403/429) failure. Everything useful
+        # from exc is already in this message.
         raise ValueError(
             f"YouTube channel {channel_id} request failed: {status} for '{url}'"
-        ) from exc
+        ) from None
 
     try:
         body = response.json()
@@ -273,6 +279,13 @@ def collect(config: dict, http) -> dict[str, int | float | dict]:
 
     result: dict[str, int | float | dict] = {}
     for key, channel_id in channels:
+        # Deliberately all-or-nothing, like the GitHub and MakerWorld
+        # plugins: one channel failing (deleted, quota, hidden count)
+        # fails the whole poll, discarding any already-collected channels'
+        # samples rather than partially reporting. A half-failed source
+        # should look failed (#55 precedent), and the poll runner treats
+        # any error this way regardless, so partial collection here would
+        # buy nothing.
         item = _fetch_channel(http, api_key, channel_id)
         result.update(_channel_metrics(key, channel_id, item))
     return result

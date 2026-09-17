@@ -12,6 +12,7 @@ import copy
 import json
 import os
 import pathlib
+import traceback
 
 import httpx
 import pytest
@@ -327,6 +328,32 @@ class TestKeyRedaction:
             youtube.collect(_config(), client)
 
         assert "super-secret-key-value" not in str(exc_info.value)
+
+    def test_api_key_never_appears_in_the_full_traceback(self, monkeypatch):
+        # str(exc) alone isn't the whole story: the scheduler stores
+        # traceback.format_exc(), which also renders __cause__ -- an
+        # httpx.HTTPStatusError chained with `from exc` would put the raw,
+        # unredacted request URL (key= included) right back in
+        # plugin_runs.error even though the ValueError's own message is
+        # clean. This is what a 404 (channel deleted, typo'd id, ...)
+        # looks like end to end, not through the 403/429 fast path.
+        monkeypatch.setenv(youtube._ENV_API_KEY, "super-secret-key-value")
+        client = _client(lambda r: httpx.Response(404))
+
+        try:
+            youtube.collect(_config(), client)
+        except ValueError as exc:
+            # Python deletes the `as exc` binding at the end of the except
+            # block, so capture what's needed before it goes out of scope.
+            rendered = "".join(
+                traceback.format_exception(type(exc), exc, exc.__traceback__)
+            )
+            cause = exc.__cause__
+        else:
+            pytest.fail("expected ValueError")
+
+        assert "super-secret-key-value" not in rendered
+        assert cause is None
 
 
 class TestRealCaptureFixture:

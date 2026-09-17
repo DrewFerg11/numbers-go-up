@@ -184,6 +184,10 @@ above on why the unofficial `livecounts` path was dropped before it shipped).
   history — and the chart will show one visible step if you ever change it.
 - A channel that hides its public subscriber count, or whose subscriber
   count reads exactly 0, fails the poll rather than writing a bogus 0.
+- Series labels use the channel's current YouTube title (falling back to
+  its `key` if unavailable), so a renamed channel's label drifts to match
+  on its next poll — the same trade-off the GitHub plugin makes with
+  `full_name`.
 
 ## License
 
