@@ -16,10 +16,32 @@ if [ "$(id -u)" != "0" ]; then
     exec "$@"
 fi
 
-if [ "$PUID" = "0" ] || [ "$PGID" = "0" ]; then
-    echo "ERROR: PUID/PGID must not be 0 -- this image never runs the app as root." >&2
-    exit 1
-fi
+# A plain string compare against "0" misses zero-padded or hex-looking
+# forms ("00", "0x0") -- setpriv/getent/chown all parse those as decimal
+# zero too, so PUID=00 would start the app as root, the one thing this
+# check exists to prevent. Reject anything non-numeric first, then reject
+# any leading zero (which also catches a bare "0"): a real UID/GID is
+# never written with one, so this closes the whole bypass class without
+# needing arithmetic base conversion, which dash (this image's /bin/sh)
+# doesn't support.
+case "$PUID$PGID" in
+    *[!0-9]*)
+        echo "ERROR: PUID/PGID must be positive integers." >&2
+        exit 1
+        ;;
+esac
+case "$PUID" in
+    0*)
+        echo "ERROR: PUID must not be 0 or zero-padded -- this image never runs the app as root." >&2
+        exit 1
+        ;;
+esac
+case "$PGID" in
+    0*)
+        echo "ERROR: PGID must not be 0 or zero-padded -- this image never runs the app as root." >&2
+        exit 1
+        ;;
+esac
 
 if ! getent group "$PGID" >/dev/null 2>&1; then
     groupmod -o -g "$PGID" ngu

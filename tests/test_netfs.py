@@ -48,7 +48,10 @@ def test_path_still_inside_nfs_parent_is_refused():
         )
 
 
-def test_missing_proc_mountinfo_is_skipped_silently(tmp_path):
+def test_missing_proc_mountinfo_skips_with_a_warning(tmp_path, caplog):
     check_not_network_filesystem(
         "/data/stats.db", env={}, mountinfo_path=tmp_path / "does-not-exist"
+    )
+    assert any(
+        "skipping the network-filesystem check" in r.message for r in caplog.records
     )

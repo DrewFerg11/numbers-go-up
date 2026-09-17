@@ -74,15 +74,25 @@ def check_not_network_filesystem(
 ) -> None:
     """Raise NetworkFilesystemError if db_path sits on a network filesystem.
 
-    Skips silently if mountinfo_path can't be read (non-Linux dev machines).
-    The check can be overridden with NGU_ALLOW_NETWORK_FS=1, which still
-    logs a WARNING on every start so the risk stays visible.
+    Skips (with a WARNING) if mountinfo_path can't be read -- expected on
+    non-Linux dev machines, but also reachable under a hardened container
+    (e.g. a read-only /proc remount under cap_drop: [ALL]), where silently
+    skipping would boot with the DB possibly on a network filesystem and
+    no indication at all. The check can also be overridden outright with
+    NGU_ALLOW_NETWORK_FS=1, which likewise logs a WARNING on every start.
     """
     env = os.environ if env is None else env
 
     try:
         text = Path(mountinfo_path).read_text()
-    except OSError:
+    except OSError as exc:
+        logger.warning(
+            "Could not read %s (%s); skipping the network-filesystem check. "
+            "If %s is actually on NFS/SMB, this will not be caught.",
+            mountinfo_path,
+            exc,
+            db_path,
+        )
         return
 
     mounts = _parse_mountinfo(text)

@@ -135,6 +135,22 @@ jobs:
           fi
           echo "$LOGS" | grep -qi "PUID" || { echo "::error::Expected a PUID error message, got: $LOGS"; exit 1; }
 
+      # Zero-padded PUID=00 must be refused too -- setpriv/getent/chown all
+      # parse it as decimal zero, so a naive string compare against "0"
+      # alone would let this one through and start the app as root.
+      - name: PUID=00 is refused
+        run: |
+          set +e
+          docker run --name ngu-puid00 -e PUID=00 app:ci
+          STATUS=$(docker inspect ngu-puid00 --format '{{.State.ExitCode}}')
+          LOGS=$(docker logs ngu-puid00 2>&1)
+          docker rm -f ngu-puid00
+          if [ "$STATUS" = "0" ]; then
+            echo "::error::PUID=00 should have exited non-zero"
+            exit 1
+          fi
+          echo "$LOGS" | grep -qi "PUID" || { echo "::error::Expected a PUID error message, got: $LOGS"; exit 1; }
+
       # docker stop must finish well inside Docker's 10s SIGTERM grace
       # period, which only happens if uvicorn is PID 1's direct exec'd
       # replacement.
