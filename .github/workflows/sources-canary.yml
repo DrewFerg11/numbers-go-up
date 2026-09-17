@@ -46,6 +46,11 @@ jobs:
             secret_name: NGU_CANARY_MAKERWORLD_UID
           - plugin: github
             secret_name: NGU_CANARY_GITHUB_REPO
+          - plugin: youtube
+            secret_name: NGU_CANARY_YOUTUBE_CHANNEL_ID
+            # Unlike GitHub, there's no free job-scoped token for YouTube's
+            # Data API -- the canary needs its own API key secret too.
+            extra_secret_name: NGU_YOUTUBE_API_KEY
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -66,8 +71,14 @@ jobs:
             echo "::error::${{ matrix.secret_name }} is not set (or empty). The live probe would silently skip via pytest.skip() and this job would report green without probing anything. Set the secret under repo Settings > Secrets and variables > Actions."
             exit 1
           fi
+          if [ -n "$EXTRA_SECRET_NAME" ] && [ -z "$EXTRA_SECRET_VALUE" ]; then
+            echo "::error::${EXTRA_SECRET_NAME} is not set (or empty). The live probe would silently skip via pytest.skip() and this job would report green without probing anything. Set the secret under repo Settings > Secrets and variables > Actions."
+            exit 1
+          fi
         env:
           SECRET_VALUE: ${{ secrets[matrix.secret_name] }}
+          EXTRA_SECRET_NAME: ${{ matrix.extra_secret_name }}
+          EXTRA_SECRET_VALUE: ${{ matrix.extra_secret_name && secrets[matrix.extra_secret_name] }}
 
       - id: probe
         name: Run live probe
@@ -85,6 +96,11 @@ jobs:
           if [ "$PLUGIN" = "github" ]; then
             export NGU_GITHUB_TOKEN="$GH_ACTIONS_TOKEN"
           fi
+          # youtube's matrix entry carries a second secret (its API key) --
+          # export it under its own name, same convention as SECRET_NAME.
+          if [ -n "$EXTRA_SECRET_NAME" ]; then
+            export "${EXTRA_SECRET_NAME}=${EXTRA_SECRET_VALUE}"
+          fi
           pytest -q -m live -k "$PLUGIN" 2>&1 | tee /tmp/canary-output.txt
           exit "${PIPESTATUS[0]}"
         env:
@@ -92,6 +108,8 @@ jobs:
           SECRET_NAME: ${{ matrix.secret_name }}
           SECRET_VALUE: ${{ secrets[matrix.secret_name] }}
           GH_ACTIONS_TOKEN: ${{ github.token }}
+          EXTRA_SECRET_NAME: ${{ matrix.extra_secret_name }}
+          EXTRA_SECRET_VALUE: ${{ matrix.extra_secret_name && secrets[matrix.extra_secret_name] }}
 
       # Scrub the secret value out of the captured output (tracebacks and
       # assertion diffs are the likely way it'd leak) before anything below
@@ -99,14 +117,15 @@ jobs:
       - name: Scrub secret from captured output
         if: always()
         run: |
-          if [ -n "$SECRET_VALUE" ] && [ -f /tmp/canary-output.txt ]; then
+          if [ -f /tmp/canary-output.txt ]; then
             # A sed s/// replace breaks (and fails open, unredacted) if the
             # secret value contains the delimiter. A literal string replace
             # has no delimiter to collide with.
-            python3 -c 'import os, pathlib; p = pathlib.Path("/tmp/canary-output.txt"); p.write_text(p.read_text().replace(os.environ["SECRET_VALUE"], "<redacted>"))'
+            python3 -c 'import os, pathlib; p = pathlib.Path("/tmp/canary-output.txt"); text = p.read_text(); [text := text.replace(v, "<redacted>") for v in (os.environ.get("SECRET_VALUE"), os.environ.get("EXTRA_SECRET_VALUE")) if v]; p.write_text(text)'
           fi
         env:
           SECRET_VALUE: ${{ secrets[matrix.secret_name] }}
+          EXTRA_SECRET_VALUE: ${{ matrix.extra_secret_name && secrets[matrix.extra_secret_name] }}
 
       - id: tail
         name: Collect (scrubbed) error tail

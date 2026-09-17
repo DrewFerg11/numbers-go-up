@@ -41,6 +41,32 @@ class RateLimited(Exception):
 # blocked source apart from an ordinary error using only plugin_runs.error.
 BLOCKED_ERROR_PREFIX = "blocked"
 
+# Query param names that carry a secret when a source requires the key in
+# the URL itself (Google's APIs, YouTube included) rather than a header.
+# redact_query_param() strips these before a URL ever reaches an exception
+# message, a log line, or a stored plugin_runs.error -- generic, not
+# YouTube-specific, since any future source could use the same convention.
+_SECRET_QUERY_PARAMS = ("key", "api_key", "access_token", "token")
+
+
+def redact_query_param(url: httpx.URL) -> str:
+    """Return ``url`` as a string with any secret-shaped query param redacted.
+
+    Used everywhere a URL might end up in something a user reads (an
+    exception message, a log line, ``plugin_runs.error``) -- a source that
+    takes its API key as a query string (rather than a header) must never
+    leak it there.
+    """
+    params = dict(url.params)
+    redacted = False
+    for name in _SECRET_QUERY_PARAMS:
+        if name in params:
+            params[name] = "REDACTED"
+            redacted = True
+    if not redacted:
+        return str(url)
+    return str(url.copy_with(params=params))
+
 
 class Blocked(httpx.HTTPStatusError):
     """Raised when a request gets HTTP 403.
@@ -55,7 +81,7 @@ class Blocked(httpx.HTTPStatusError):
     def __init__(self, response: httpx.Response):
         challenge = response.headers.get("cf-mitigated")
         detail = f", cf-mitigated={challenge}" if challenge else ""
-        url = response.request.url
+        url = redact_query_param(response.request.url)
         super().__init__(
             f"{BLOCKED_ERROR_PREFIX} (HTTP 403{detail}) for url '{url}'",
             request=response.request,

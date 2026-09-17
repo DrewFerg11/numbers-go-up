@@ -68,6 +68,15 @@ EXAMPLE_CONFIG = """\
 #     max: 20                    # cardinality guard on repos
 #     # Optional token: set the NGU_GITHUB_TOKEN env var, never here, to
 #     # raise the unauthenticated 60/hr budget to 5,000/hr.
+#
+#   youtube:
+#     enabled: true              # every plugin is OFF until explicitly enabled
+#     source: official           # the only source this plugin ships
+#     channels:
+#       - key: main              # metric-key slug: [a-z0-9_-]+, permanent
+#         id: "UCxxxxxxxxxxxxxxxxxxxxxx"   # case-sensitive; not a handle/URL
+#     max: 5                     # cardinality guard on channels
+#     # Required: set the NGU_YOUTUBE_API_KEY env var, never here.
 """
 
 
