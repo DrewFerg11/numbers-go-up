@@ -1,0 +1,565 @@
+<!doctype html>
+<!--
+  Phase 7 dashboard wireframe (#63, #64). Open this file directly in a browser.
+  All numbers are generated sample data. This is a design reference, not shipped code:
+  it loads Google Fonts and draws charts with hand-written SVG, whereas the real
+  dashboard vendors its assets (no CDN) and uses uPlot for the big chart.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>numbers-go-up Ticker Board</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700&family=IBM+Plex+Mono:wght@400;500&family=Schibsted+Grotesk:wght@400;500;600&display=swap">
+<style>
+:root{
+  --ground:#EEF1F5; --surface:#FFFFFF; --surface-2:#F4F6F9; --line:#DDE2EA; --line-strong:#C6CDD8;
+  --ink:#131923; --muted:#5B6677; --accent:#2F5BD3;
+  --up:#0B8F5A; --down:#CC3344; --warn:#B7791F; --stale:#8591A2;
+  --shadow:0 1px 2px rgba(20,30,50,.06),0 8px 24px rgba(20,30,50,.06);
+  --f-ui:"Schibsted Grotesk",system-ui,-apple-system,"Segoe UI",sans-serif;
+  --f-display:"Bricolage Grotesque","Schibsted Grotesk",system-ui,sans-serif;
+  --f-mono:"IBM Plex Mono",ui-monospace,"Cascadia Mono",Consolas,monospace;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --ground:#0A0E15; --surface:#111722; --surface-2:#171F2B; --line:#222C3B; --line-strong:#2F3B4D;
+    --ink:#E3E8F0; --muted:#8B96A8; --accent:#7C9CFF;
+    --up:#34C98A; --down:#F26B77; --warn:#E3A93F; --stale:#6C788A;
+    --shadow:0 1px 2px rgba(0,0,0,.4),0 10px 30px rgba(0,0,0,.35);
+  }
+}
+:root[data-theme="dark"]{
+  --ground:#0A0E15; --surface:#111722; --surface-2:#171F2B; --line:#222C3B; --line-strong:#2F3B4D;
+  --ink:#E3E8F0; --muted:#8B96A8; --accent:#7C9CFF;
+  --up:#34C98A; --down:#F26B77; --warn:#E3A93F; --stale:#6C788A;
+  --shadow:0 1px 2px rgba(0,0,0,.4),0 10px 30px rgba(0,0,0,.35);
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--ground);color:var(--ink);font:15px/1.5 var(--f-ui)}
+button{font:inherit;color:inherit}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:4px}
+.doc{max-width:1240px;margin:0 auto;padding-inline:20px;padding-block:44px 90px;display:grid;gap:64px}
+.doc-head{display:grid;gap:14px;max-width:760px}
+.eyebrow{margin:0;font:500 12px/1 var(--f-mono);letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+h1{margin:0;font:700 clamp(34px,5vw,50px)/1.02 var(--f-display);letter-spacing:-.02em;text-wrap:balance}
+h1 .tick{color:var(--up)}
+.lede{margin:0;font-size:17px;color:var(--muted);max-width:64ch}
+.principles{list-style:none;margin:8px 0 0;padding:0;display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:18px}
+.principles li{display:grid;gap:2px;font-size:14px;color:var(--muted)}
+.principles b{color:var(--ink);font-weight:600;font-size:15px}
+
+.view{display:grid;gap:18px}
+.view-head{display:flex;flex-wrap:wrap;align-items:baseline;gap:6px 16px}
+.view-head h2{margin:0;font:700 26px/1.1 var(--f-display);letter-spacing:-.01em}
+.view-head p{margin:0;color:var(--muted);font:13px/1.4 var(--f-mono)}
+.frame{background:var(--surface);border:1px solid var(--line);border-radius:12px;box-shadow:var(--shadow);overflow:hidden}
+.frame-bar{display:flex;align-items:center;gap:10px;padding:9px 14px;border-bottom:1px solid var(--line);background:var(--surface-2)}
+.frame-bar i{width:9px;height:9px;border-radius:50%;background:var(--line-strong);display:inline-block}
+.frame-bar .url{margin-left:8px;font:12px var(--f-mono);color:var(--muted);background:var(--surface);border:1px solid var(--line);border-radius:6px;padding:3px 10px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.notes{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:14px 28px;margin:4px 0 0}
+.notes div{display:grid;gap:2px}
+.notes dt{font-weight:600;font-size:14px}
+.notes dd{margin:0;color:var(--muted);font-size:14px}
+code{font:13px var(--f-mono);background:var(--surface-2);border:1px solid var(--line);padding:0 4px;border-radius:4px}
+
+/* ---------- the app ---------- */
+.app{padding:18px;display:grid;gap:16px}
+.topbar{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:12px}
+.brand{font:700 19px/1 var(--f-display);letter-spacing:-.01em;display:flex;align-items:center;gap:8px}
+.brand .mark{color:var(--up);font-size:14px}
+.seg{display:inline-flex;background:var(--surface-2);border:1px solid var(--line);border-radius:8px;padding:2px}
+.seg button{border:0;background:transparent;padding:5px 11px;border-radius:6px;font:500 12px/1 var(--f-mono);color:var(--muted);cursor:pointer}
+.seg button:hover{color:var(--ink)}
+.seg button[aria-pressed="true"]{background:var(--surface);color:var(--ink);box-shadow:0 0 0 1px var(--line-strong)}
+.meta{display:flex;align-items:center;gap:12px;font-size:12px;color:var(--muted)}
+.meta .live{display:inline-flex;align-items:center;gap:6px}
+.meta .live::before{content:"";width:7px;height:7px;border-radius:50%;background:var(--up)}
+.ghost{border:1px solid var(--line);background:var(--surface);border-radius:6px;padding:4px 9px;font-size:12px;cursor:pointer}
+.ghost:hover{border-color:var(--line-strong)}
+
+.indices{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:10px}
+.index{background:var(--surface-2);border-radius:9px;padding:12px 14px 10px;display:grid;gap:2px;cursor:pointer;border:1px solid transparent;text-align:left}
+.index:hover{border-color:var(--line-strong)}
+.index[aria-pressed="true"]{border-color:var(--accent)}
+.index .src{font:500 11px/1.2 var(--f-mono);letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
+.index .lbl{font-size:13px;font-weight:500}
+.index .row{display:flex;align-items:flex-end;justify-content:space-between;gap:10px}
+.index .val{font:700 26px/1.1 var(--f-display);font-variant-numeric:tabular-nums;letter-spacing:-.01em}
+.index .spark{width:92px;height:34px;flex:none}
+
+.chg{font:500 12px/1 var(--f-mono);font-variant-numeric:tabular-nums;white-space:nowrap}
+.chg.up{color:var(--up)} .chg.down{color:var(--down)} .chg.flat{color:var(--muted)}
+.pill{display:inline-block;padding:3px 6px;border-radius:5px}
+.pill.up{background:color-mix(in srgb,var(--up) 14%,transparent)}
+.pill.down{background:color-mix(in srgb,var(--down) 14%,transparent)}
+.pill.flat{background:var(--surface-2)}
+.stale-chip{font:500 10px/1 var(--f-mono);letter-spacing:.05em;text-transform:uppercase;color:var(--stale);border:1px dashed var(--stale);border-radius:4px;padding:2px 5px;vertical-align:2px}
+
+.main{display:grid;grid-template-columns:minmax(0,1fr) 300px;gap:16px}
+@media (max-width:980px){.main{grid-template-columns:1fr}}
+.panel{border:1px solid var(--line);border-radius:10px;padding:14px 16px;background:var(--surface)}
+.panel h3{margin:0 0 10px;font:500 11px/1.2 var(--f-mono);letter-spacing:.07em;text-transform:uppercase;color:var(--muted)}
+.hero-head{display:flex;flex-wrap:wrap;align-items:flex-end;justify-content:space-between;gap:8px 20px;margin-bottom:6px}
+.hero-head .k{font:12px var(--f-mono);color:var(--muted);overflow-wrap:anywhere}
+.hero-head .name{font:600 16px/1.3 var(--f-ui)}
+.bigval{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap}
+.bigval strong{font:700 40px/1 var(--f-display);font-variant-numeric:tabular-nums;letter-spacing:-.02em}
+.bigval .unit{color:var(--muted);font-size:13px}
+.chart{position:relative;width:100%}
+.chart svg{display:block;overflow:visible}
+.tip{position:absolute;pointer-events:none;background:var(--ink);color:var(--surface);font:12px/1.35 var(--f-mono);padding:5px 8px;border-radius:6px;white-space:nowrap;transform:translate(-50%,-100%);top:0}
+.tip[hidden]{display:none!important}
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:10px 16px;margin:12px 0 0;padding-top:12px;border-top:1px solid var(--line)}
+.stats div{display:grid;gap:1px}
+.stats dt{font:500 10px/1.3 var(--f-mono);letter-spacing:.07em;text-transform:uppercase;color:var(--muted)}
+.stats dd{margin:0;font:500 15px var(--f-mono);font-variant-numeric:tabular-nums}
+
+.side{display:grid;gap:16px;align-content:start}
+.movers,.tape{list-style:none;margin:0;padding:0;display:grid;gap:2px}
+.movers li button{width:100%;display:grid;grid-template-columns:18px minmax(0,1fr) auto;align-items:center;gap:8px;border:0;background:transparent;padding:6px 4px;border-radius:6px;cursor:pointer;text-align:left}
+.movers li button:hover{background:var(--surface-2)}
+.movers .rank{font:12px var(--f-mono);color:var(--muted)}
+.movers .nm{font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.tape li{display:grid;grid-template-columns:44px minmax(0,1fr) auto;gap:8px;align-items:baseline;font-size:13px;padding:5px 0;border-bottom:1px dashed var(--line)}
+.tape li:last-child{border-bottom:0}
+.tape .nm{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.tape .ago{font:11px var(--f-mono);color:var(--muted)}
+
+.scroll{overflow-x:auto}
+.watch{width:100%;border-collapse:collapse;min-width:760px}
+.watch th,.watch td{padding:8px 10px;text-align:right;white-space:nowrap}
+.watch th:first-child,.watch td:first-child{text-align:left}
+.watch thead th{font:500 10px/1 var(--f-mono);letter-spacing:.07em;text-transform:uppercase;color:var(--muted);border-bottom:1px solid var(--line);padding-block:4px 10px}
+.watch tr.grp th{text-align:left;padding-top:16px;font:600 13px var(--f-ui);border-bottom:1px solid var(--line)}
+.watch tr.grp th span{font:12px var(--f-mono);color:var(--muted);font-weight:400;margin-left:8px}
+.watch tbody tr.row{cursor:pointer;border-bottom:1px solid var(--line)}
+.watch tbody tr.row:hover{background:var(--surface-2)}
+.watch tbody tr.row[aria-selected="true"]{background:color-mix(in srgb,var(--accent) 10%,transparent)}
+.watch td{font:14px var(--f-mono);font-variant-numeric:tabular-nums}
+.watch td.m{font:14px var(--f-ui)}
+.watch td.m small{display:block;font:11px var(--f-mono);color:var(--muted)}
+.watch tr.sub td.m{padding-left:28px}
+.watch td.hl{color:var(--muted);font-size:12px}
+.watch .spark{width:110px;height:30px;margin-left:auto}
+.fold{border:0;background:transparent;padding:6px 0;font:500 13px var(--f-ui);color:var(--accent);cursor:pointer}
+.status{display:flex;flex-wrap:wrap;gap:8px 22px;font-size:12px;color:var(--muted);border-top:1px solid var(--line);padding-top:12px}
+.status span{display:inline-flex;align-items:center;gap:7px}
+.dot{width:8px;height:8px;border-radius:50%;display:inline-block}
+.dot.ok{background:var(--up)} .dot.warn{background:var(--warn)} .dot.bad{background:var(--down)}
+.status b{color:var(--ink);font-weight:500}
+
+/* detail */
+.crumb{font:12px var(--f-mono);color:var(--muted)}
+.crumb a{color:var(--accent);text-decoration:none}
+.detail-top{display:flex;flex-wrap:wrap;justify-content:space-between;align-items:flex-end;gap:12px}
+.detail-top h3{margin:4px 0 8px;font:700 24px/1.1 var(--f-display)}
+.outlink{font-size:13px;color:var(--accent);border:1px solid var(--line);border-radius:6px;padding:5px 10px}
+.detail-grid{display:grid;grid-template-columns:minmax(0,1fr) 320px;gap:16px}
+@media (max-width:980px){.detail-grid{grid-template-columns:1fr}}
+.events{width:100%;border-collapse:collapse}
+.events th,.events td{padding:6px 4px;text-align:right;font:13px var(--f-mono);font-variant-numeric:tabular-nums}
+.events th{font-size:10px;letter-spacing:.07em;text-transform:uppercase;color:var(--muted);font-weight:500;border-bottom:1px solid var(--line)}
+.events th:first-child,.events td:first-child{text-align:left;color:var(--muted)}
+.events tr+tr td{border-top:1px dashed var(--line)}
+.hint{margin:10px 0 0;font-size:12px;color:var(--muted)}
+
+/* phone */
+.phone-row{display:flex;flex-wrap:wrap;gap:28px;align-items:flex-start}
+.phone{width:380px;max-width:100%;border:9px solid var(--line-strong);border-radius:34px;background:var(--surface);overflow:hidden;box-shadow:var(--shadow);flex:none}
+.phone .app{padding:14px 12px;gap:12px}
+.phone .indices{display:flex;overflow-x:auto;gap:8px;scroll-snap-type:x mandatory;padding-bottom:2px}
+.phone .index{min-width:62%;scroll-snap-align:start}
+.plist{list-style:none;margin:0;padding:0}
+.plist li{display:grid;grid-template-columns:minmax(0,1fr) 64px auto;gap:10px;align-items:center;padding:9px 2px;border-bottom:1px solid var(--line)}
+.plist .nm{font-size:14px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.plist .nm small{display:block;font:11px var(--f-mono);color:var(--muted)}
+.plist .spark{width:64px;height:26px}
+.plist .r{text-align:right;display:grid;gap:3px;justify-items:end}
+.plist .r b{font:500 14px var(--f-mono);font-variant-numeric:tabular-nums}
+.plist .gh{font:500 11px/1 var(--f-mono);letter-spacing:.07em;text-transform:uppercase;color:var(--muted);padding:14px 2px 4px;border-bottom:1px solid var(--line);display:block}
+.phone-notes{flex:1 1 280px;display:grid;gap:14px;margin:0;align-content:start}
+
+.out{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:28px}
+.out h2{margin:0 0 10px;font:700 22px/1.1 var(--f-display)}
+.out ul{margin:0;padding-left:18px;display:grid;gap:6px;color:var(--muted);font-size:14px}
+.out li b{color:var(--ink);font-weight:500}
+@media (prefers-reduced-motion:no-preference){.seg button,.index,.watch tr{transition:background-color .12s,border-color .12s}}
+</style>
+</head>
+<body>
+
+<main class="doc">
+  <header class="doc-head">
+    <p class="eyebrow">numbers-go-up · Phase 7 · wireframes</p>
+    <h1>The ticker board <span class="tick">▲</span></h1>
+    <p class="lede">One server-rendered page that reads like a brokerage watchlist for your own counters. It uses Jinja2 and one vendored uPlot file, with no bundler and no framework. <strong>Every number on this page is generated sample data, not your real counts.</strong> The charts are live, so try the range buttons, click rows, and hover the big chart.</p>
+    <ul class="principles">
+      <li><b>Change comes first</b>Every row answers "how much did this move in the range I picked?" before it answers "what is it now?"</li>
+      <li><b>Steps, not curves</b>Store-on-change data holds its value until the next change. Lines step, and bars show the net change per bucket, like trading volume.</li>
+      <li><b>Stale data looks stale</b>When a source stops answering, its line goes dashed after the last good poll and the row gets a chip. A flat line never pretends to be live.</li>
+    </ul>
+  </header>
+
+  <section class="view" aria-labelledby="v1">
+    <div class="view-head"><h2 id="v1">Overview</h2><p>GET / · one call to /api/stats/overview?range=1M per refresh</p></div>
+    <div class="frame">
+      <div class="frame-bar"><i></i><i></i><i></i><span class="url">nas.local:8080/?range=1M</span></div>
+      <div class="app" id="overview"></div>
+    </div>
+    <dl class="notes">
+      <div><dt>One range switch</dt><dd>1D through ALL drives every sparkline, change column, the mover ranking and the big chart. It's kept in the URL.</dd></div>
+      <div><dt>Index strip</dt><dd>Pinned headline tiles, set with <code>dashboard.pinned</code> in config. When nothing is pinned, the first four cumulative metrics show.</dd></div>
+      <div><dt>Big chart</dt><dd>Shows whichever tile, mover or row is selected. It has a crosshair readout, a right-hand axis with the last-value tag, and change bars underneath.</dd></div>
+      <div><dt>Biggest moves / latest changes</dt><dd>Moves ranks series by % change in the range. Latest changes is a tape of the newest recorded changes across every plugin.</dd></div>
+      <div><dt>Watchlist</dt><dd>One row per active series, grouped by plugin. Per-model series fold under a toggle so dozens of models don't bury the profile totals.</dd></div>
+      <div><dt>Status line</dt><dd>One dot per plugin from <code>/api/plugins</code>, using the same amber/red thresholds as <code>/health/plugins</code>.</dd></div>
+    </dl>
+  </section>
+
+  <section class="view" aria-labelledby="v2">
+    <div class="view-head"><h2 id="v2">Metric detail</h2><p>GET /m/{metric_key}?range=3M</p></div>
+    <div class="frame">
+      <div class="frame-bar"><i></i><i></i><i></i><span class="url">nas.local:8080/m/makerworld.model.1180234.downloads?range=3M</span></div>
+      <div class="app" id="detail"></div>
+    </div>
+    <dl class="notes">
+      <div><dt>Deep link</dt><dd>Clicking a row's name opens this page. It's bookmarkable, and the back button returns to the overview with the same range.</dd></div>
+      <div><dt>Recorded changes</dt><dd>The raw stored samples, newest first. They show exactly what store-on-change kept instead of a smoothed story.</dd></div>
+      <div><dt>Open on source</dt><dd>Appears only when the series' <code>attrs</code> carry a <code>url</code>, like MakerWorld models and GitHub repos.</dd></div>
+    </dl>
+  </section>
+
+  <section class="view" aria-labelledby="v3">
+    <div class="view-head"><h2 id="v3">Phone</h2><p>Same page, below 640 px</p></div>
+    <div class="phone-row">
+      <div class="phone"><div class="app" id="phone"></div></div>
+      <dl class="notes phone-notes">
+        <div><dt>No separate mobile view</dt><dd>It's the same template and CSS. Tiles swipe sideways, and the table collapses to name, sparkline, value and change.</dd></div>
+        <div><dt>Tap for detail</dt><dd>Rows link to the metric detail page, where the chart takes the full width.</dd></div>
+        <div><dt>Theme</dt><dd>Dark by default and light on toggle. The choice is remembered per browser.</dd></div>
+      </dl>
+    </div>
+  </section>
+
+  <section class="out">
+    <div>
+      <h2>In scope</h2>
+      <ul>
+        <li><b>Overview + metric detail</b>: two routes, both server-rendered, with charts hydrated from JSON</li>
+        <li><b>60-second auto-refresh</b> that updates values in place without a full reload</li>
+        <li><b>Dark and light</b>, responsive, keyboard reachable</li>
+        <li><b>Offline-safe assets</b>: uPlot and fonts vendored into <code>static/</code>, no CDN</li>
+      </ul>
+    </div>
+    <div>
+      <h2>Left out on purpose</h2>
+      <ul>
+        <li>Logins, users, or editing config from the browser</li>
+        <li>Overlaying or comparing series on one chart</li>
+        <li>Drag-and-drop layouts or custom dashboards</li>
+        <li>Alerts and milestones (Phase 8, via Home Assistant)</li>
+        <li>Any JS framework, bundler or npm step</li>
+      </ul>
+    </div>
+  </section>
+</main>
+
+<script>
+(function(){
+const NOW = Math.floor(Date.UTC(2026,8,16,21,30)/1000);
+const DAY = 86400;
+function rng(seed){return function(){seed|=0;seed=seed+0x6D2B79F5|0;let t=Math.imul(seed^seed>>>15,1|seed);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296}}
+function gen(g){
+  const r=rng(g.seed), t0=NOW-g.days*DAY, end=g.end||NOW; let v=g.start, t=t0;
+  const pts=[[Math.floor(t0/1800)*1800,v]];
+  for(;;){
+    const frac=(t-t0)/(g.days*DAY);
+    let rate=g.perDay*(0.35+(g.growth||1)*frac);
+    if(g.burst && Math.abs(frac-g.burst.at)<g.burst.w) rate*=g.burst.x;
+    t += -Math.log(1-r())/rate*DAY;
+    if(t>end) break;
+    const ts=Math.floor(t/1800)*1800;
+    let d=1+(r()<0.28?Math.floor(r()*3):0);
+    if(g.gauge && r()<(g.dips||0)) d=-1;
+    v=Math.max(0,v+d);
+    const last=pts[pts.length-1];
+    if(last[0]===ts) last[1]=v; else pts.push([ts,v]);
+  }
+  return pts;
+}
+const M=[
+  {key:'makerworld.profile.design_downloads',plugin:'makerworld',label:'Design Downloads',kind:'cumulative',unit:'downloads',g:{seed:11,days:220,start:30,perDay:1.2,growth:1.7,burst:{at:.83,w:.025,x:6}}},
+  {key:'makerworld.profile.design_prints',plugin:'makerworld',label:'Design Prints',kind:'cumulative',unit:'prints',g:{seed:12,days:220,start:9,perDay:.55,growth:1.6}},
+  {key:'makerworld.profile.likes',plugin:'makerworld',label:'Likes',kind:'gauge',unit:'likes',g:{seed:13,days:220,start:4,perDay:.42,growth:1.3,gauge:true,dips:.09}},
+  {key:'makerworld.profile.collections',plugin:'makerworld',label:'Collections',kind:'gauge',unit:'collections',g:{seed:14,days:220,start:10,perDay:.8,growth:1.4,gauge:true,dips:.06}},
+  {key:'makerworld.model.1180234.downloads',plugin:'makerworld',model:true,label:'Split-Flap Clock',kind:'cumulative',unit:'downloads',g:{seed:41,days:200,start:0,perDay:.62,growth:1.9,burst:{at:.8,w:.03,x:6}}},
+  {key:'makerworld.model.1203377.downloads',plugin:'makerworld',model:true,label:'Filament Spool Hub',kind:'cumulative',unit:'downloads',g:{seed:42,days:170,start:0,perDay:.35,growth:1.4}},
+  {key:'makerworld.model.1249910.downloads',plugin:'makerworld',model:true,label:'Cable Comb 12-way',kind:'cumulative',unit:'downloads',g:{seed:43,days:60,start:0,perDay:.5,growth:1.2}},
+  {key:'github.repo.702114883.stars',plugin:'github',label:'Split-Flap-Display · Stars',kind:'gauge',unit:'stars',g:{seed:21,days:400,start:0,perDay:.03,growth:1.6,gauge:true,dips:.06}},
+  {key:'github.repo.702114883.release_downloads',plugin:'github',label:'Split-Flap-Display · Release downloads',kind:'cumulative',unit:'downloads',g:{seed:22,days:400,start:0,perDay:.1,growth:1.5}},
+  {key:'github.repo.1049552210.stars',plugin:'github',label:'numbers-go-up · Stars',kind:'gauge',unit:'stars',g:{seed:23,days:7,start:0,perDay:1.1,growth:1}},
+  {key:'youtube.channel.main.subscribers',plugin:'youtube',label:'Subscribers',kind:'gauge',unit:'subscribers',stale:true,g:{seed:31,days:130,start:880,perDay:2.6,growth:1.1,gauge:true,dips:.14,end:NOW-31*3600}},
+];
+M.forEach(m=>{m.pts=gen(m.g); m.lastSeen=m.stale?NOW-31*3600:NOW;});
+const byKey=Object.fromEntries(M.map(m=>[m.key,m]));
+const PLUG={makerworld:'MakerWorld',github:'GitHub',youtube:'YouTube'};
+const HOURS={'1D':24,'1W':168,'1M':720,'3M':2160,'1Y':8760,'ALL':null};
+const BUCKET={'1D':3600,'1W':21600,'1M':DAY,'3M':DAY,'1Y':7*DAY,'ALL':7*DAY};
+
+function asOf(pts,t){let v=null;for(const p of pts){if(p[0]<=t)v=p[1];else break;}return v;}
+function win(m,range){
+  const first=m.pts[0][0];
+  let start=HOURS[range]==null?first:NOW-HOURS[range]*3600;
+  if(start<first) start=first;
+  const open=asOf(m.pts,start);
+  const series=[[start,open],...m.pts.filter(p=>p[0]>start)];
+  const vals=series.map(p=>p[1]);
+  const last=m.pts[m.pts.length-1][1];
+  return {m,range,start,end:NOW,series,open,last,change:last-open,
+    pct:open?(last-open)/open*100:null,high:Math.max(...vals),low:Math.min(...vals),samples:series.length-1};
+}
+const nf=new Intl.NumberFormat('en-US');
+const fmt=v=>nf.format(v);
+const dir=w=>w.change>0?'up':w.change<0?'down':'flat';
+function chg(w,pill){
+  const d=dir(w), a=d==='up'?'▲':d==='down'?'▼':'';
+  const c=(w.change>0?'+':'')+fmt(w.change);
+  const p=w.pct==null?'new':(w.pct>0?'+':'')+w.pct.toFixed(1)+'%';
+  return `<span class="chg ${d}${pill?' pill '+d:''}">${a} ${c} (${p})</span>`;
+}
+function ago(ts){const s=NOW-ts;if(s<3600)return Math.max(1,Math.round(s/60))+'m';if(s<DAY)return Math.round(s/3600)+'h';return Math.round(s/DAY)+'d';}
+function esc(s){return s.replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));}
+
+function ticks(lo,hi){
+  if(hi===lo){hi=hi+1;lo=Math.max(0,lo-1);}
+  const raw=(hi-lo)/4, mag=10**Math.floor(Math.log10(raw));
+  let step=[1,2,2.5,5,10].map(s=>s*mag).find(s=>s>=raw); if(step<1) step=1;
+  const a=Math.floor(lo/step)*step, b=Math.ceil(hi/step)*step, out=[];
+  for(let v=a;v<=b+1e-9;v+=step) out.push(Math.round(v*100)/100);
+  return {lo:a,hi:b===a?a+step:b,ticks:out};
+}
+function xfmt(ts,range){
+  const d=new Date(ts*1000);
+  if(range==='1D') return d.toLocaleTimeString('en-US',{hour:'numeric',timeZone:'UTC'});
+  if(range==='1Y'||range==='ALL') return d.toLocaleDateString('en-US',{month:'short',year:'2-digit',timeZone:'UTC'});
+  return d.toLocaleDateString('en-US',{month:'short',day:'numeric',timeZone:'UTC'});
+}
+let gid=0;
+function draw(el,w,o){
+  const W=Math.max(60,Math.floor(el.clientWidth)), Ht=o.h;
+  const axes=!!o.axes, VOL=o.volume?52:0;
+  const PL=axes?2:2, PR=axes?54:5, PT=axes?10:4, PB=axes?22:4;
+  const plotH=Ht-PT-PB-(VOL?VOL+10:0);
+  const t=axes?ticks(w.low,w.high):(()=>{const pad=Math.max(1,(w.high-w.low)*.12);return{lo:w.low-pad,hi:w.high+pad,ticks:[]}})();
+  const X=ts=>PL+(ts-w.start)/(w.end-w.start)*(W-PL-PR);
+  const Y=v=>PT+(1-(v-t.lo)/(t.hi-t.lo))*plotH;
+  const d=dir(w), col=`var(--${d==='flat'?'muted':d})`, id='g'+(++gid);
+  const seen=Math.max(w.m.lastSeen,w.start);
+  let p=`M${X(w.series[0][0]).toFixed(1)},${Y(w.series[0][1]).toFixed(1)}`;
+  for(let i=1;i<w.series.length;i++){p+=`H${X(w.series[i][0]).toFixed(1)}V${Y(w.series[i][1]).toFixed(1)}`;}
+  p+=`H${X(seen).toFixed(1)}`;
+  const area=p+`V${(PT+plotH).toFixed(1)}H${X(w.series[0][0]).toFixed(1)}Z`;
+  let s=`<svg width="${W}" height="${Ht}" viewBox="0 0 ${W} ${Ht}" role="img" aria-label="${esc(w.m.label)} over ${w.range}">`;
+  s+=`<defs><linearGradient id="${id}" x1="0" y1="0" x2="0" y2="1"><stop offset="0" style="stop-color:${col};stop-opacity:${axes?.22:.18}"/><stop offset="1" style="stop-color:${col};stop-opacity:0"/></linearGradient></defs>`;
+  if(axes){
+    for(const v of t.ticks){const y=Y(v).toFixed(1);s+=`<line x1="${PL}" x2="${W-PR}" y1="${y}" y2="${y}" style="stroke:var(--line);stroke-width:1"/><text x="${W-PR+8}" y="${+y+4}" style="fill:var(--muted);font:11px var(--f-mono)">${fmt(v)}</text>`;}
+    for(let i=0;i<5;i++){const ts=w.start+(i+.5)/5*(w.end-w.start);s+=`<text x="${X(ts).toFixed(1)}" y="${Ht-5}" text-anchor="middle" style="fill:var(--muted);font:11px var(--f-mono)">${xfmt(ts,w.range)}</text>`;}
+  }
+  s+=`<path d="${area}" style="fill:url(#${id});stroke:none"/>`;
+  s+=`<path d="${p}" style="fill:none;stroke:${col};stroke-width:${axes?1.75:1.5};stroke-linejoin:round"/>`;
+  if(w.m.lastSeen<w.end){
+    s+=`<path d="M${X(seen).toFixed(1)},${Y(w.last).toFixed(1)}H${X(w.end).toFixed(1)}" style="fill:none;stroke:var(--stale);stroke-width:1.5;stroke-dasharray:3 4"/>`;
+    if(axes) s+=`<text x="${(X(w.end)-4).toFixed(1)}" y="${(Y(w.last)-8).toFixed(1)}" text-anchor="end" style="fill:var(--stale);font:11px var(--f-mono)">no data since last good poll</text>`;
+  }
+  const ex=X(w.end), ey=Y(w.last);
+  s+=`<circle cx="${ex.toFixed(1)}" cy="${ey.toFixed(1)}" r="${axes?3.5:2.5}" style="fill:${w.m.lastSeen<w.end?'var(--stale)':col};stroke:var(--surface);stroke-width:1.5"/>`;
+  if(axes){
+    const label=fmt(w.last), lw=label.length*7+12;
+    s+=`<rect x="${W-PR+3}" y="${(ey-9).toFixed(1)}" width="${lw}" height="18" rx="4" style="fill:${w.m.lastSeen<w.end?'var(--stale)':col}"/><text x="${W-PR+9}" y="${(ey+4).toFixed(1)}" style="fill:var(--surface);font:500 11px var(--f-mono)">${label}</text>`;
+  }
+  if(VOL){
+    const base=Ht-PB, b=BUCKET[w.range], bars=[];
+    for(let a=Math.floor(w.start/b)*b;a<w.end;a+=b){
+      const lo=Math.max(a,w.start), hi=Math.min(a+b,w.end);
+      bars.push([lo,hi,(asOf(w.m.pts,hi)??0)-(asOf(w.m.pts,lo)??0)]);
+    }
+    const mx=Math.max(1,...bars.map(x=>Math.abs(x[2])));
+    s+=`<line x1="${PL}" x2="${W-PR}" y1="${base}" y2="${base}" style="stroke:var(--line)"/>`;
+    s+=`<text x="${W-PR+8}" y="${base-VOL+10}" style="fill:var(--muted);font:10px var(--f-mono)">+${fmt(mx)}</text>`;
+    for(const [lo,hi,dv] of bars){
+      if(!dv) continue;
+      const x=X(lo)+.5, bw=Math.max(1,X(hi)-X(lo)-1.5), h=Math.max(1.5,Math.abs(dv)/mx*(VOL-6));
+      s+=`<rect x="${x.toFixed(1)}" y="${(base-h).toFixed(1)}" width="${bw.toFixed(1)}" height="${h.toFixed(1)}" style="fill:var(--${dv>0?'up':'down'});opacity:.55"/>`;
+    }
+  }
+  if(o.hover){s+=`<g class="hov" style="display:none"><line y1="${PT}" y2="${Ht-PB}" style="stroke:var(--line-strong);stroke-dasharray:2 3"/><circle r="4" style="fill:${col};stroke:var(--surface);stroke-width:2"/></g><rect x="${PL}" y="0" width="${W-PL-PR}" height="${Ht}" style="fill:transparent"/>`;}
+  s+='</svg>';
+  el.innerHTML=s+(o.hover?'<div class="tip" hidden></div>':'');
+  if(o.hover){
+    const svg=el.querySelector('svg'), g=svg.querySelector('.hov'), ln=g.querySelector('line'), dot=g.querySelector('circle'), tip=el.querySelector('.tip');
+    svg.addEventListener('pointermove',e=>{
+      const r=svg.getBoundingClientRect(), px=Math.min(Math.max(e.clientX-r.left,PL),W-PR);
+      const ts=w.start+(px-PL)/(W-PL-PR)*(w.end-w.start), v=asOf(w.m.pts,ts)??w.open;
+      g.style.display=''; ln.setAttribute('x1',px); ln.setAttribute('x2',px); dot.setAttribute('cx',px); dot.setAttribute('cy',Y(v));
+      const dt=new Date(ts*1000).toLocaleString('en-US',{month:'short',day:'numeric',hour:'numeric',minute:'2-digit',timeZone:'UTC'});
+      tip.hidden=false; tip.textContent=`${fmt(v)} ${w.m.unit} · ${dt}`; tip.style.left=Math.min(Math.max(px,90),W-90)+'px'; tip.style.top=(Y(v)-10)+'px';
+    });
+    svg.addEventListener('pointerleave',()=>{g.style.display='none';tip.hidden=true;});
+  }
+}
+function hydrate(root){
+  root.querySelectorAll('[data-spark]').forEach(el=>{const [k,r]=el.dataset.spark.split('|');draw(el,win(byKey[k],r),{h:el.clientHeight||32});});
+}
+
+/* ---------- overview ---------- */
+const st={range:'1M',sel:'makerworld.profile.design_downloads',models:false,dRange:'3M',pRange:'1W'};
+const PINNED=['makerworld.profile.design_downloads','makerworld.profile.design_prints','github.repo.702114883.stars','youtube.channel.main.subscribers'];
+function seg(prefix,cur,ranges){return `<div class="seg" role="group" aria-label="Time range">${ranges.map(r=>`<button id="${prefix}-${r}" data-${prefix}="${r}" aria-pressed="${r===cur}">${r}</button>`).join('')}</div>`;}
+function tile(k,range,phone){
+  const m=byKey[k], w=win(m,range);
+  return `<button class="index" data-pick="${k}" aria-pressed="${!phone&&k===st.sel}">
+    <span class="src">${PLUG[m.plugin]}${m.stale?' <span class="stale-chip">stale</span>':''}</span>
+    <span class="lbl">${esc(m.label.replace(/^.* · /,''))}</span>
+    <span class="row"><span><span class="val">${fmt(w.last)}</span><br>${chg(w)}</span><span class="spark" data-spark="${k}|${range}"></span></span>
+  </button>`;
+}
+function statusLine(){
+  return `<footer class="status">
+    <span><i class="dot ok"></i><b>makerworld</b> ok · next poll 14m</span>
+    <span><i class="dot ok"></i><b>github</b> ok · next poll 22m</span>
+    <span title="HTTP 403 from livecounts · last good poll 31h ago"><i class="dot warn"></i><b>youtube</b> 2 failed polls · last good 31h ago</span>
+  </footer>`;
+}
+function renderOverview(){
+  const el=document.getElementById('overview'), r=st.range, sel=byKey[st.sel], w=win(sel,r);
+  const days=Math.max((w.end-w.start)/DAY,1/24);
+  const movers=M.map(m=>win(m,r)).filter(x=>x.pct!=null&&x.change!==0).sort((a,b)=>Math.abs(b.pct)-Math.abs(a.pct)).slice(0,5);
+  const events=[];M.forEach(m=>{for(let i=1;i<m.pts.length;i++)events.push({m,ts:m.pts[i][0],d:m.pts[i][1]-m.pts[i-1][1]});});
+  events.sort((a,b)=>b.ts-a.ts);
+  const groups=['makerworld','github','youtube'];
+  let rows='';
+  for(const g of groups){
+    const ms=M.filter(m=>m.plugin===g&&!m.model), models=M.filter(m=>m.plugin===g&&m.model);
+    rows+=`<tr class="grp"><th colspan="7">${PLUG[g]}<span>${ms.length} metrics${models.length?` · ${models.length} models`:''}</span></th></tr>`;
+    const row=(m,sub)=>{const x=win(m,r);return `<tr class="row${sub?' sub':''}" data-pick="${m.key}" aria-selected="${m.key===st.sel}">
+      <td class="m">${esc(m.label)}${m.stale?' <span class="stale-chip">stale</span>':''}<small>${m.key}</small></td>
+      <td><div class="spark" data-spark="${m.key}|${r}"></div></td>
+      <td>${fmt(x.last)}</td><td>${chg(x)}</td>
+      <td class="hl">${fmt(x.high)} / ${fmt(x.low)}</td><td class="hl">${fmt(x.samples)}</td><td class="hl">${ago(m.lastSeen)} ago</td></tr>`;};
+    ms.forEach(m=>rows+=row(m));
+    if(models.length){
+      rows+=`<tr><td colspan="7"><button class="fold" id="fold-${g}" data-fold aria-expanded="${st.models}">${st.models?'▾ Hide':'▸ Show'} ${models.length} per-model series</button></td></tr>`;
+      if(st.models) models.forEach(m=>rows+=row(m,true));
+    }
+  }
+  el.innerHTML=`
+  <div class="topbar">
+    <div class="brand"><span class="mark">▲</span>numbers-go-up</div>
+    ${seg('ov',r,Object.keys(HOURS))}
+    <div class="meta"><span class="live">Updated 2m ago</span><button class="ghost" id="theme-toggle" data-theme-toggle>Toggle theme</button></div>
+  </div>
+  <div class="indices">${PINNED.map(k=>tile(k,r)).join('')}</div>
+  <div class="main">
+    <section class="panel">
+      <div class="hero-head">
+        <div><div class="name">${PLUG[sel.plugin]} · ${esc(sel.label)} ${sel.stale?'<span class="stale-chip">stale</span>':''}</div><div class="k">${sel.key} · ${sel.kind}</div>
+          <div class="bigval"><strong>${fmt(w.last)}</strong><span class="unit">${sel.unit}</span>${chg(w,true)}</div></div>
+      </div>
+      <div class="chart" id="hero-chart"></div>
+      <dl class="stats">
+        <div><dt>Open</dt><dd>${fmt(w.open)}</dd></div>
+        <div><dt>High</dt><dd>${fmt(w.high)}</dd></div>
+        <div><dt>Low</dt><dd>${fmt(w.low)}</dd></div>
+        <div><dt>Avg / day</dt><dd>${(w.change/days).toFixed(w.change/days<10?2:1)}</dd></div>
+        <div><dt>Changes stored</dt><dd>${fmt(w.samples)}</dd></div>
+        <div><dt>Last poll</dt><dd>${ago(sel.lastSeen)} ago</dd></div>
+      </dl>
+    </section>
+    <aside class="side">
+      <section class="panel"><h3>Biggest moves · ${r}</h3>
+        <ol class="movers">${movers.map((x,i)=>`<li><button data-pick="${x.m.key}"><span class="rank">${i+1}</span><span class="nm">${esc(x.m.label)}</span>${chg(x,true).replace(/▲ [^ ]+ |▼ [^ ]+ /,'').replace(/[()]/g,'')}</button></li>`).join('')}</ol>
+      </section>
+      <section class="panel"><h3>Latest changes</h3>
+        <ul class="tape">${events.slice(0,6).map(e=>`<li><span class="chg ${e.d>0?'up':'down'}">${e.d>0?'+':''}${e.d}</span><span class="nm">${esc(e.m.label)}</span><span class="ago">${ago(e.ts)}</span></li>`).join('')}</ul>
+      </section>
+    </aside>
+  </div>
+  <section class="panel"><div class="scroll"><table class="watch">
+    <thead><tr><th>Metric</th><th>${r} trend</th><th>Last</th><th>Change</th><th>High / low</th><th>Changes</th><th>Updated</th></tr></thead>
+    <tbody>${rows}</tbody></table></div></section>
+  ${statusLine()}`;
+  draw(document.getElementById('hero-chart'),w,{h:300,axes:true,volume:true,hover:true});
+  hydrate(el);
+}
+
+/* ---------- detail ---------- */
+function renderDetail(){
+  const el=document.getElementById('detail'), m=byKey['makerworld.model.1180234.downloads'], w=win(m,st.dRange);
+  const ev=[];for(let i=m.pts.length-1;i>0&&ev.length<9;i--)ev.push([m.pts[i][0],m.pts[i][1],m.pts[i][1]-m.pts[i-1][1]]);
+  const days=Math.max((w.end-w.start)/DAY,1);
+  el.innerHTML=`
+  <div class="detail-top">
+    <div><div class="crumb"><a href="#v1">Overview</a> › MakerWorld › Models</div>
+      <h3>${esc(m.label)} · Downloads</h3>
+      <div class="bigval"><strong>${fmt(w.last)}</strong><span class="unit">${m.unit}</span>${chg(w,true)}</div></div>
+    <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">${seg('dt',st.dRange,Object.keys(HOURS))}<span class="outlink">Open on MakerWorld ↗</span></div>
+  </div>
+  <div class="detail-grid">
+    <section class="panel"><div class="chart" id="detail-chart"></div>
+      <dl class="stats">
+        <div><dt>Open</dt><dd>${fmt(w.open)}</dd></div><div><dt>High</dt><dd>${fmt(w.high)}</dd></div>
+        <div><dt>Avg / day</dt><dd>${(w.change/days).toFixed(2)}</dd></div><div><dt>Best day</dt><dd>+${bestDay(m,w)}</dd></div>
+        <div><dt>First seen</dt><dd>${xfmt(m.pts[0][0],'3M')}</dd></div><div><dt>Key</dt><dd style="font-size:11px;overflow-wrap:anywhere">${m.key}</dd></div>
+      </dl>
+    </section>
+    <section class="panel"><h3>Recorded changes</h3>
+      <table class="events"><thead><tr><th>When (UTC)</th><th>Value</th><th>Change</th></tr></thead>
+      <tbody>${ev.map(e=>`<tr><td>${new Date(e[0]*1000).toLocaleString('en-US',{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit',hour12:false,timeZone:'UTC'})}</td><td>${fmt(e[1])}</td><td class="chg ${e[2]>0?'up':'down'}">${e[2]>0?'+':''}${e[2]}</td></tr>`).join('')}</tbody></table>
+      <p class="hint">Only changes are stored, plus one heartbeat a day. Polls with no change leave no row.</p>
+    </section>
+  </div>`;
+  draw(document.getElementById('detail-chart'),w,{h:320,axes:true,volume:true,hover:true});
+}
+function bestDay(m,w){let best=0;for(let a=Math.floor(w.start/DAY)*DAY;a<w.end;a+=DAY){const d=(asOf(m.pts,a+DAY)??0)-(asOf(m.pts,a)??0);if(d>best)best=d;}return best;}
+
+/* ---------- phone ---------- */
+function renderPhone(){
+  const el=document.getElementById('phone'), r=st.pRange;
+  let list='';
+  for(const g of ['makerworld','github','youtube']){
+    list+=`<li class="gh" style="display:block">${PLUG[g]}</li>`;
+    M.filter(m=>m.plugin===g&&!m.model).forEach(m=>{const w=win(m,r);list+=`<li><span class="nm">${esc(m.label.replace(/^(.*) · /,''))}${m.stale?' <span class="stale-chip">stale</span>':''}<small>${g==='github'?m.label.split(' · ')[0]:m.unit}</small></span><span class="spark" data-spark="${m.key}|${r}"></span><span class="r"><b>${fmt(w.last)}</b>${chg(w,true).replace(/ \([^)]*\)/,'')}</span></li>`;});
+  }
+  el.innerHTML=`
+  <div class="topbar"><div class="brand"><span class="mark">▲</span>numbers-go-up</div><span class="meta"><span class="live">2m</span></span></div>
+  ${seg('ph',r,['1D','1W','1M','1Y','ALL'])}
+  <div class="indices">${PINNED.map(k=>tile(k,r,true)).join('')}</div>
+  <ul class="plist">${list}</ul>
+  <footer class="status"><span><i class="dot ok"></i>makerworld</span><span><i class="dot ok"></i>github</span><span><i class="dot warn"></i>youtube</span></footer>`;
+  hydrate(el);
+}
+
+function renderAll(){renderOverview();renderDetail();renderPhone();}
+document.addEventListener('click',e=>{
+  const b=e.target.closest('button,tr[data-pick]'); if(!b) return;
+  if(b.dataset.ov){st.range=b.dataset.ov;renderOverview();return;}
+  if(b.dataset.dt){st.dRange=b.dataset.dt;renderDetail();return;}
+  if(b.dataset.ph){st.pRange=b.dataset.ph;renderPhone();return;}
+  if('fold' in b.dataset){st.models=!st.models;renderOverview();return;}
+  if('themeToggle' in b.dataset){
+    const root=document.documentElement, cur=root.dataset.theme||(matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light');
+    root.dataset.theme=cur==='dark'?'light':'dark';renderAll();return;
+  }
+  if(b.dataset.pick && b.closest('#overview')){st.sel=b.dataset.pick;renderOverview();}
+});
+let rt;addEventListener('resize',()=>{clearTimeout(rt);rt=setTimeout(renderAll,120);});
+renderAll();
+if(document.fonts) document.fonts.ready.then(renderAll);
+})();
+</script>
+
+</body>
+</html>
