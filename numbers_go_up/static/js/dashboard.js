@@ -37,6 +37,7 @@
     lastFetchedAt: null,
     refreshTimer: null,
     metricsByKey: {},
+    chartRequestId: 0,
   };
 
   // Same threshold /health/plugins uses (api.DEFAULT_UNHEALTHY_FAILURES),
@@ -426,6 +427,12 @@
     var metric = state.metricsByKey[key];
     if (!chart || !metric) return;
 
+    // A slower response for a previous selection (a stale metric's
+    // history is exactly the expensive case) can land after a faster
+    // response for a later one; without this, whichever fetch finishes
+    // last wins the render regardless of which was requested last.
+    var requestId = ++state.chartRequestId;
+
     chartHeader.textContent = "";
     var pluginSpan = document.createElement("span");
     pluginSpan.className = "chart-header-label";
@@ -443,17 +450,30 @@
         return response.json();
       })
       .then(function (data) {
+        if (requestId !== state.chartRequestId) return;
+
         var points = data.points.map(function (p) {
           return [p.ts, p.value];
         });
+        var staleSinceTs = metric.stale ? Date.parse(metric.updated) / 1000 : null;
         chart.render(points, {
           direction: directionOf(metric),
           unit: metric.unit,
-          staleSinceTs: metric.stale ? Date.parse(metric.updated) / 1000 : null,
+          staleSinceTs: staleSinceTs,
         });
+        // A stale series' chart extends its x-domain to "now" (the
+        // synthesized tail point in chart.js), so the bar strip's domain
+        // must match that, not just the last real sample -- otherwise
+        // every bar maps too far right, worst at the last one, which
+        // ends up drawn under the dashed "no data" tail instead of at
+        // its own timestamp.
+        var barsEnd = staleSinceTs != null ? Date.now() / 1000 : 1;
+        if (staleSinceTs == null && points.length) {
+          barsEnd = points[points.length - 1][0];
+        }
         window.renderChangeBars(document.getElementById("chart-bars"), data.bars, {
           start: points.length ? points[0][0] : 0,
-          end: points.length ? points[points.length - 1][0] : 1,
+          end: barsEnd,
         });
         chartStats.textContent = "";
         [

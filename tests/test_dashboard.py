@@ -171,6 +171,32 @@ def test_theme_toggle_reloads_the_selected_chart(tmp_path):
     assert "loadChartFor(" in toggle_body
 
 
+def test_change_bar_domain_extends_to_now_for_a_stale_series(tmp_path):
+    # chart.render() synthesizes a (now, lastValue) tail point for a
+    # stale series, extending the *line's* x-domain to now -- but the
+    # bar strip's domain must match, or every bar maps too far right
+    # (worst at the last one, which ends up drawn under the dashed "no
+    # data" tail instead of at its own timestamp). Both the overview
+    # (dashboard.js) and detail page (detail.js) share this bug shape.
+    dashboard_js = (dashboard.STATIC_DIR / "js" / "dashboard.js").read_text()
+    detail_js = (dashboard.STATIC_DIR / "js" / "detail.js").read_text()
+
+    assert "staleSinceTs != null ? Date.now()" in dashboard_js
+    assert "staleSinceTs != null ? Date.now()" in detail_js
+
+
+def test_load_chart_for_guards_against_out_of_order_responses(tmp_path):
+    # Every selection change and every 60s auto-refresh fires a fetch;
+    # without a sequencing guard, a slower response for an earlier
+    # selection (a stale metric's history is exactly the expensive case)
+    # can land after a faster response for a later one and render under
+    # the wrong metric's header/stats/highlighted row.
+    js = (dashboard.STATIC_DIR / "js" / "dashboard.js").read_text()
+
+    assert "chartRequestId" in js
+    assert "requestId !== state.chartRequestId" in js
+
+
 def test_change_bars_positioned_by_timestamp_not_array_index(tmp_path):
     # _bucket_changes omits empty buckets, so under real store-on-change
     # data (gaps between changes are the norm) evenly spacing N bars

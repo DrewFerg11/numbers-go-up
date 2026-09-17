@@ -63,9 +63,14 @@
       unit: "",
       staleSinceTs: staleSinceTs,
     });
+    // A stale series' chart extends its x-domain to "now" (chart.js's
+    // synthesized tail point), so the bar strip's domain must match --
+    // otherwise every bar maps too far right, worst at the last one,
+    // which ends up drawn under the dashed "no data" tail.
+    var barsEnd = staleSinceTs != null ? Date.now() / 1000 : points[points.length - 1][0];
     window.renderChangeBars(document.getElementById("chart-bars"), data.bars, {
       start: points[0][0],
-      end: points[points.length - 1][0],
+      end: barsEnd,
     });
   }
 
