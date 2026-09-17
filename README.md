@@ -33,7 +33,7 @@ so you can ask what changed, how fast, and since when.
 |---|---|
 | MakerWorld | Shipped |
 | GitHub | Shipped |
-| YouTube | Planned |
+| YouTube | Shipped |
 | TikTok | Planned |
 | Anything else | Write a plugin — that's the point |
 
@@ -132,6 +132,15 @@ paged release listings, against the official, documented API — the only
 source in this project with that status. Every other source here is
 unofficial.
 
+**YouTube's unofficial path was evaluated and rejected (#62):** the
+originally-planned `unofficial-livecounts-api` library doesn't just need a
+browser-style User-Agent — every request it makes is signed with three
+custom headers derived from the current timestamp via a private hashing
+scheme, which this project would have to reimplement to pass its bot check.
+That's a materially different, higher-risk exercise than TikTok's one fixed
+User-Agent exception, so it was dropped before any code shipped. YouTube
+tracks official-API numbers only, accepting the rounding described below.
+
 ### GitHub
 
 Tracks stars, forks, watchers, and open issues (which include open pull
@@ -150,6 +159,35 @@ official REST API. Configure `plugins.github.repos` with one or more
   every release. Deleting a release lowers that sum. Storage doesn't reject
   a falling cumulative series, and Home Assistant will read the drop as a
   counter reset — this is expected, not a bug.
+
+### YouTube
+
+Tracks subscribers, views, and video count for your own channel(s), via the
+official Data API v3 — the only source this plugin ships (see the spike note
+above on why the unofficial `livecounts` path was dropped before it shipped).
+
+- **Finding your channel ID:** it's the `UC...` string (24 characters,
+  case-sensitive) in your channel's Advanced Settings on YouTube Studio, or
+  in a channel URL of the form `youtube.com/channel/UCxxxx...`. A handle
+  (`@yourname`) or custom URL is **not** accepted — resolving one to an ID
+  costs an extra request and can be ambiguous, so paste the ID directly.
+- **API key (required):** create one in Google Cloud Console (YouTube Data
+  API v3 enabled) and set it via the `NGU_YOUTUBE_API_KEY` environment
+  variable — never in `config.yaml`. It costs 1 quota unit per poll against
+  a free 10,000/day quota.
+- **Exact vs. rounded:** the official API rounds `subscriberCount` to about
+  3 significant figures once a channel gets reasonably large, so day-to-day
+  changes on a bigger channel may show as a flat line most days with an
+  occasional step. `views`/`videos` are commonly understood to be exact.
+  Switching `source` is a deliberate, one-time user action — a series never
+  switches sources automatically, since that would write a fake jump in its
+  history — and the chart will show one visible step if you ever change it.
+- A channel that hides its public subscriber count, or whose subscriber
+  count reads exactly 0, fails the poll rather than writing a bogus 0.
+- Series labels use the channel's current YouTube title (falling back to
+  its `key` if unavailable), so a renamed channel's label drifts to match
+  on its next poll — the same trade-off the GitHub plugin makes with
+  `full_name`.
 
 ## License
 

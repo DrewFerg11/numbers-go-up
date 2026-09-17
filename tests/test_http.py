@@ -189,6 +189,17 @@ class TestBuildClient:
         with pytest.raises(httpx.HTTPStatusError):
             client.get("https://example.invalid/")
 
+    def test_blocked_message_redacts_a_key_query_param(self):
+        client = http.build_client(
+            transport=httpx.MockTransport(lambda r: httpx.Response(403))
+        )
+
+        with pytest.raises(http.Blocked) as exc_info:
+            client.get("https://example.invalid/channels", params={"key": "secret123"})
+
+        assert "secret123" not in str(exc_info.value)
+        assert "REDACTED" in str(exc_info.value)
+
     def test_blocked_message_names_a_cloudflare_challenge(self):
         client = http.build_client(
             transport=httpx.MockTransport(
@@ -223,6 +234,19 @@ class TestBuildClient:
 
         assert exc_info.value.response.status_code == 429
         assert exc_info.value.response.text == "slow down"
+
+
+class TestRedactQueryParam:
+    def test_redacts_key_param(self):
+        url = httpx.URL("https://example.invalid/x?key=secret&id=123")
+        result = http.redact_query_param(url)
+        assert "secret" not in result
+        assert "key=REDACTED" in result
+        assert "id=123" in result
+
+    def test_no_secret_param_is_unchanged(self):
+        url = httpx.URL("https://example.invalid/x?id=123")
+        assert http.redact_query_param(url) == str(url)
 
 
 class TestParseRetryAfter:
