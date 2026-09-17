@@ -161,6 +161,13 @@ jobs:
     name: merge manifest + tag
     needs: build
     runs-on: ubuntu-latest
+    # Same environment as `authorize`: DOCKERHUB_USERNAME/DOCKERHUB_TOKEN
+    # are scoped to it (see the issue's maintainer setup), and only a job
+    # that declares the environment can read secrets scoped to it. Without
+    # this, the docker.io login below would silently get empty credentials
+    # and fail after the GHCR push already succeeded -- exactly the
+    # half-published release `authorize`'s preflight exists to prevent.
+    environment: release
     permissions:
       contents: read
       packages: write
@@ -279,10 +286,14 @@ jobs:
             exit 1
           fi
           jq -n --rawfile full README.md '{full_description: $full}' > /tmp/dockerhub-description.json
-          curl -sS -X PATCH "https://hub.docker.com/v2/repositories/${DOCKERHUB_IMAGE}/" \
+          HTTP_CODE=$(curl -sS -X PATCH "https://hub.docker.com/v2/repositories/${DOCKERHUB_IMAGE}/" \
             -H "Authorization: JWT ${JWT}" \
             -H "Content-Type: application/json" \
-            --data @/tmp/dockerhub-description.json -o /dev/null -w '%{http_code}\n'
+            --data @/tmp/dockerhub-description.json -o /dev/null -w '%{http_code}')
+          case "$HTTP_CODE" in
+            2*) echo "Docker Hub description updated (HTTP $HTTP_CODE)" ;;
+            *) echo "::error::Docker Hub description sync failed with HTTP $HTTP_CODE"; exit 1 ;;
+          esac
         env:
           DOCKERHUB_IMAGE: ${{ vars.DOCKERHUB_IMAGE }}
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
