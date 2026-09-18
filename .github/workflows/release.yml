@@ -66,21 +66,23 @@ jobs:
           echo "Releasing $GITHUB_REF_NAME"
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0   # setuptools-scm needs full history + tags
 
-      # An image whose /health reports a version that isn't its tag is worse
-      # than a failed release, so this has to fail before anything builds.
-      # The prerelease suffix (-rc.N) isn't part of __version__, so it's
-      # stripped before comparing.
-      - name: Verify tag matches package version
+      # The version is now derived from this exact tag by setuptools-scm, so
+      # it can't drift from it by construction. The one way it can still go
+      # wrong is setuptools-scm silently falling back to a distance-from-tag
+      # guess (a ".dev"/"+" suffix) instead of resolving the tag directly --
+      # e.g. a regression in one of the fetch-depth: 0 checkouts above.
+      - name: Verify version resolves cleanly from the tag
         run: |
-          TAG_VERSION="${GITHUB_REF_NAME#v}"
-          TAG_VERSION="${TAG_VERSION%%-rc.*}"
-          PKG_VERSION=$(python3 -c "import numbers_go_up; print(numbers_go_up.__version__)")
-          if [ "$TAG_VERSION" != "$PKG_VERSION" ]; then
-            echo "::error::Tag $GITHUB_REF_NAME implies version $TAG_VERSION, but numbers_go_up.__version__ is $PKG_VERSION"
+          pip install setuptools-scm
+          VERSION=$(python3 -m setuptools_scm)
+          if [[ "$VERSION" == *.dev* || "$VERSION" == *+* ]]; then
+            echo "::error::Expected a clean release version for tag $GITHUB_REF_NAME, got $VERSION (setuptools-scm fell back to a distance-from-tag guess)"
             exit 1
           fi
-          echo "Tag $GITHUB_REF_NAME matches numbers_go_up.__version__ ($PKG_VERSION)"
+          echo "Tag $GITHUB_REF_NAME resolves to version $VERSION"
 
       # Opt-in Docker Hub mirror (see docs/gh-workflows/README.md). A release
       # that only half-publishes -- GHCR done, Docker Hub silently skipped
@@ -117,6 +119,11 @@ jobs:
             suffix: arm64
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0   # setuptools-scm needs full history + tags
+
+      - name: Generate version file
+        run: pip install setuptools-scm && python -m setuptools_scm --force-write-version-files
 
       # GHCR requires lowercase image names; github.repository is mixed-case
       - name: Resolve image name
