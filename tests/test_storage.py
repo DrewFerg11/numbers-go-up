@@ -850,18 +850,26 @@ class TestRangeStatsBulkConn:
         # internally, it must not regress on the very thing it exists to
         # speed up. A generous ratio bound keeps this from flaking on a
         # loaded CI runner while still catching the kind of regression
-        # review caught twice (15-28x slower).
-        series_ids = [self._series(db_path, f"demo.series{i}") for i in range(40)]
-        for series_id in series_ids:
+        # review caught repeatedly (up to ~28x slower).
+        anchored_ids = [self._series(db_path, f"demo.anchored{i}") for i in range(20)]
+        for series_id in anchored_ids:
             for t in range(0, 2000, 20):
                 storage.record_sample(db_path, series_id, t, t, heartbeat_seconds=1)
-        # Half the series are "younger than the range" (no anchor), to
-        # exercise the firsts/VALUES-join path too, not just the anchored
-        # one.
-        start = 1000
-        starts = {
-            series_id: start if i % 2 == 0 else 1500
-            for i, series_id in enumerate(series_ids)
+
+        # Younger-than-range series: no sample at or before `start`, so
+        # every one of these genuinely exercises the firsts/VALUES-join
+        # path -- a previous version of this fixture picked a `start`
+        # that coincided with an existing sample, so every series came
+        # back anchored and the join path went untested even though the
+        # test passed.
+        younger_ids = [self._series(db_path, f"demo.younger{i}") for i in range(20)]
+        for series_id in younger_ids:
+            for t in range(1600, 2000, 20):
+                storage.record_sample(db_path, series_id, t, t, heartbeat_seconds=1)
+
+        series_ids = anchored_ids + younger_ids
+        starts = {series_id: 1000 for series_id in anchored_ids} | {
+            series_id: 1500 for series_id in younger_ids
         }
         end = 2000
 

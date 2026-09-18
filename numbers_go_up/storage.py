@@ -669,7 +669,15 @@ def _range_stats_group(
         # above shares `start`, so this joins each series to its own
         # threshold via a VALUES row instead of a ROW_NUMBER window --
         # same "index seek per series, not a materialized sort" reasoning
-        # as the anchor/firsts lookups above.
+        # as the anchor/firsts lookups above. No ORDER BY here: the join
+        # visits rows in VALUES order, not index order, so asking SQLite
+        # to sort the joined result forces the same temp-B-tree
+        # materialization the seeks above exist to avoid. Each series'
+        # own points list is sorted in Python below instead -- cheap
+        # relative to the row volume it carries, and every other
+        # collection into `points_by_series` already relies on arriving
+        # in ts order from an index-ordered query, so this is the one
+        # spot that needs it explicitly.
         values_clause = ",".join("(?,?)" for _ in firsts)
         params: list[int] = []
         for series_id, (first_ts, _) in firsts.items():
@@ -684,11 +692,12 @@ def _range_stats_group(
                 FROM (VALUES {values_clause})
             ) AS f ON f.series_id = s.series_id
             WHERE s.ts > f.first_ts AND s.ts <= ?
-            ORDER BY s.series_id, s.ts
             """,
             params,
         ):
             points_by_series[series_id].append((ts, value))
+        for series_id in firsts:
+            points_by_series[series_id].sort()
 
     result: dict[int, dict[str, Any]] = {}
     for series_id in series_ids:
