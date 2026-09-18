@@ -108,21 +108,18 @@ def test_index_exposes_the_blocked_error_prefix_to_the_client(tmp_path):
     assert f'data-blocked-prefix="{BLOCKED_ERROR_PREFIX}"' in response.text
 
 
-def test_index_tiles_and_row_labels_have_no_href_before_the_detail_page_ships(
-    tmp_path,
-):
-    # /m/{key} (the detail page) isn't a route this PR registers -- it
-    # ships in a stacked follow-up. The static template's placeholder
-    # anchors use href="#" only as a template default; dashboard.js must
-    # strip it at render time so a left-click, middle-click, or "open in
-    # new tab" on a tile or watchlist row can't 404. This can't watch the
-    # client-side removeAttribute() call directly (no JS test runner in
-    # this repo), so it pins the static asset's source instead -- it
-    # fails loudly if a future edit reintroduces a hardcoded /m/ href.
+def test_index_tile_has_no_href_but_row_label_links_to_detail_page(tmp_path):
+    # The detail page (/m/{key}) now exists (this PR). Per spec, the
+    # watchlist row's metric name is a link to it; the index tile stays a
+    # pure selector (clicking a pinned tile shouldn't navigate away from
+    # the overview). This can't watch the client-side DOM directly (no JS
+    # test runner in this repo), so it pins the static asset's source --
+    # it fails loudly if a future edit drops the row link or adds a tile
+    # link back.
     js = (dashboard.STATIC_DIR / "js" / "dashboard.js").read_text()
 
-    assert '.href = "/m/' not in js
-    assert 'removeAttribute("href")' in js
+    assert 'node.removeAttribute("href")' in js
+    assert 'label.href = "/m/' in js
 
 
 def test_status_class_checks_last_error_not_just_status(tmp_path):
@@ -136,6 +133,101 @@ def test_status_class_checks_last_error_not_just_status(tmp_path):
 
     assert "plugin.last_error" in js
     assert "BLOCKED_PREFIX" in js
+
+
+def test_chart_js_implements_the_stale_dashed_tail(tmp_path):
+    # No JS test runner in this repo. The overview and detail acceptance
+    # criteria both require a stale series to draw a grey dashed
+    # continuation after its last good poll, not just a uniformly grey
+    # line -- pin that render() actually branches on staleSinceTs (a
+    # documented-but-unimplemented opts field was the exact regression a
+    # prior review caught) and that callers pass a real per-point
+    # direction rather than collapsing it to a flat "stale" color.
+    chart_js = (dashboard.STATIC_DIR / "js" / "chart.js").read_text()
+    dashboard_js = (dashboard.STATIC_DIR / "js" / "dashboard.js").read_text()
+
+    assert "opts.staleSinceTs" in chart_js
+    assert "direction: directionOf(metric)" in dashboard_js
+    assert 'direction: metric.stale ? "stale"' not in dashboard_js
+
+    # A stale series' history stops at its last good poll -- there's no
+    # stored point at "now" for the dashed tail to extend to, so render()
+    # must synthesize one. Caught only by manually rendering the chart in
+    # a browser: without this, staleSinceTs equals the last real point's
+    # timestamp, splitIdx lands on the final index, and no tail is drawn
+    # at all.
+    assert "Date.now()" in chart_js
+
+
+def test_theme_toggle_reloads_the_selected_chart(tmp_path):
+    # chart.js resolves colors from CSS custom properties once, at render
+    # time -- toggling the theme without re-rendering leaves the big
+    # chart and change bars showing the previous theme's colors until the
+    # next 60s auto-refresh happens to fire.
+    js = (dashboard.STATIC_DIR / "js" / "dashboard.js").read_text()
+    toggle_start = js.index('themeToggle.addEventListener("click"')
+    toggle_body = js[toggle_start : toggle_start + 800]
+
+    assert "loadChartFor(" in toggle_body
+
+
+def test_change_bar_domain_extends_to_now_for_a_stale_series(tmp_path):
+    # chart.render() synthesizes a (now, lastValue) tail point for a
+    # stale series, extending the *line's* x-domain to now -- but the
+    # bar strip's domain must match, or every bar maps too far right
+    # (worst at the last one, which ends up drawn under the dashed "no
+    # data" tail instead of at its own timestamp). Both the overview
+    # (dashboard.js) and detail page (detail.js) share this bug shape.
+    dashboard_js = (dashboard.STATIC_DIR / "js" / "dashboard.js").read_text()
+    detail_js = (dashboard.STATIC_DIR / "js" / "detail.js").read_text()
+
+    assert "staleSinceTs != null ? Date.now()" in dashboard_js
+    assert "staleSinceTs != null ? Date.now()" in detail_js
+
+
+def test_load_chart_for_guards_against_out_of_order_responses(tmp_path):
+    # Every selection change and every 60s auto-refresh fires a fetch;
+    # without a sequencing guard, a slower response for an earlier
+    # selection (a stale metric's history is exactly the expensive case)
+    # can land after a faster response for a later one and render under
+    # the wrong metric's header/stats/highlighted row.
+    js = (dashboard.STATIC_DIR / "js" / "dashboard.js").read_text()
+
+    assert "chartRequestId" in js
+    assert "requestId !== state.chartRequestId" in js
+
+
+def test_change_bars_positioned_by_timestamp_not_array_index(tmp_path):
+    # _bucket_changes omits empty buckets, so under real store-on-change
+    # data (gaps between changes are the norm) evenly spacing N bars
+    # across the strip by index would put a bar under the wrong point in
+    # time relative to the line above it, which is drawn on a real time
+    # axis. renderBars must derive each bar's x from bar.ts against a
+    # domain, and both chart callers must pass one.
+    chart_js = (dashboard.STATIC_DIR / "js" / "chart.js").read_text()
+    dashboard_js = (dashboard.STATIC_DIR / "js" / "dashboard.js").read_text()
+    detail_js = (dashboard.STATIC_DIR / "js" / "detail.js").read_text()
+
+    assert "bar.ts - start" in chart_js
+    assert "i * barWidth" not in chart_js
+    assert "renderChangeBars(" in dashboard_js and "data.bars, {" in dashboard_js
+    assert "renderChangeBars(" in detail_js and "data.bars, {" in detail_js
+
+
+def test_detail_range_switch_does_a_full_reload(tmp_path):
+    # detail.js only ever fetched /api/stats/history on a range switch,
+    # which refreshes the chart and headline but never the server-rendered
+    # stats row (OPEN/HIGH/AVG-DAY/BEST DAY) or the recorded-changes
+    # table -- both are range-dependent and computed only in
+    # dashboard.metric_detail, so after clicking e.g. 1D they'd silently
+    # keep describing the page's original range. A full navigation keeps
+    # the whole page consistent by construction instead of duplicating
+    # that computation in JS a second time.
+    js = (dashboard.STATIC_DIR / "js" / "detail.js").read_text()
+    set_range_start = js.index("function setRange(range)")
+    set_range_body = js[set_range_start : set_range_start + 900]
+
+    assert "window.location.href" in set_range_body
 
 
 def test_index_renders_with_every_plugin_failing(tmp_path):
@@ -309,6 +401,23 @@ def test_overview_high_low(tmp_path):
     metric = response.json()["metrics"][0]
     assert metric["high"] == 50
     assert metric["low"] == 5
+
+
+def test_overview_avg_per_day(tmp_path):
+    # Matches the detail page's own avg_per_day formula: change over the
+    # range divided by elapsed days, so the overview's stats row and the
+    # detail page's stats row can't drift apart. 1M is exactly 30 days,
+    # so a +20 change gives 20/30 = 0.666... -> 0.67.
+    client, db_path = client_for(tmp_path)
+    now = int(time.time())
+    series_id = seed_series(db_path, "acme.widgets", now=now - 30 * DAY)
+    storage.record_sample(db_path, series_id, now - 30 * DAY, 0, DAY)
+    storage.record_sample(db_path, series_id, now, 20, DAY)
+
+    response = client.get("/api/stats/overview?range=1M")
+
+    metric = response.json()["metrics"][0]
+    assert metric["avg_per_day"] == 0.67
 
 
 def test_overview_changes_counts_stored_samples_in_range(tmp_path):
@@ -503,3 +612,236 @@ def test_overview_plugins_status_matches_health_thresholds(tmp_path):
     plugin = next(p for p in response.json()["plugins"] if p["name"] == "acme")
     assert plugin["status"] == "ok"
     assert plugin["consecutive_failures"] == 0
+
+
+# --- recent_changes on the overview --------------------------------------
+
+
+def test_overview_recent_changes_excludes_zero_change_heartbeats(tmp_path):
+    client, db_path = client_for(tmp_path)
+    now = int(time.time())
+    series_id = seed_series(db_path, "acme.widgets", now=now - DAY)
+    storage.record_sample(db_path, series_id, now - DAY, 5, HOUR)
+    storage.record_sample(db_path, series_id, now - HOUR, 5, HOUR)
+    storage.record_sample(db_path, series_id, now, 9, HOUR)
+
+    response = client.get("/api/stats/overview")
+
+    changes = response.json()["recent_changes"]
+    assert len(changes) == 1
+    assert changes[0]["key"] == "acme.widgets"
+    assert changes[0]["change"] == 4
+
+
+def test_overview_recent_changes_respects_limit_and_order(tmp_path):
+    client, db_path = client_for(tmp_path)
+    now = int(time.time())
+    series_id = seed_series(db_path, "acme.widgets", now=now - 20 * HOUR)
+    for i in range(15):
+        storage.record_sample(db_path, series_id, now - (14 - i) * HOUR, i + 1, 1)
+
+    response = client.get("/api/stats/overview")
+
+    changes = response.json()["recent_changes"]
+    assert len(changes) == 10
+    assert changes == sorted(changes, key=lambda c: c["ts"], reverse=True)
+
+
+# --- /m/{metric_key} -------------------------------------------------------
+
+
+def test_detail_unknown_key_404(tmp_path):
+    client, _ = client_for(tmp_path)
+
+    response = client.get("/m/nope.does.not.exist")
+
+    assert response.status_code == 404
+
+
+def test_detail_known_key_renders(tmp_path):
+    client, db_path = client_for(tmp_path)
+    now = int(time.time())
+    series_id = seed_series(db_path, "acme.widgets", now=now - 5 * DAY)
+    storage.record_sample(db_path, series_id, now - 5 * DAY, 10, DAY)
+    storage.record_sample(db_path, series_id, now, 20, DAY)
+
+    response = client.get("/m/acme.widgets")
+
+    assert response.status_code == 200
+    assert "acme.widgets" in response.text
+
+
+def test_detail_inactive_series_renders_with_chip(tmp_path):
+    client, db_path = client_for(tmp_path)
+    now = int(time.time())
+    series_id = seed_series(db_path, "acme.retired", now=now - DAY)
+    storage.record_sample(db_path, series_id, now - DAY, 5, DAY)
+    conn = storage.connect(db_path)
+    try:
+        conn.execute("UPDATE metric_series SET active = 0 WHERE id = ?", (series_id,))
+        conn.commit()
+    finally:
+        conn.close()
+
+    response = client.get("/m/acme.retired")
+
+    assert response.status_code == 200
+    assert "INACTIVE" in response.text
+
+
+def test_detail_exposes_stale_and_updated_to_the_client(tmp_path):
+    # detail.js reads these to draw the big chart's dashed grey
+    # continuation after the series' last good poll (chart.js
+    # staleSinceTs) -- without them the client has no way to know when a
+    # stale series' data actually stopped being current.
+    client, db_path = client_for(tmp_path, plugins_config={"acme": {"enabled": True}})
+    now = int(time.time())
+    series_id = seed_series(db_path, "acme.widgets", now=now - 2 * DAY)
+    storage.record_sample(db_path, series_id, now - 2 * DAY, 10, DAY)
+    run_id = storage.start_run(db_path, "acme", now)
+    storage.finish_run(
+        db_path, run_id, "error", "boom", samples_written=0, finished_at=now
+    )
+
+    response = client.get("/m/acme.widgets")
+
+    assert 'data-stale="true"' in response.text
+    assert 'data-updated="' in response.text
+
+
+def test_detail_recorded_change_renders_full_precision(tmp_path):
+    # Jinja's `|format("%d")` on a float truncates it (1.37 -> "1"), so a
+    # fractional recorded change used to lose its fractional part on the
+    # page even though the value column next to it kept full precision.
+    client, db_path = client_for(tmp_path)
+    now = int(time.time())
+    series_id = seed_series(db_path, "acme.widgets", kind="gauge", now=now - DAY)
+    storage.record_sample(db_path, series_id, now - DAY, 1.5, DAY)
+    storage.record_sample(db_path, series_id, now, 2.87, DAY)
+
+    response = client.get("/m/acme.widgets")
+
+    assert "+1.37" in response.text
+    assert "+1<" not in response.text
+
+
+def test_detail_recorded_change_rounds_away_float_noise(tmp_path):
+    # value - LAG(value) over floats can produce IEEE-754 noise for a
+    # value that's really a round number: 10.1 - 10.0 == 0.09999999999999964
+    # in Python. That must not print verbatim (it printed fine for the
+    # value column, which is stored/read directly, but the *change* is
+    # itself a float subtraction and had no rounding pass).
+    client, db_path = client_for(tmp_path)
+    now = int(time.time())
+    series_id = seed_series(db_path, "acme.widgets", kind="gauge", now=now - DAY)
+    storage.record_sample(db_path, series_id, now - DAY, 10.0, DAY)
+    storage.record_sample(db_path, series_id, now, 10.1, DAY)
+
+    response = client.get("/m/acme.widgets")
+
+    assert "+0.1" in response.text
+    assert "0.09999999999999964" not in response.text
+
+
+def test_detail_https_url_rendered_as_link(tmp_path):
+    client, db_path = client_for(tmp_path)
+    now = int(time.time())
+    storage.get_or_create_series(
+        db_path,
+        "acme.widgets",
+        "acme",
+        "cumulative",
+        "Widgets",
+        "u",
+        "i",
+        now,
+        attrs={"url": "https://example.com/widgets"},
+    )
+    storage.record_sample(
+        db_path,
+        storage.get_series_by_key(db_path, "acme.widgets")["id"],
+        now,
+        5,
+        DAY,
+    )
+
+    response = client.get("/m/acme.widgets")
+
+    assert 'href="https://example.com/widgets"' in response.text
+
+
+def test_detail_javascript_url_not_rendered_as_link(tmp_path):
+    client, db_path = client_for(tmp_path)
+    now = int(time.time())
+    storage.get_or_create_series(
+        db_path,
+        "acme.widgets",
+        "acme",
+        "cumulative",
+        "Widgets",
+        "u",
+        "i",
+        now,
+        attrs={"url": "javascript:alert(1)"},
+    )
+    storage.record_sample(
+        db_path,
+        storage.get_series_by_key(db_path, "acme.widgets")["id"],
+        now,
+        5,
+        DAY,
+    )
+
+    response = client.get("/m/acme.widgets")
+
+    assert "javascript:" not in response.text
+
+
+def test_detail_http_url_not_rendered_as_link(tmp_path):
+    client, db_path = client_for(tmp_path)
+    now = int(time.time())
+    storage.get_or_create_series(
+        db_path,
+        "acme.widgets",
+        "acme",
+        "cumulative",
+        "Widgets",
+        "u",
+        "i",
+        now,
+        attrs={"url": "http://example.com/widgets"},
+    )
+    storage.record_sample(
+        db_path,
+        storage.get_series_by_key(db_path, "acme.widgets")["id"],
+        now,
+        5,
+        DAY,
+    )
+
+    response = client.get("/m/acme.widgets")
+
+    assert 'href="http://example.com/widgets"' not in response.text
+
+
+def test_detail_breadcrumb_group_for_pattern_series(tmp_path):
+    metrics = {
+        "acme.model.{id}.downloads": {
+            "kind": "cumulative",
+            "label": "Downloads",
+            "unit": "u",
+        }
+    }
+    client, db_path = client_for(
+        tmp_path,
+        plugins_config={"acme": {"enabled": True}},
+        plugin_metrics={"acme": metrics},
+    )
+    now = int(time.time())
+    series_id = seed_series(db_path, "acme.model.1.downloads", now=now)
+    storage.record_sample(db_path, series_id, now, 5, DAY)
+
+    response = client.get("/m/acme.model.1.downloads")
+
+    assert response.status_code == 200
+    assert "Models" in response.text

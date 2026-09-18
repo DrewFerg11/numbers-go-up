@@ -20,3 +20,10 @@ from — they're referred to here as sources, not partners or integrations.
 See [`LICENSE`](LICENSE) for the terms this software itself is distributed
 under, and [`CONTRIBUTING.md`](CONTRIBUTING.md) for the rules a plugin has to
 meet before it's accepted.
+
+## Third-party code
+
+- **[uPlot](https://github.com/leeoniya/uPlot)** v1.6.31, MIT License,
+  Copyright (c) 2022 Leon Sorokin. Vendored at
+  `numbers_go_up/static/vendor/uplot/` (license file alongside) for the
+  dashboard's big chart. Not loaded from a CDN; served from this repo.

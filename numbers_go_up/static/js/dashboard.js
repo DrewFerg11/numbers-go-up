@@ -23,10 +23,21 @@
   var rowTemplate = document.getElementById("row-template");
   var statusDotTemplate = document.getElementById("status-dot-template");
 
+  var chartHeader = document.getElementById("chart-header");
+  var chartStats = document.getElementById("chart-stats");
+  var moversList = document.getElementById("movers-list");
+  var moversTitle = document.getElementById("movers-title");
+  var latestChangesList = document.getElementById("latest-changes-list");
+  var chart = window.NguChart
+    ? new window.NguChart(document.getElementById("big-chart"))
+    : null;
+
   var state = {
     range: app.dataset.initialRange || "1M",
     lastFetchedAt: null,
     refreshTimer: null,
+    metricsByKey: {},
+    chartRequestId: 0,
   };
 
   // Same threshold /health/plugins uses (api.DEFAULT_UNHEALTHY_FAILURES),
@@ -149,6 +160,7 @@
     url.searchParams.set("m", key);
     window.history.replaceState({}, "", url);
     highlightSelection(key);
+    loadChartFor(key);
   }
 
   function highlightSelection(key) {
@@ -168,8 +180,10 @@
   function buildTile(metric) {
     var node = tileTemplate.content.firstElementChild.cloneNode(true);
     node.dataset.key = metric.key;
-    // No detail page exists yet (it ships in a stacked follow-up PR), so
-    // this stays a non-navigating selector rather than a link to a 404.
+    // The index tile is a pure selector, not a link -- the watchlist row's
+    // metric name is the spec's link to the detail page (see buildRow);
+    // having both the tile and the row navigate would make the common
+    // "click a pinned tile" gesture leave the overview unexpectedly.
     node.removeAttribute("href");
     node.querySelector(".tile-plugin").textContent = metric.plugin.toUpperCase();
     node.querySelector(".tile-label").textContent = metric.label || metric.key;
@@ -190,11 +204,10 @@
     node.dataset.key = metric.key;
     var label = node.querySelector(".row-label");
     label.textContent = metric.label || metric.key;
-    // No detail page exists yet (it ships in a stacked follow-up PR); an
-    // href here would send a left-click, middle-click, or "open in new
-    // tab" straight to a 404. The row's own click/Enter handlers below
-    // already cover selection.
-    label.removeAttribute("href");
+    // The metric name is a link to its detail page (spec); the row's own
+    // click/Enter handlers below separately cover selecting it for the
+    // big chart without navigating away.
+    label.href = "/m/" + encodeURIComponent(metric.key) + "?range=" + state.range;
     node.querySelector(".row-key").textContent = metric.key;
     if (metric.stale) {
       node.querySelector(".stale-chip").hidden = false;
@@ -363,25 +376,151 @@
     updatedLabel.textContent = "● Updated " + label;
   }
 
+  function renderMovers(metrics) {
+    while (moversList.firstChild) moversList.removeChild(moversList.firstChild);
+    moversTitle.textContent = "Biggest moves · " + state.range;
+
+    var candidates = metrics.filter(function (m) {
+      return m.change_pct !== null && m.change_pct !== undefined && m.change_pct !== 0;
+    });
+    candidates.sort(function (a, b) {
+      return Math.abs(b.change_pct) - Math.abs(a.change_pct);
+    });
+
+    candidates.slice(0, 5).forEach(function (metric) {
+      var li = document.createElement("li");
+      var label = document.createElement("span");
+      label.textContent = metric.label || metric.key;
+      var pct = document.createElement("span");
+      pct.textContent =
+        (metric.change_pct > 0 ? "+" : "") + metric.change_pct + "%";
+      pct.className = "value-" + directionOf(metric);
+      li.appendChild(label);
+      li.appendChild(pct);
+      li.addEventListener("click", function () {
+        setSelectedKey(metric.key);
+      });
+      moversList.appendChild(li);
+    });
+  }
+
+  function renderLatestChanges(changes, metricsByKey) {
+    while (latestChangesList.firstChild) {
+      latestChangesList.removeChild(latestChangesList.firstChild);
+    }
+    (changes || []).slice(0, 6).forEach(function (change) {
+      var metric = metricsByKey[change.key];
+      var li = document.createElement("li");
+      var label = document.createElement("span");
+      label.textContent = (metric && (metric.label || metric.key)) || change.key;
+      var amount = document.createElement("span");
+      var sign = change.change > 0 ? "+" : "";
+      amount.textContent = sign + formatValue(change.change) + " · " + relativeTime(change.ts);
+      amount.className = "value-" + directionOf({ change: change.change });
+      li.appendChild(label);
+      li.appendChild(amount);
+      latestChangesList.appendChild(li);
+    });
+  }
+
+  function loadChartFor(key) {
+    var metric = state.metricsByKey[key];
+    if (!chart || !metric) return;
+
+    // A slower response for a previous selection (a stale metric's
+    // history is exactly the expensive case) can land after a faster
+    // response for a later one; without this, whichever fetch finishes
+    // last wins the render regardless of which was requested last.
+    var requestId = ++state.chartRequestId;
+
+    chartHeader.textContent = "";
+    var pluginSpan = document.createElement("span");
+    pluginSpan.className = "chart-header-label";
+    pluginSpan.textContent = (metric.plugin || "").toUpperCase() + " · " + (metric.label || metric.key);
+    chartHeader.appendChild(pluginSpan);
+
+    fetch(
+      "/api/stats/history?metric=" +
+        encodeURIComponent(key) +
+        "&range=" +
+        encodeURIComponent(state.range)
+    )
+      .then(function (response) {
+        if (!response.ok) throw new Error("history fetch failed: " + response.status);
+        return response.json();
+      })
+      .then(function (data) {
+        if (requestId !== state.chartRequestId) return;
+
+        var points = data.points.map(function (p) {
+          return [p.ts, p.value];
+        });
+        var staleSinceTs = metric.stale ? Date.parse(metric.updated) / 1000 : null;
+        chart.render(points, {
+          direction: directionOf(metric),
+          unit: metric.unit,
+          staleSinceTs: staleSinceTs,
+        });
+        // A stale series' chart extends its x-domain to "now" (the
+        // synthesized tail point in chart.js), so the bar strip's domain
+        // must match that, not just the last real sample -- otherwise
+        // every bar maps too far right, worst at the last one, which
+        // ends up drawn under the dashed "no data" tail instead of at
+        // its own timestamp.
+        var barsEnd = staleSinceTs != null ? Date.now() / 1000 : 1;
+        if (staleSinceTs == null && points.length) {
+          barsEnd = points[points.length - 1][0];
+        }
+        window.renderChangeBars(document.getElementById("chart-bars"), data.bars, {
+          start: points.length ? points[0][0] : 0,
+          end: barsEnd,
+        });
+        chartStats.textContent = "";
+        [
+          ["OPEN", formatValue(metric.open)],
+          ["HIGH", formatValue(metric.high)],
+          ["LOW", formatValue(metric.low)],
+          ["AVG/DAY", formatValue(metric.avg_per_day)],
+          ["CHANGES", metric.changes],
+        ].forEach(function (pair) {
+          var span = document.createElement("span");
+          var b = document.createElement("b");
+          b.textContent = pair[1];
+          span.appendChild(document.createTextNode(pair[0] + " "));
+          span.appendChild(b);
+          chartStats.appendChild(span);
+        });
+      })
+      .catch(function (err) {
+        console.error(err);
+      });
+  }
+
   function render(data) {
     var metricsByKey = {};
     data.metrics.forEach(function (m) {
       metricsByKey[m.key] = m;
     });
+    state.metricsByKey = metricsByKey;
 
     emptyState.hidden = data.metrics.length > 0;
     indexStrip.hidden = data.metrics.length === 0;
     document.getElementById("watchlist").hidden = data.metrics.length === 0;
+    document.getElementById("middle-band").hidden = data.metrics.length === 0;
 
     renderIndexStrip(data.pinned, metricsByKey);
     renderWatchlist(data.metrics);
     renderStatusLine(data.plugins);
+    renderMovers(data.metrics);
+    renderLatestChanges(data.recent_changes, metricsByKey);
 
     state.lastFetchedAt = Date.now();
     updateUpdatedLabel();
 
     var current = selectedKey();
-    highlightSelection(current && metricsByKey[current] ? current : data.pinned[0]);
+    var selected = current && metricsByKey[current] ? current : data.pinned[0];
+    highlightSelection(selected);
+    if (selected) loadChartFor(selected);
   }
 
   function fetchOverview() {
@@ -431,6 +570,12 @@
     } catch (e) {
       /* ignore */
     }
+    // The big chart and change bars resolve their colors from CSS custom
+    // properties once, at render time (chart.js's cssVar()) -- without
+    // this, they'd keep the previous theme's colors until the next 60s
+    // auto-refresh happened to re-trigger loadChartFor.
+    var current_key = selectedKey();
+    if (current_key && state.metricsByKey[current_key]) loadChartFor(current_key);
   });
 
   // --- Refresh --------------------------------------------------------

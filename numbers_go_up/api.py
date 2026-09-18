@@ -31,6 +31,80 @@ DEFAULT_UNHEALTHY_FAILURES = 3
 # keeping responses reasonable, not performance.
 MAX_HOURS = 8760
 
+# Range bounds in hours, shared by /api/stats/overview, /api/stats/history,
+# and /m/{key} -- the same six named ranges everywhere in the app. ALL has
+# no fixed bound: each series starts at its own first sample.
+RANGE_HOURS = {
+    "1D": 24,
+    "1W": 24 * 7,
+    "1M": 24 * 30,
+    "3M": 24 * 90,
+    "1Y": 24 * 365,
+}
+VALID_RANGES = (*RANGE_HOURS, "ALL")
+
+# Change-bar bucket width in seconds, keyed by named range: 1D->1h, 1W->6h,
+# 1M/3M->1d, 1Y/ALL->1w, per the big chart's change-bar spec.
+BAR_BUCKET_SECONDS = {
+    "1D": 3600,
+    "1W": 6 * 3600,
+    "1M": 86400,
+    "3M": 86400,
+    "1Y": 7 * 86400,
+    "ALL": 7 * 86400,
+}
+
+
+def _bar_bucket_seconds(range_key: str | None, hours: int | None) -> int:
+    """The change-bar bucket width for this request: exact per
+    :data:`BAR_BUCKET_SECONDS` when a named ``range`` was given, else the
+    same table applied to the closest range by span for a legacy ``hours``
+    call.
+    """
+    if range_key is not None:
+        return BAR_BUCKET_SECONDS[range_key]
+    if hours <= 24:
+        return BAR_BUCKET_SECONDS["1D"]
+    if hours <= 168:
+        return BAR_BUCKET_SECONDS["1W"]
+    if hours <= 2160:
+        return BAR_BUCKET_SECONDS["1M"]
+    return BAR_BUCKET_SECONDS["1Y"]
+
+
+def _bucket_changes(
+    points: list[tuple[int, float]], bucket_seconds: int
+) -> list[dict[str, Any]]:
+    """Net change per bucket: the last value in each bucket minus the last
+    value in the previous non-empty bucket (or, for the first bucket, minus
+    ``points[0]`` -- the carried-forward open). A bucket with no points is
+    simply absent, per the change-bar spec ("empty buckets drawn as
+    nothing"), not filled with a zero.
+    """
+    if len(points) < 2:
+        return []
+
+    open_value = points[0][1]
+    origin = points[0][0]
+
+    last_per_bucket: dict[int, float] = {}
+    for ts, value in points:
+        index = (ts - origin) // bucket_seconds
+        last_per_bucket[index] = value
+
+    bars = []
+    previous_value = open_value
+    for index in sorted(last_per_bucket):
+        value = last_per_bucket[index]
+        bars.append(
+            {
+                "ts": origin + index * bucket_seconds,
+                "change": value - previous_value,
+            }
+        )
+        previous_value = value
+    return bars
+
 
 def _iso(ts: int | None) -> str | None:
     if ts is None:
@@ -94,20 +168,45 @@ def stats_latest(request: Request) -> dict[str, Any]:
 
 @router.get("/stats/history")
 def stats_history(
-    request: Request, metric: str, hours: int = Query(..., gt=0, le=MAX_HOURS)
+    request: Request,
+    metric: str,
+    hours: int | None = Query(None, gt=0, le=MAX_HOURS),
+    range: str | None = Query(None),
 ) -> dict[str, Any]:
+    if (hours is None) == (range is None):
+        raise HTTPException(
+            status_code=422,
+            detail="Exactly one of `hours` or `range` is required",
+        )
+    if range is not None and range not in VALID_RANGES:
+        raise HTTPException(
+            status_code=422,
+            detail=f"range must be one of {VALID_RANGES}, got {range!r}",
+        )
+
     db_path = request.app.state.config["storage"]["path"]
     series = storage.get_series_by_key(db_path, metric)
     if series is None:
         raise HTTPException(status_code=404, detail=f"Unknown metric {metric!r}")
 
     now = int(time.time())
-    start = now - hours * 3600
+    if hours is not None:
+        start = now - hours * 3600
+    elif range == "ALL":
+        # Everything from the series' first sample: history() already
+        # returns nothing before whatever samples exist, so a start of 0
+        # (long before any real timestamp) is exactly "from the beginning".
+        start = 0
+    else:
+        start = now - RANGE_HOURS[range] * 3600
+
     points = storage.history(db_path, series["id"], start, now)
+    bucket_seconds = _bar_bucket_seconds(range, hours)
 
     return {
         "metric": metric,
         "points": [{"ts": ts, "value": value} for ts, value in points],
+        "bars": _bucket_changes(points, bucket_seconds),
     }
 
 

@@ -449,6 +449,23 @@ def get_series_by_key(db_path: str | Path, metric_key: str) -> sqlite3.Row | Non
         ).fetchone()
 
 
+def get_any_series_by_key(db_path: str | Path, metric_key: str) -> sqlite3.Row | None:
+    """The metric_series row for ``metric_key``, active or not -- None if
+    the key was never seen. Unlike :func:`get_series_by_key`, which
+    /api/stats/history and /api/stats/delta use and which 404s a
+    deactivated key, the dashboard's detail page (``/m/{key}``) renders an
+    inactive series too (its history is kept), with an "inactive" chip.
+    """
+    with contextlib.closing(connect(db_path)) as conn:
+        conn.row_factory = sqlite3.Row
+        return conn.execute(
+            "SELECT id, metric_key, plugin_name, kind, label, unit, icon, "
+            "last_value, last_seen, first_seen, active, attrs FROM metric_series "
+            "WHERE metric_key = ?",
+            (metric_key,),
+        ).fetchone()
+
+
 def latest_run(db_path: str | Path, plugin_name: str) -> sqlite3.Row | None:
     """The single newest plugin_runs row for ``plugin_name``, whatever its
     outcome. None if the plugin has never run.
@@ -572,6 +589,72 @@ def range_stats(
     """
     with contextlib.closing(connect(db_path)) as conn:
         return range_stats_conn(conn, series_id, start, end)
+
+
+def recorded_changes(
+    db_path: str | Path, series_id: int, start: int, end: int, limit: int
+) -> list[dict[str, Any]]:
+    """The ``limit`` newest stored samples for ``series_id`` in ``(start,
+    end]``, newest first, each with its signed change from the previous
+    stored sample (across the whole series history, not just the range, so
+    the oldest row returned still has a correct change).
+
+    This is exactly what's stored, heartbeats included: a heartbeat row
+    with no real change comes back with ``change == 0`` rather than being
+    filtered out, unlike :func:`recent_changes`.
+    """
+    with contextlib.closing(connect(db_path)) as conn:
+        rows = conn.execute(
+            """
+            SELECT ts, value, value - LAG(value) OVER (ORDER BY ts) AS change
+            FROM samples
+            WHERE series_id = ?
+            ORDER BY ts
+            """,
+            (series_id,),
+        ).fetchall()
+
+    in_range = [
+        {"ts": ts, "value": value, "change": 0 if change is None else change}
+        for ts, value, change in rows
+        if start < ts <= end
+    ]
+    in_range.sort(key=lambda row: row["ts"], reverse=True)
+    return in_range[:limit]
+
+
+def recent_changes(db_path: str | Path, limit: int) -> list[sqlite3.Row]:
+    """The ``limit`` newest value-to-previous-value changes across every
+    active series, newest first.
+
+    A ``LAG()`` window over ``samples`` (joined to ``metric_series`` for the
+    key and active flag) gives each sample's change from the one before it
+    in the same series; a null change (a series' very first sample, nothing
+    to compare against) or a zero change (a heartbeat with no real change)
+    is dropped, so only genuine value changes ever show up here.
+    """
+    with contextlib.closing(connect(db_path)) as conn:
+        conn.row_factory = sqlite3.Row
+        return conn.execute(
+            """
+            SELECT metric_key, ts, value, change FROM (
+                SELECT
+                    ms.metric_key AS metric_key,
+                    ms.active AS active,
+                    s.ts AS ts,
+                    s.value AS value,
+                    s.value - LAG(s.value) OVER (
+                        PARTITION BY s.series_id ORDER BY s.ts
+                    ) AS change
+                FROM samples s
+                JOIN metric_series ms ON ms.id = s.series_id
+            )
+            WHERE active = 1 AND change IS NOT NULL AND change != 0
+            ORDER BY ts DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
 
 
 def history(
