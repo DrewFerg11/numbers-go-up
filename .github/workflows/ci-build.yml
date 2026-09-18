@@ -215,18 +215,38 @@ jobs:
   armv7-smoke:
     name: arm/v7 boot smoke test
     runs-on: ubuntu-latest
-    # Not on every PR: QEMU emulation adds real wall time, and the fast
-    # amd64 job above is the PR signal. Runs on push to main and on-demand.
-    if: github.event_name != 'pull_request'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
 
-      - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+      # Not on every PR -- QEMU emulation adds real wall time, and the fast
+      # amd64 job above is the PR signal for most changes. But a blanket
+      # "PRs never run this" would mean the first-ever arm/v7 build+boot
+      # races the edge publish on the merge push itself. So: always on
+      # push-to-main/workflow_dispatch, and on a PR only when it touches
+      # something arm/v7-relevant (deps, the Dockerfile, or these
+      # workflows), so that PR blocks on it before merging.
+      - id: relevant
+        run: |
+          if [ "${{ github.event_name }}" != "pull_request" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          elif git diff --name-only "${{ github.event.pull_request.base.sha }}" HEAD \
+               | grep -qE '^(Dockerfile|requirements.*\.txt|\.github/workflows/(ci-build|publish|release)\.yml)$'; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - if: steps.relevant.outputs.run == 'true'
+        uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
         with:
           platforms: arm
 
-      - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
-      - uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+      - if: steps.relevant.outputs.run == 'true'
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+      - if: steps.relevant.outputs.run == 'true'
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: .
           platforms: linux/arm/v7
@@ -239,7 +259,8 @@ jobs:
       # Nobody has ever booted this architecture's image without this test --
       # QEMU makes the boot itself slower, so this allows more time than the
       # native amd64 job's health-check loop.
-      - name: Boot the image under QEMU and check /health
+      - if: steps.relevant.outputs.run == 'true'
+        name: Boot the image under QEMU and check /health
         run: |
           docker run -d --name ngu-armv7 -p 8081:8080 app:ci-armv7
           for i in $(seq 1 90); do
@@ -250,10 +271,10 @@ jobs:
           docker logs ngu-armv7
           exit 1
 
-      - name: Container logs
-        if: always()
+      - if: always() && steps.relevant.outputs.run == 'true'
+        name: Container logs
         run: docker logs ngu-armv7 || true
 
-      - name: Clean up
-        if: always()
+      - if: always() && steps.relevant.outputs.run == 'true'
+        name: Clean up
         run: docker rm -f ngu-armv7 || true
