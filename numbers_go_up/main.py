@@ -4,49 +4,13 @@ from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
-from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
+from fastapi_offline import FastAPIOffline
 
 from numbers_go_up import __version__, api, dashboard, http, migrate, netfs, scheduler
 from numbers_go_up.api import HealthResponse
 from numbers_go_up.config import load_config
 from numbers_go_up.plugins import discover_plugin_names, discover_plugins
-
-# Vendored under static/vendor/swagger-ui/ (see NOTICE.md) -- never a CDN,
-# so /docs renders with the container's network fully blocked (#92).
-_SWAGGER_UI_VENDOR_PATH = "/static/vendor/swagger-ui"
-
-_SWAGGER_UI_HTML = f"""<!doctype html>
-<html>
-<head>
-<meta charset="utf-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>numbers-go-up &mdash; API docs</title>
-<link rel="stylesheet" href="{_SWAGGER_UI_VENDOR_PATH}/swagger-ui.css" />
-</head>
-<body>
-<div id="swagger-ui"></div>
-<script src="{_SWAGGER_UI_VENDOR_PATH}/swagger-ui-bundle.js"></script>
-<script src="{_SWAGGER_UI_VENDOR_PATH}/swagger-ui-standalone-preset.js"></script>
-<script>
-  window.onload = function () {{
-    window.ui = SwaggerUIBundle({{
-      url: "/openapi.json",
-      dom_id: "#swagger-ui",
-      presets: [
-        SwaggerUIBundle.presets.apis,
-        SwaggerUIStandalonePreset
-      ],
-      layout: "BaseLayout",
-      deepLinking: true,
-      showExtensions: true,
-      showCommonExtensions: true
-    }});
-  }};
-</script>
-</body>
-</html>
-"""
 
 ENV_LOG_LEVEL = "NGU_LOG_LEVEL"
 LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s: %(message)s"
@@ -155,7 +119,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         shared_http_client.close()
 
 
-app = FastAPI(
+# FastAPIOffline (not FastAPI directly) serves /docs and /redoc from its
+# own bundled Swagger UI / ReDoc assets instead of a CDN, so both render
+# with the container's network fully blocked (#92) -- pulled via pip at
+# build time like every other dependency, not vendored in this repo.
+app = FastAPIOffline(
     title="numbers-go-up",
     version=__version__,
     description=(
@@ -172,30 +140,12 @@ app = FastAPI(
         "name": "MIT",
         "url": "https://github.com/DrewFerg11/numbers-go-up/blob/main/LICENSE",
     },
-    # Both replaced below: /docs is served from vendored assets so it works
-    # fully offline (#92), and /redoc would need a second vendored bundle
-    # for no real gain over /docs, so it's dropped rather than left broken.
-    docs_url=None,
-    redoc_url=None,
     lifespan=lifespan,
 )
 app.include_router(api.router)
 app.include_router(api.health_router)
 app.include_router(dashboard.router)
 app.mount("/static", StaticFiles(directory=str(dashboard.STATIC_DIR)), name="static")
-
-
-@app.get(
-    "/docs",
-    include_in_schema=False,
-    response_class=HTMLResponse,
-)
-def swagger_ui() -> HTMLResponse:
-    """Self-contained Swagger UI. CSS/JS are vendored under
-    ``static/vendor/swagger-ui/`` (see NOTICE.md) rather than loaded from a
-    CDN, so this renders on a LAN-only box with no egress -- the same
-    reasoning as vendoring uPlot for the dashboard's chart."""
-    return HTMLResponse(_SWAGGER_UI_HTML)
 
 
 @app.get(

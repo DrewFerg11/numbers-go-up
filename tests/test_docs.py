@@ -1,5 +1,6 @@
-"""/docs, /redoc, and /openapi.json (#92): vendored Swagger UI, no CDN,
-and every hand-written response model actually lands in the schema."""
+"""/docs, /redoc, and /openapi.json (#92): offline Swagger UI/ReDoc via
+fastapi-offline (no CDN), and every hand-written response model actually
+lands in the schema."""
 
 import re
 
@@ -20,10 +21,17 @@ DOCUMENTED_ENDPOINTS = [
     ("/health/plugins", "get", "PluginsHealthResponse"),
 ]
 
-# href="..."/src="..." pointing anywhere but this app's own /static/ or
-# /openapi.json -- a CDN reference is exactly what would blank-page /docs
-# on a LAN-only box with no egress.
+# href="..."/src="..." pointing anywhere but fastapi-offline's own bundled
+# static mount or /openapi.json -- a CDN reference is exactly what would
+# blank-page /docs on a LAN-only box with no egress.
 _ASSET_URL = re.compile(r'(?:href|src)="([^"]+)"')
+
+
+def _assert_only_local_assets(html: str) -> None:
+    urls = _ASSET_URL.findall(html)
+    assert urls, "expected at least one asset URL in the page"
+    for url in urls:
+        assert url.startswith("/static-offline-docs/"), f"non-local asset URL: {url}"
 
 
 def test_docs_returns_200_and_references_only_local_assets():
@@ -31,11 +39,7 @@ def test_docs_returns_200_and_references_only_local_assets():
 
     assert response.status_code == 200
     assert "text/html" in response.headers["content-type"]
-
-    urls = _ASSET_URL.findall(response.text)
-    assert urls, "expected at least one asset URL in the docs page"
-    for url in urls:
-        assert url.startswith("/static/"), f"non-local asset URL: {url}"
+    _assert_only_local_assets(response.text)
 
 
 def test_docs_does_not_reference_a_cdn():
@@ -52,10 +56,16 @@ def test_docs_is_excluded_from_the_schema_it_documents():
     assert "/docs" not in schema["paths"]
 
 
-def test_redoc_is_disabled():
+def test_redoc_returns_200_and_references_only_local_assets():
+    # fastapi-offline bundles ReDoc too, so unlike a hand-vendored Swagger
+    # UI (which would need a second bundle for no real gain), this comes
+    # free -- no reason to leave it disabled.
     response = client.get("/redoc")
 
-    assert response.status_code == 404
+    assert response.status_code == 200
+    assert "text/html" in response.headers["content-type"]
+    _assert_only_local_assets(response.text)
+    assert "cdn." not in response.text
 
 
 def test_openapi_schema_has_a_populated_component_for_every_documented_endpoint():
