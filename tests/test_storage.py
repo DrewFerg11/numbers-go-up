@@ -1,5 +1,6 @@
 import json
 import sqlite3
+import time
 
 import pytest
 
@@ -11,6 +12,12 @@ def db_path(tmp_path):
     path = tmp_path / "stats.db"
     migrate.run_migrations(path)
     return path
+
+
+def _time_it(fn):
+    start = time.perf_counter()
+    fn()
+    return time.perf_counter() - start
 
 
 def _series_row(db_path, series_id):
@@ -808,38 +815,77 @@ class TestRangeStatsBulkConn:
         finally:
             conn.close()
 
-    def test_anchor_and_firsts_queries_are_index_seeks_not_temp_btrees(self, db_path):
-        # Regression pin for a real perf bug caught in review: a
-        # ROW_NUMBER()/PARTITION BY translation of "newest/oldest sample
-        # per series" reads naturally, but SQLite has to materialize every
-        # matching row into a temp B-tree to number them before filtering
-        # to rn=1/rn=n -- turning an index seek into a sort, exactly where
-        # this function's whole point is to be fast. The MAX(ts)/MIN(ts)
-        # GROUP BY form it uses instead must compile to a plain index
-        # search on every query this function issues.
+    def test_anchor_seek_is_an_index_search_not_a_scan(self, db_path):
+        # Regression pin for a real perf bug caught in review, twice: a
+        # ROW_NUMBER()/PARTITION BY translation of "newest sample per
+        # series" reads naturally but forces a temp-B-tree materialization
+        # of every matching row before it can pick rn=1, and a seemingly
+        # index-friendly MAX(ts) GROUP BY loses MIN/MAX's own index
+        # short-circuit the moment a second bare column is selected
+        # alongside it -- both measured *slower* than the plain per-series
+        # "ORDER BY ts DESC LIMIT 1" seek this function actually uses.
+        # "the plan says SEARCH" turned out not to be sufficient either
+        # time (both replaced queries also said SEARCH), so this pins the
+        # query text itself, not just its plan.
         anchored = self._series(db_path, "demo.anchored")
-        younger = self._series(db_path, "demo.younger")
         storage.record_sample(db_path, anchored, 0, 10, heartbeat_seconds=1)
-        storage.record_sample(db_path, younger, 500, 20, heartbeat_seconds=1)
+
+        plan = "\n".join(
+            " ".join(str(cell) for cell in row)
+            for row in storage.connect(db_path).execute(
+                "EXPLAIN QUERY PLAN "
+                "SELECT value FROM samples WHERE series_id = ? AND ts <= ? "
+                "ORDER BY ts DESC LIMIT 1",
+                (anchored, 100),
+            )
+        )
+
+        assert "SEARCH" in plan
+        assert "SCAN" not in plan
+        assert "GROUP BY" not in plan.upper()
+
+    def test_bulk_is_not_grossly_slower_than_a_per_series_loop(self, db_path):
+        # The actual, easy-to-lose property a plan-shape assertion alone
+        # doesn't pin (per review): whatever range_stats_bulk_conn does
+        # internally, it must not regress on the very thing it exists to
+        # speed up. A generous ratio bound keeps this from flaking on a
+        # loaded CI runner while still catching the kind of regression
+        # review caught twice (15-28x slower).
+        series_ids = [self._series(db_path, f"demo.series{i}") for i in range(40)]
+        for series_id in series_ids:
+            for t in range(0, 2000, 20):
+                storage.record_sample(db_path, series_id, t, t, heartbeat_seconds=1)
+        # Half the series are "younger than the range" (no anchor), to
+        # exercise the firsts/VALUES-join path too, not just the anchored
+        # one.
+        start = 1000
+        starts = {
+            series_id: start if i % 2 == 0 else 1500
+            for i, series_id in enumerate(series_ids)
+        }
+        end = 2000
 
         conn = storage.connect(db_path)
         try:
-            storage.range_stats_bulk_conn(conn, {anchored: 100, younger: 100}, 1000)
 
-            plans = "\n".join(
-                " ".join(str(cell) for cell in row)
-                for row in conn.execute(
-                    "EXPLAIN QUERY PLAN "
-                    "SELECT series_id, MAX(ts), value FROM samples "
-                    "WHERE series_id IN (?, ?) AND ts <= ? GROUP BY series_id",
-                    (anchored, younger, 100),
-                )
-            )
+            def loop_stats():
+                return {
+                    series_id: storage.range_stats_conn(
+                        conn, series_id, starts[series_id], end
+                    )
+                    for series_id in series_ids
+                }
+
+            def bulk_stats():
+                return storage.range_stats_bulk_conn(conn, starts, end)
+
+            # Best-of-3 for both, to smooth over one-off scheduling noise.
+            loop_time = min(_time_it(loop_stats) for _ in range(3))
+            bulk_time = min(_time_it(bulk_stats) for _ in range(3))
         finally:
             conn.close()
 
-        assert "SEARCH" in plans
-        assert "TEMP B-TREE" not in plans.upper()
+        assert bulk_time < loop_time * 3
 
 
 class TestRecentChanges:
