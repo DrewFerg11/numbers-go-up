@@ -115,6 +115,14 @@ jobs:
           - platform: linux/arm64
             runner: ubuntu-24.04-arm      # free on public repos; fails on private
             suffix: arm64
+          # Not "arm/v7": the slash breaks the digest-${{ matrix.suffix }}
+          # artifact name and the buildx cache scope. No free native
+          # 32-bit-ARM runner exists (see publish.yml's comment), so this
+          # one platform builds under QEMU -- affordable because
+          # requirements.txt drops uvicorn[standard].
+          - platform: linux/arm/v7
+            runner: ubuntu-latest
+            suffix: armv7
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -123,6 +131,11 @@ jobs:
         run: echo "IMAGE=${REGISTRY}/${REPO,,}" >> "$GITHUB_ENV"
         env:
           REPO: ${{ github.repository }}
+
+      - if: matrix.platform == 'linux/arm/v7'
+        uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+        with:
+          platforms: arm
 
       - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
 
@@ -441,7 +454,7 @@ jobs:
             echo
             echo "Digest: \`${DIGEST}\`"
             echo
-            echo "Multi-arch: \`linux/amd64\`, \`linux/arm64\`. Build provenance is attested and pushed to the registry."
+            echo "Multi-arch: \`linux/amd64\`, \`linux/arm64\`, \`linux/arm/v7\`. Build provenance is attested and pushed to the registry."
           } >> /tmp/notes.md
         env:
           GH_TOKEN: ${{ github.token }}

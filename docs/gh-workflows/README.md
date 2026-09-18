@@ -12,6 +12,24 @@ reasoning behind a few choices that aren't obvious from the YAML alone.
 | `sources-canary.yml` | schedule | probes each plugin's live endpoint, files an issue on breakage |
 | `pr-labeler.yml` | PR opened/edited | labels PRs from their Conventional Commit title prefix |
 
+## Multi-arch: native runners, not QEMU
+
+`amd64` and `arm64` build **natively** in parallel (`ubuntu-latest` and
+`ubuntu-24.04-arm`, the latter free on public repos), then merge into one
+manifest. This avoids QEMU, which is roughly an order of magnitude slower
+and far flakier for any compiled wheel.
+
+`linux/arm/v7` (32-bit ARM -- older Raspberry Pis) is the one exception,
+built under QEMU on `ubuntu-latest`. There's no free native 32-bit-ARM
+runner: `ubuntu-24.04-arm` is aarch64, and Armv9-A silicon (GitHub's free
+arm64 runners included) has dropped AArch32 support entirely, so 32-bit ARM
+binaries can't execute there at all. QEMU's real cost is compiling C
+extensions, not running Python, so `requirements.txt` uses plain `uvicorn`
+instead of `uvicorn[standard]` -- the `[standard]` extra's `uvloop` and
+`httptools` are the only dependencies without a prebuilt `armv7l` wheel, and
+without them the whole dependency tree installs as wheels even under
+emulation. Keep it that way; restoring the extra makes `arm/v7` slow again.
+
 ## Why GHCR and not Docker Hub
 
 GHCR is the canonical registry: it's free with no pull-rate limit for public

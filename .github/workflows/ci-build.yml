@@ -4,6 +4,7 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch: {}
 
 permissions:
   contents: read
@@ -210,3 +211,49 @@ jobs:
       - name: Clean up test volumes
         if: always()
         run: sudo rm -rf /tmp/ngu-data /tmp/ngu-hardened-data
+
+  armv7-smoke:
+    name: arm/v7 boot smoke test
+    runs-on: ubuntu-latest
+    # Not on every PR: QEMU emulation adds real wall time, and the fast
+    # amd64 job above is the PR signal. Runs on push to main and on-demand.
+    if: github.event_name != 'pull_request'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+        with:
+          platforms: arm
+
+      - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+      - uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          platforms: linux/arm/v7
+          push: false
+          tags: app:ci-armv7
+          load: true
+          cache-from: type=gha,scope=armv7
+          cache-to: type=gha,mode=max,scope=armv7
+
+      # Nobody has ever booted this architecture's image without this test --
+      # QEMU makes the boot itself slower, so this allows more time than the
+      # native amd64 job's health-check loop.
+      - name: Boot the image under QEMU and check /health
+        run: |
+          docker run -d --name ngu-armv7 -p 8081:8080 app:ci-armv7
+          for i in $(seq 1 90); do
+            if curl -fsS localhost:8081/health; then echo; exit 0; fi
+            sleep 2
+          done
+          echo "::error::/health never came up under QEMU"
+          docker logs ngu-armv7
+          exit 1
+
+      - name: Container logs
+        if: always()
+        run: docker logs ngu-armv7 || true
+
+      - name: Clean up
+        if: always()
+        run: docker rm -f ngu-armv7 || true
