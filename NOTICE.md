@@ -27,3 +27,8 @@ meet before it's accepted.
   Copyright (c) 2022 Leon Sorokin. Vendored at
   `numbers_go_up/static/vendor/uplot/` (license file alongside) for the
   dashboard's big chart. Not loaded from a CDN; served from this repo.
+- **[Swagger UI](https://github.com/swagger-api/swagger-ui)** v5.33.0,
+  Apache License 2.0, Copyright (c) 2016 SmartBear Software. Vendored at
+  `numbers_go_up/static/vendor/swagger-ui/` (license file alongside) for
+  `/docs`. Not loaded from a CDN; served from this repo so the page renders
+  with the container's network fully blocked.

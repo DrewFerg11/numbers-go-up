@@ -204,6 +204,12 @@ Pin up to 6 metrics to the index strip with `dashboard.pinned` in
 `config.yaml` (see [`config.yaml.example`](config.yaml.example)); leave it
 empty and the first 4 cumulative metrics are used instead.
 
+## API
+
+The dashboard's topbar links to `/docs`, a self-contained Swagger UI (no
+CDN — it renders with the container's network fully blocked) for the REST
+API; the raw schema is at `/openapi.json`.
+
 ## Roadmap
 
 MVP is a service that builds and runs in Docker, collects from one real source,

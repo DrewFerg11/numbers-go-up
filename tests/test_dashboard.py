@@ -283,6 +283,14 @@ def test_index_has_no_external_asset_urls(tmp_path):
             assert 'href="http' not in content
 
 
+def test_index_topbar_links_to_the_api_docs(tmp_path):
+    client, _ = client_for(tmp_path)
+
+    response = client.get("/")
+
+    assert '<a class="api-link" href="/docs"' in response.text
+
+
 def test_index_escapes_a_malicious_label(tmp_path):
     # The page shell never inlines per-request metric data server-side --
     # everything comes from a client-side fetch of /api/stats/overview and
@@ -669,6 +677,17 @@ def test_detail_known_key_renders(tmp_path):
 
     assert response.status_code == 200
     assert "acme.widgets" in response.text
+
+
+def test_detail_topbar_links_to_the_api_docs(tmp_path):
+    client, db_path = client_for(tmp_path)
+    now = int(time.time())
+    series_id = seed_series(db_path, "acme.widgets", now=now)
+    storage.record_sample(db_path, series_id, now, 10, DAY)
+
+    response = client.get("/m/acme.widgets")
+
+    assert '<a class="api-link" href="/docs"' in response.text
 
 
 def test_detail_inactive_series_renders_with_chip(tmp_path):
