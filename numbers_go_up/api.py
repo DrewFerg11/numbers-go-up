@@ -368,14 +368,18 @@ def _parse_attrs(attrs_json: str | None) -> dict[str, Any]:
     reports on every series that ever existed, including ones no plugin
     will ever rewrite, so a corrupt row (a hand-edited DB, a bug in some
     future writer) degrades to an empty dict rather than 500ing the whole
-    catalogue.
+    catalogue. That includes valid JSON that isn't an object ("5", "[]") --
+    ``json.loads`` accepts those without complaint, and MetricCatalogueEntry
+    (#92) requires a dict, so passing one through would 500 every row in
+    the response, not just the corrupt one.
     """
     if not attrs_json:
         return {}
     try:
-        return json.loads(attrs_json)
+        parsed = json.loads(attrs_json)
     except json.JSONDecodeError:
         return {}
+    return parsed if isinstance(parsed, dict) else {}
 
 
 @router.get(

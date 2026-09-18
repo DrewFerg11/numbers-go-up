@@ -170,6 +170,35 @@ def test_metrics_survives_corrupt_attrs_json(tmp_path):
     assert metric["attrs"] == {}
 
 
+def test_metrics_survives_valid_non_object_attrs_json(tmp_path):
+    # "[]", "5", etc. are valid JSON that json.loads() parses without
+    # complaint, so the invalid-JSON guard alone doesn't degrade them --
+    # they'd otherwise reach MetricCatalogueEntry.attrs (a dict field) and
+    # 500 the whole catalogue response, not just this one row (#93 review).
+    client, db_path = client_for(tmp_path)
+    now = int(time.time())
+    storage.get_or_create_series(
+        db_path, "acme.array_attrs", "acme", "gauge", "Array", "u", "i", now
+    )
+    conn = storage.connect(db_path)
+    try:
+        conn.execute(
+            "UPDATE metric_series SET attrs = ? WHERE metric_key = ?",
+            ("[1, 2]", "acme.array_attrs"),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    response = client.get("/api/metrics")
+
+    assert response.status_code == 200
+    metric = next(
+        m for m in response.json()["metrics"] if m["key"] == "acme.array_attrs"
+    )
+    assert metric["attrs"] == {}
+
+
 # --- /api/plugins ------------------------------------------------------------
 
 
