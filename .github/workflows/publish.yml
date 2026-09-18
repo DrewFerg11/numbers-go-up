@@ -47,6 +47,11 @@ jobs:
             suffix: arm64
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0   # setuptools-scm needs full history + tags
+
+      - name: Generate version file
+        run: pip install setuptools-scm && python -m setuptools_scm --force-write-version-files
 
       # GHCR requires lowercase image names; github.repository is mixed-case.
       - name: Resolve image name
