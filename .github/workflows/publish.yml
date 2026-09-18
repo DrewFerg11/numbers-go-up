@@ -4,6 +4,12 @@
 # replaces QEMU emulation, which is roughly an order of magnitude slower and
 # far flakier for any compiled wheel.
 #
+# linux/arm/v7 is the one exception: there is no free native 32-bit-ARM
+# runner (ubuntu-24.04-arm is aarch64, and Armv9-A silicon like GitHub's
+# Cobalt 100 runners has dropped AArch32 support entirely), so it builds
+# under QEMU. That's only affordable because requirements.txt drops
+# uvicorn[standard] -- see docs/gh-workflows/README.md ("Multi-arch").
+#
 # Tagged v* releases (semver + latest, GitHub Release, provenance
 # attestation) are handled separately by release.yml, which is gated by the
 # "release" environment and the "release tags" ruleset -- this workflow never
@@ -45,8 +51,18 @@ jobs:
           - platform: linux/arm64
             runner: ubuntu-24.04-arm      # free on public repos; fails on private
             suffix: arm64
+          # Not "arm/v7": the slash breaks the digest-${{ matrix.suffix }}
+          # artifact name and the buildx cache scope.
+          - platform: linux/arm/v7
+            runner: ubuntu-latest
+            suffix: armv7
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0   # setuptools-scm needs full history + tags
+
+      - name: Generate version file
+        run: pip install setuptools-scm && python -m setuptools_scm --force-write-version-files
 
       # GHCR requires lowercase image names; github.repository is mixed-case.
       - name: Resolve image name
@@ -54,9 +70,15 @@ jobs:
         env:
           REPO: ${{ github.repository }}
 
+      # Only linux/arm/v7 needs emulation; amd64 and arm64 stay native.
+      - if: matrix.platform == 'linux/arm/v7'
+        uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+        with:
+          platforms: arm
+
       - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
 
-      - uses: docker/login-action@b45d80f862d83dbcd57f89517bcf500b2ab88fb2 # v4.0.0
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -79,7 +101,7 @@ jobs:
         env:
           DIGEST: ${{ steps.build.outputs.digest }}
 
-      - uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: digest-${{ matrix.suffix }}
           path: /tmp/digests/*
@@ -106,14 +128,14 @@ jobs:
 
       - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
 
-      - uses: docker/login-action@b45d80f862d83dbcd57f89517bcf500b2ab88fb2 # v4.0.0
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - id: meta
-        uses: docker/metadata-action@030e881283bb7a6894de51c315a6bfe6a94e05cf # v6.0.0
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
         with:
           images: ${{ env.IMAGE }}
           tags: |

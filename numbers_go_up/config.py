@@ -68,6 +68,19 @@ EXAMPLE_CONFIG = """\
 #     max: 20                    # cardinality guard on repos
 #     # Optional token: set the NGU_GITHUB_TOKEN env var, never here, to
 #     # raise the unauthenticated 60/hr budget to 5,000/hr.
+#
+#   youtube:
+#     enabled: true              # every plugin is OFF until explicitly enabled
+#     source: official           # the only source this plugin ships
+#     channels:
+#       - key: main              # metric-key slug: [a-z0-9_-]+, permanent
+#         id: "UCxxxxxxxxxxxxxxxxxxxxxx"   # case-sensitive; not a handle/URL
+#     max: 5                     # cardinality guard on channels
+#     # Required: set the NGU_YOUTUBE_API_KEY env var, never here.
+#
+# dashboard:
+#   pinned: []        # up to 6 metric keys for the index strip
+#                      # empty = first 4 cumulative metrics
 
 # mqtt:                          # omit this whole block to keep MQTT off
 #   host: "192.168.1.x"          # required; no default -- no block, no connection
@@ -76,6 +89,8 @@ EXAMPLE_CONFIG = """\
 #   tls: false                   # true = TLS with system CAs (usually port 8883)
 #   discovery_prefix: "homeassistant"
 #   topic_prefix: "numbers-go-up"
+#   include: []                  # glob patterns on metric_key; empty = everything
+#   exclude: []                  # glob patterns on metric_key; checked after include
 #   # Password: set the NGU_MQTT_PASSWORD env var, never here.
 """
 
@@ -100,6 +115,9 @@ def _defaults(data_dir: str) -> dict[str, Any]:
             "port": 8080,
         },
         "plugins": {},
+        "dashboard": {
+            "pinned": [],
+        },
     }
 
 

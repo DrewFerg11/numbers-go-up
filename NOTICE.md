@@ -28,3 +28,7 @@ meet before it's accepted.
   integration. Dual-licensed; used here under the
   [Eclipse Distribution License 1.0](https://www.eclipse.org/org/documents/edl-v10.php)
   (BSD-3-Clause).
+- **[uPlot](https://github.com/leeoniya/uPlot)** v1.6.31, MIT License,
+  Copyright (c) 2022 Leon Sorokin. Vendored at
+  `numbers_go_up/static/vendor/uplot/` (license file alongside) for the
+  dashboard's big chart. Not loaded from a CDN; served from this repo.

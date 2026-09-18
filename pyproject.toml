@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=68", "setuptools-scm>=8"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -11,10 +11,13 @@ license = "MIT"
 requires-python = ">=3.12"
 dependencies = [
     "fastapi",
-    "uvicorn[standard]",
+    # Plain uvicorn, not uvicorn[standard] -- see the comment in
+    # requirements.txt. Keep both declarations in sync.
+    "uvicorn",
     "pyyaml",
     "apscheduler>=3.11,<4",
     "httpx",
+    "jinja2",
     "paho-mqtt>=2,<3",
 ]
 
@@ -23,9 +26,14 @@ packages = ["numbers_go_up", "numbers_go_up.migrations", "numbers_go_up.plugins"
 
 [tool.setuptools.package-data]
 "numbers_go_up.migrations" = ["*.sql"]
+"numbers_go_up" = ["templates/*.html", "static/**/*"]
 
-[tool.setuptools.dynamic]
-version = { attr = "numbers_go_up.__version__" }
+[tool.setuptools_scm]
+write_to = "numbers_go_up/_version.py"
+# Edge builds (main, between tags) report e.g. "0.2.0.dev4" instead of
+# "0.2.0.dev4+gabcdef0" -- the +g<sha> local segment isn't valid in a
+# Docker tag and isn't useful in /health's version field either.
+local_scheme = "no-local-version"
 
 [tool.ruff]
 target-version = "py312"

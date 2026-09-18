@@ -14,6 +14,7 @@ import logging
 import sqlite3
 from collections.abc import Iterable
 from pathlib import Path
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -448,6 +449,23 @@ def get_series_by_key(db_path: str | Path, metric_key: str) -> sqlite3.Row | Non
         ).fetchone()
 
 
+def get_any_series_by_key(db_path: str | Path, metric_key: str) -> sqlite3.Row | None:
+    """The metric_series row for ``metric_key``, active or not -- None if
+    the key was never seen. Unlike :func:`get_series_by_key`, which
+    /api/stats/history and /api/stats/delta use and which 404s a
+    deactivated key, the dashboard's detail page (``/m/{key}``) renders an
+    inactive series too (its history is kept), with an "inactive" chip.
+    """
+    with contextlib.closing(connect(db_path)) as conn:
+        conn.row_factory = sqlite3.Row
+        return conn.execute(
+            "SELECT id, metric_key, plugin_name, kind, label, unit, icon, "
+            "last_value, last_seen, first_seen, active, attrs FROM metric_series "
+            "WHERE metric_key = ?",
+            (metric_key,),
+        ).fetchone()
+
+
 def latest_run(db_path: str | Path, plugin_name: str) -> sqlite3.Row | None:
     """The single newest plugin_runs row for ``plugin_name``, whatever its
     outcome. None if the plugin has never run.
@@ -475,6 +493,168 @@ def metric_keys_for_plugin(db_path: str | Path, plugin_name: str) -> list[str]:
             (plugin_name,),
         ).fetchall()
     return [row[0] for row in rows]
+
+
+def list_active_series_full(db_path: str | Path) -> list[sqlite3.Row]:
+    """Every active metric_series row with the extra columns the dashboard
+    overview needs (``first_seen``, ``attrs``) that :func:`list_series`
+    leaves out, ordered by metric_key.
+    """
+    with contextlib.closing(connect(db_path)) as conn:
+        conn.row_factory = sqlite3.Row
+        return conn.execute(
+            "SELECT id, metric_key, plugin_name, kind, label, unit, icon, "
+            "last_value, last_seen, first_seen, attrs FROM metric_series "
+            "WHERE active = 1 ORDER BY metric_key"
+        ).fetchall()
+
+
+def range_stats_conn(
+    conn: sqlite3.Connection, series_id: int, start: int, end: int
+) -> dict[str, Any]:
+    """Same as :func:`range_stats`, against an already-open connection.
+
+    The dashboard overview calls this once per active series on every
+    request (up to the pattern-key cap of 500 per plugin); opening a fresh
+    connection per series -- each paying its own five PRAGMA statements --
+    is the dominant cost at that scale, so callers doing many of these in
+    one request should open a single connection with :func:`connect` and
+    reuse it here rather than call :func:`range_stats` in a loop.
+    """
+    anchor = conn.execute(
+        "SELECT value FROM samples WHERE series_id = ? AND ts <= ? "
+        "ORDER BY ts DESC LIMIT 1",
+        (series_id, start),
+    ).fetchone()
+
+    if anchor is not None:
+        open_value = anchor[0]
+        after_ts = start
+        points: list[tuple[int, float]] = [(start, open_value)]
+    else:
+        # No sample at or before `start`: the series is younger than
+        # the range. Its own first sample becomes `open`, and only
+        # samples strictly after that one count toward `changes` --
+        # otherwise the opening sample would be double-counted, once
+        # as `open` and once as a "change".
+        first = conn.execute(
+            "SELECT ts, value FROM samples WHERE series_id = ? ORDER BY ts ASC LIMIT 1",
+            (series_id,),
+        ).fetchone()
+        if first is None:
+            open_value = None
+            after_ts = start
+            points = []
+        else:
+            open_value = first[1]
+            after_ts = first[0]
+            points = [(first[0], open_value)]
+
+    rows = conn.execute(
+        "SELECT ts, value FROM samples WHERE series_id = ? AND ts > ? AND ts <= ? "
+        "ORDER BY ts ASC",
+        (series_id, after_ts, end),
+    ).fetchall()
+
+    points.extend((row[0], row[1]) for row in rows)
+
+    values = [value for _, value in points]
+    return {
+        "open": open_value,
+        "high": max(values) if values else None,
+        "low": min(values) if values else None,
+        "changes": len(rows),
+        "points": points,
+    }
+
+
+def range_stats(
+    db_path: str | Path, series_id: int, start: int, end: int
+) -> dict[str, Any]:
+    """Everything the dashboard overview needs for one series over one range,
+    in a single connection.
+
+    ``open`` is the carried-forward value as of ``start`` when one exists,
+    else the series' very first sample (so a series younger than the range
+    still gets a non-null open, per the overview endpoint's contract).
+    ``points`` is ``[(ts, value), ...]``: the open point (if any) followed by
+    every literal sample in ``(start, end]`` -- the same shape
+    :func:`history` returns, plus ``high``/``low``/``changes`` computed from
+    the same rows so the overview endpoint doesn't need extra round trips.
+
+    A thin single-series wrapper around :func:`range_stats_conn` for
+    callers (tests, one-off queries) that don't already hold a connection
+    -- the dashboard overview loop uses :func:`range_stats_conn` directly
+    against one shared connection instead of calling this per series.
+    """
+    with contextlib.closing(connect(db_path)) as conn:
+        return range_stats_conn(conn, series_id, start, end)
+
+
+def recorded_changes(
+    db_path: str | Path, series_id: int, start: int, end: int, limit: int
+) -> list[dict[str, Any]]:
+    """The ``limit`` newest stored samples for ``series_id`` in ``(start,
+    end]``, newest first, each with its signed change from the previous
+    stored sample (across the whole series history, not just the range, so
+    the oldest row returned still has a correct change).
+
+    This is exactly what's stored, heartbeats included: a heartbeat row
+    with no real change comes back with ``change == 0`` rather than being
+    filtered out, unlike :func:`recent_changes`.
+    """
+    with contextlib.closing(connect(db_path)) as conn:
+        rows = conn.execute(
+            """
+            SELECT ts, value, value - LAG(value) OVER (ORDER BY ts) AS change
+            FROM samples
+            WHERE series_id = ?
+            ORDER BY ts
+            """,
+            (series_id,),
+        ).fetchall()
+
+    in_range = [
+        {"ts": ts, "value": value, "change": 0 if change is None else change}
+        for ts, value, change in rows
+        if start < ts <= end
+    ]
+    in_range.sort(key=lambda row: row["ts"], reverse=True)
+    return in_range[:limit]
+
+
+def recent_changes(db_path: str | Path, limit: int) -> list[sqlite3.Row]:
+    """The ``limit`` newest value-to-previous-value changes across every
+    active series, newest first.
+
+    A ``LAG()`` window over ``samples`` (joined to ``metric_series`` for the
+    key and active flag) gives each sample's change from the one before it
+    in the same series; a null change (a series' very first sample, nothing
+    to compare against) or a zero change (a heartbeat with no real change)
+    is dropped, so only genuine value changes ever show up here.
+    """
+    with contextlib.closing(connect(db_path)) as conn:
+        conn.row_factory = sqlite3.Row
+        return conn.execute(
+            """
+            SELECT metric_key, ts, value, change FROM (
+                SELECT
+                    ms.metric_key AS metric_key,
+                    ms.active AS active,
+                    s.ts AS ts,
+                    s.value AS value,
+                    s.value - LAG(s.value) OVER (
+                        PARTITION BY s.series_id ORDER BY s.ts
+                    ) AS change
+                FROM samples s
+                JOIN metric_series ms ON ms.id = s.series_id
+            )
+            WHERE active = 1 AND change IS NOT NULL AND change != 0
+            ORDER BY ts DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
 
 
 def history(

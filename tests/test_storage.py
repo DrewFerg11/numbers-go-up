@@ -678,3 +678,160 @@ class TestHistory:
         points = storage.history(db_path, series_id, 0, 1000)
 
         assert points == []
+
+
+class TestRangeStatsConn:
+    def _series(self, db_path):
+        return storage.get_or_create_series(
+            db_path, "demo.thing.count", "demo", "cumulative", "Count", "", "", 1000
+        )
+
+    def test_matches_range_stats_against_a_shared_connection(self, db_path):
+        # range_stats_conn is the one build_overview actually calls (once
+        # per series, all against one shared connection, to avoid paying
+        # connect()'s five PRAGMA statements per series on every request);
+        # range_stats is a thin single-series wrapper around it. The two
+        # must agree.
+        series_id = self._series(db_path)
+        storage.record_sample(db_path, series_id, 1000, 5, heartbeat_seconds=100)
+        storage.record_sample(db_path, series_id, 1500, 9, heartbeat_seconds=100)
+
+        via_wrapper = storage.range_stats(db_path, series_id, 0, 2000)
+
+        conn = storage.connect(db_path)
+        try:
+            via_conn = storage.range_stats_conn(conn, series_id, 0, 2000)
+        finally:
+            conn.close()
+
+        assert via_conn == via_wrapper
+
+    def test_one_connection_serves_multiple_series(self, db_path):
+        # The actual point of range_stats_conn: the same open connection
+        # can be reused across series without reopening it.
+        first_id = storage.get_or_create_series(
+            db_path, "demo.a", "demo", "cumulative", "A", "", "", 1000
+        )
+        second_id = storage.get_or_create_series(
+            db_path, "demo.b", "demo", "cumulative", "B", "", "", 1000
+        )
+        storage.record_sample(db_path, first_id, 1000, 1, heartbeat_seconds=100)
+        storage.record_sample(db_path, second_id, 1000, 2, heartbeat_seconds=100)
+
+        conn = storage.connect(db_path)
+        try:
+            first = storage.range_stats_conn(conn, first_id, 0, 2000)
+            second = storage.range_stats_conn(conn, second_id, 0, 2000)
+        finally:
+            conn.close()
+
+        assert first["open"] == 1
+        assert second["open"] == 2
+
+
+class TestRecentChanges:
+    def _series(self, db_path, key, plugin="demo"):
+        return storage.get_or_create_series(
+            db_path, key, plugin, "cumulative", "Label", "", "", 1000
+        )
+
+    def test_excludes_zero_change_heartbeats(self, db_path):
+        series_id = self._series(db_path, "demo.a")
+        storage.record_sample(db_path, series_id, 1000, 5, heartbeat_seconds=100)
+        storage.record_sample(db_path, series_id, 1100, 5, heartbeat_seconds=100)
+        storage.record_sample(db_path, series_id, 1200, 8, heartbeat_seconds=100)
+
+        changes = storage.recent_changes(db_path, 10)
+
+        assert [(row["ts"], row["change"]) for row in changes] == [(1200, 3)]
+
+    def test_excludes_a_series_very_first_sample(self, db_path):
+        series_id = self._series(db_path, "demo.a")
+        storage.record_sample(db_path, series_id, 1000, 5, heartbeat_seconds=100)
+
+        assert storage.recent_changes(db_path, 10) == []
+
+    def test_orders_newest_first_and_respects_limit(self, db_path):
+        series_id = self._series(db_path, "demo.a")
+        storage.record_sample(db_path, series_id, 1000, 1, heartbeat_seconds=1)
+        storage.record_sample(db_path, series_id, 1001, 2, heartbeat_seconds=1)
+        storage.record_sample(db_path, series_id, 1002, 3, heartbeat_seconds=1)
+        storage.record_sample(db_path, series_id, 1003, 4, heartbeat_seconds=1)
+
+        changes = storage.recent_changes(db_path, 2)
+
+        assert [row["ts"] for row in changes] == [1003, 1002]
+
+    def test_excludes_inactive_series(self, db_path):
+        series_id = self._series(db_path, "demo.a")
+        storage.record_sample(db_path, series_id, 1000, 1, heartbeat_seconds=1)
+        storage.record_sample(db_path, series_id, 1001, 5, heartbeat_seconds=1)
+        conn = sqlite3.connect(str(db_path))
+        try:
+            conn.execute(
+                "UPDATE metric_series SET active = 0 WHERE id = ?", (series_id,)
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        assert storage.recent_changes(db_path, 10) == []
+
+
+class TestRecordedChanges:
+    def _series(self, db_path, key="demo.a"):
+        return storage.get_or_create_series(
+            db_path, key, "demo", "cumulative", "Label", "", "", 1000
+        )
+
+    def test_newest_first_with_signed_change(self, db_path):
+        series_id = self._series(db_path)
+        storage.record_sample(db_path, series_id, 1000, 5, heartbeat_seconds=1)
+        storage.record_sample(db_path, series_id, 1001, 8, heartbeat_seconds=1)
+
+        rows = storage.recorded_changes(db_path, series_id, 0, 2000, 10)
+
+        assert rows == [
+            {"ts": 1001, "value": 8, "change": 3},
+            {"ts": 1000, "value": 5, "change": 0},
+        ]
+
+    def test_heartbeat_with_zero_change_is_kept(self, db_path):
+        series_id = self._series(db_path)
+        storage.record_sample(db_path, series_id, 1000, 5, heartbeat_seconds=1)
+        storage.record_sample(db_path, series_id, 2000, 5, heartbeat_seconds=1)
+
+        rows = storage.recorded_changes(db_path, series_id, 0, 3000, 10)
+
+        assert rows[0] == {"ts": 2000, "value": 5, "change": 0}
+
+    def test_respects_range_and_limit(self, db_path):
+        series_id = self._series(db_path)
+        for ts, value in [(1000, 1), (1001, 2), (1002, 3), (1003, 4)]:
+            storage.record_sample(db_path, series_id, ts, value, heartbeat_seconds=1)
+
+        rows = storage.recorded_changes(db_path, series_id, 1000, 1003, 2)
+
+        assert [row["ts"] for row in rows] == [1003, 1002]
+
+
+class TestGetAnySeriesByKey:
+    def test_returns_inactive_series(self, db_path):
+        series_id = storage.get_or_create_series(
+            db_path, "demo.a", "demo", "cumulative", "Label", "", "", 1000
+        )
+        conn = sqlite3.connect(str(db_path))
+        try:
+            conn.execute(
+                "UPDATE metric_series SET active = 0 WHERE id = ?", (series_id,)
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        row = storage.get_any_series_by_key(db_path, "demo.a")
+
+        assert row["active"] == 0
+
+    def test_unknown_key_returns_none(self, db_path):
+        assert storage.get_any_series_by_key(db_path, "nope") is None

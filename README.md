@@ -33,7 +33,7 @@ so you can ask what changed, how fast, and since when.
 |---|---|
 | MakerWorld | Shipped |
 | GitHub | Shipped |
-| YouTube | Planned |
+| YouTube | Shipped |
 | TikTok | Planned |
 | Anything else | Write a plugin — that's the point |
 
@@ -48,10 +48,14 @@ disposable.
 
 ```sh
 mkdir -p data config user-plugins
-chown -R 1000:1000 data config user-plugins   # match the container's non-root user
 docker compose up -d
 curl localhost:8080/health
 ```
+
+No `chown` step needed: the container starts as root, matches `./data` and
+`./config` to your host UID/GID (`PUID`/`PGID`, both default `1000`), then
+drops to that user before running anything. See "File ownership (PUID/PGID)"
+below for NAS setups where your user isn't 1000.
 
 `/health` only says the process is up. To be alerted when a source stops
 polling, point an uptime monitor (e.g. Uptime Kuma, HTTP type) at
@@ -62,14 +66,14 @@ Logs go to the container's stderr. A failing plugin logs one warning when it
 starts failing and one line when it recovers, not one per poll. Set
 `NGU_LOG_LEVEL=DEBUG` to see every repeat.
 
-> **Heads-up:** if you skip the `chown` step, Docker creates `./data`,
-> `./config`, and `./user-plugins` as root-owned, and the container (running as
-> UID 1000) can't write to them — you'll hit permission errors once
-> storage/config land.
+Docker also knows when the app is unhealthy: the image ships a `HEALTHCHECK`
+against `/health`, so `docker ps`, `docker inspect`, and Portainer all show a
+`healthy`/`unhealthy` status without any extra config.
 
 - `./data` — the SQLite DB and migration backups. **Must be local disk, never
   an NFS/SMB share** — SQLite's WAL locking is unreliable over network
-  filesystems.
+  filesystems. The container refuses to start if it detects `./data` is on
+  one; see "Network filesystems" below.
 - `./config` — drop a `config.yaml` here (see
   [`config.yaml.example`](config.yaml.example)). If it's missing, the service
   writes a commented example next to where it looked and starts with defaults
@@ -80,12 +84,125 @@ starts failing and one line when it recovers, not one per poll. Set
 
 `docker rm` the container any time — none of the above lives inside it.
 
+### File ownership (PUID/PGID)
+
+NAS distros rarely use UID 1000 for the first user — Synology's is usually
+1026, Unraid uses `99:100`. Set `PUID`/`PGID` in `docker-compose.yml` to match
+whoever should own `./data` and `./config` on the host:
+
+```yaml
+environment:
+  - PUID=1026
+  - PGID=100
+```
+
+On startup, if the container is running as root (the default — no `user:` in
+compose), the entrypoint `chown`s `./data` and `./config` to `PUID:PGID` (only
+when the top-level owner doesn't already match, so this is a no-op on every
+boot after the first) and then drops privileges to that user before running
+anything. `PUID=0`/`PGID=0` are refused outright — the app never runs as
+root.
+
+Already setting `user: "1000:1000"` in compose? Nothing changes — the
+entrypoint detects it's already non-root and skips straight to running the
+app. Existing deployments keep working unchanged.
+
+### Hardened runtime
+
+For a locked-down compose config, add:
+
+```yaml
+read_only: true
+tmpfs: [/tmp]
+security_opt: ["no-new-privileges:true"]
+cap_drop: [ALL]
+```
+
+With `user: "1000:1000"` set (non-root mode), all four work as-is. In
+PUID/PGID mode (started as root, the default), the entrypoint needs to
+`chown` and switch users, so use this instead:
+
+```yaml
+read_only: true
+tmpfs: [/tmp]
+cap_drop: [ALL]
+cap_add: [CHOWN, SETUID, SETGID]
+# no security_opt: no-new-privileges would block setpriv from switching users.
+```
+
+Either way, nothing the app writes lives outside `/data`, `/config`, and
+`/tmp`.
+
+### Network filesystems
+
+`./data` holds the SQLite database, and SQLite's WAL locking is unreliable
+over NFS/SMB — the one deployment mistake that can silently corrupt it. At
+startup the container inspects `./data`'s mount and refuses to start with a
+clear error if it's `nfs`, `nfs4`, `cifs`, `smb3`, `smbfs`, `fuse.sshfs`, or
+`9p`. If you understand the risk and want to proceed anyway, set
+`NGU_ALLOW_NETWORK_FS=1` — it still logs a WARNING on every start.
+
+### Log rotation
+
+`docker-compose.yml` already sets:
+
+```yaml
+logging:
+  driver: json-file
+  options: { max-size: "10m", max-file: "3" }
+```
+
+Equivalent flags for a bare `docker run`:
+
+```sh
+docker run --log-driver json-file --log-opt max-size=10m --log-opt max-file=3 ...
+```
+
+Portainer stacks honor the compose `logging:` block directly. The app only
+ever logs to stdout/stderr — there are no log files inside the container to
+worry about.
+
+### Where to pull the image
+
+GHCR is the primary, canonical registry and has no pull-rate limit for
+public images:
+
+```
+ghcr.io/drewferg11/numbers-go-up:<version>
+```
+
+Tagged releases are also mirrored to Docker Hub, byte-identical (same
+digest, same architectures), for anyone who prefers to pull from there:
+
+```
+docker.io/drewferg11/numbers-go-up:<version>
+```
+
+Docker Hub's anonymous pulls are capped (100 pulls/6 h per IP as of this
+writing), which matters if you run Watchtower or another auto-updater —
+GHCR doesn't have that limit for public images, so it's the better default
+for unattended pulls.
+
 ### Timezone
 
 `TZ` is **not set by default** — the container falls back to UTC. Set it to
 your own zone in `docker-compose.yml` (e.g. `TZ=America/New_York`), because it
 affects timestamp correctness in the SQLite history and the daily heartbeat
 boundary.
+
+## Dashboard
+
+`/` is a lightweight overview page — a stock-watchlist view of your own
+counters: an index strip of pinned metrics, a watchlist grouped by plugin
+with sparklines, and a status line showing each plugin's polling health.
+It's server-rendered (no build step, no CDN — everything, including fonts,
+is served from the container) and refreshes itself every 60 seconds.
+
+![Dashboard overview](docs/dashboard.png)
+
+Pin up to 6 metrics to the index strip with `dashboard.pinned` in
+`config.yaml` (see [`config.yaml.example`](config.yaml.example)); leave it
+empty and the first 4 cumulative metrics are used instead.
 
 ## Roadmap
 
@@ -132,6 +249,15 @@ paged release listings, against the official, documented API — the only
 source in this project with that status. Every other source here is
 unofficial.
 
+**YouTube's unofficial path was evaluated and rejected (#62):** the
+originally-planned `unofficial-livecounts-api` library doesn't just need a
+browser-style User-Agent — every request it makes is signed with three
+custom headers derived from the current timestamp via a private hashing
+scheme, which this project would have to reimplement to pass its bot check.
+That's a materially different, higher-risk exercise than TikTok's one fixed
+User-Agent exception, so it was dropped before any code shipped. YouTube
+tracks official-API numbers only, accepting the rounding described below.
+
 ### GitHub
 
 Tracks stars, forks, watchers, and open issues (which include open pull
@@ -150,6 +276,35 @@ official REST API. Configure `plugins.github.repos` with one or more
   every release. Deleting a release lowers that sum. Storage doesn't reject
   a falling cumulative series, and Home Assistant will read the drop as a
   counter reset — this is expected, not a bug.
+
+### YouTube
+
+Tracks subscribers, views, and video count for your own channel(s), via the
+official Data API v3 — the only source this plugin ships (see the spike note
+above on why the unofficial `livecounts` path was dropped before it shipped).
+
+- **Finding your channel ID:** it's the `UC...` string (24 characters,
+  case-sensitive) in your channel's Advanced Settings on YouTube Studio, or
+  in a channel URL of the form `youtube.com/channel/UCxxxx...`. A handle
+  (`@yourname`) or custom URL is **not** accepted — resolving one to an ID
+  costs an extra request and can be ambiguous, so paste the ID directly.
+- **API key (required):** create one in Google Cloud Console (YouTube Data
+  API v3 enabled) and set it via the `NGU_YOUTUBE_API_KEY` environment
+  variable — never in `config.yaml`. It costs 1 quota unit per poll against
+  a free 10,000/day quota.
+- **Exact vs. rounded:** the official API rounds `subscriberCount` to about
+  3 significant figures once a channel gets reasonably large, so day-to-day
+  changes on a bigger channel may show as a flat line most days with an
+  occasional step. `views`/`videos` are commonly understood to be exact.
+  Switching `source` is a deliberate, one-time user action — a series never
+  switches sources automatically, since that would write a fake jump in its
+  history — and the chart will show one visible step if you ever change it.
+- A channel that hides its public subscriber count, or whose subscriber
+  count reads exactly 0, fails the poll rather than writing a bogus 0.
+- Series labels use the channel's current YouTube title (falling back to
+  its `key` if unavailable), so a renamed channel's label drifts to match
+  on its next poll — the same trade-off the GitHub plugin makes with
+  `full_name`.
 
 ## Home Assistant
 
@@ -170,11 +325,31 @@ mqtt:
   tls: false                      # true = TLS with system CAs (usually port 8883)
   discovery_prefix: "homeassistant"
   topic_prefix: "numbers-go-up"
+  include: []                     # glob patterns on metric_key; empty = everything
+  exclude: []                     # glob patterns on metric_key; checked after include
 ```
 
 Set the broker password via the `NGU_MQTT_PASSWORD` environment variable —
 never in `config.yaml`. Omit the whole `mqtt` block to keep MQTT off; that's
 zero connections, exactly like a plugin that's never configured.
+
+**Choosing which series get published:** by default every active series is
+published. `include`/`exclude` are lists of glob patterns
+([`fnmatch`](https://docs.python.org/3/library/fnmatch.html) syntax) matched
+against the series' `metric_key`, which already encodes plugin and entity
+(`github.repo.12345.stars`, `makerworld.model.987.downloads`,
+`youtube.channel.main.views`) — so one mechanism covers filtering by whole
+plugin (`youtube.*`), by one entity within a plugin
+(`makerworld.model.987.*`), or by metric across everything
+(`*.comments`). If `include` is non-empty, only series matching at least one
+of its patterns are eligible; `exclude` is then applied on top and always
+wins. Leave both empty for the previous all-active-series behavior.
+Changing `include`/`exclude` doesn't retract a series HA already learned
+about — a series that becomes excluded stops getting new state, and goes
+"unavailable" once its `expire_after` elapses, but its discovery config and
+last retained state stay in HA until you remove it manually (delete the
+entity in HA, or temporarily deactivate the series) — filtering is a
+publish-time decision, not the same as the deactivation lifecycle.
 
 Every series becomes one sensor entity, all grouped under a single
 **numbers-go-up** device (manufacturer "numbers-go-up", model "stats

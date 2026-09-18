@@ -66,21 +66,39 @@ jobs:
           echo "Releasing $GITHUB_REF_NAME"
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0   # setuptools-scm needs full history + tags
 
-      # An image whose /health reports a version that isn't its tag is worse
-      # than a failed release, so this has to fail before anything builds.
-      # The prerelease suffix (-rc.N) isn't part of __version__, so it's
-      # stripped before comparing.
-      - name: Verify tag matches package version
+      # The version is now derived from this exact tag by setuptools-scm, so
+      # it can't drift from it by construction. The one way it can still go
+      # wrong is setuptools-scm silently falling back to a distance-from-tag
+      # guess (a ".dev"/"+" suffix) instead of resolving the tag directly --
+      # e.g. a regression in one of the fetch-depth: 0 checkouts above.
+      - name: Verify version resolves cleanly from the tag
         run: |
-          TAG_VERSION="${GITHUB_REF_NAME#v}"
-          TAG_VERSION="${TAG_VERSION%%-rc.*}"
-          PKG_VERSION=$(python3 -c "import numbers_go_up; print(numbers_go_up.__version__)")
-          if [ "$TAG_VERSION" != "$PKG_VERSION" ]; then
-            echo "::error::Tag $GITHUB_REF_NAME implies version $TAG_VERSION, but numbers_go_up.__version__ is $PKG_VERSION"
+          pip install setuptools-scm
+          VERSION=$(python3 -m setuptools_scm)
+          if [[ "$VERSION" == *.dev* || "$VERSION" == *+* ]]; then
+            echo "::error::Expected a clean release version for tag $GITHUB_REF_NAME, got $VERSION (setuptools-scm fell back to a distance-from-tag guess)"
             exit 1
           fi
-          echo "Tag $GITHUB_REF_NAME matches numbers_go_up.__version__ ($PKG_VERSION)"
+          echo "Tag $GITHUB_REF_NAME resolves to version $VERSION"
+
+      # Opt-in Docker Hub mirror (see docs/gh-workflows/README.md). A release
+      # that only half-publishes -- GHCR done, Docker Hub silently skipped
+      # because a secret was blank -- is worse than one that fails outright,
+      # so this checks before anything builds.
+      - name: Verify Docker Hub secrets when the mirror is enabled
+        if: vars.DOCKERHUB_IMAGE != ''
+        run: |
+          if [ -z "$DOCKERHUB_USERNAME" ] || [ -z "$DOCKERHUB_TOKEN" ]; then
+            echo "::error::vars.DOCKERHUB_IMAGE is set (${{ vars.DOCKERHUB_IMAGE }}) but DOCKERHUB_USERNAME and/or DOCKERHUB_TOKEN secrets are missing. Set both, or unset the variable to release to GHCR only."
+            exit 1
+          fi
+          echo "Docker Hub mirror enabled: ${{ vars.DOCKERHUB_IMAGE }}"
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
 
   build:
     name: build ${{ matrix.platform }}
@@ -99,8 +117,21 @@ jobs:
           - platform: linux/arm64
             runner: ubuntu-24.04-arm      # free on public repos; fails on private
             suffix: arm64
+          # Not "arm/v7": the slash breaks the digest-${{ matrix.suffix }}
+          # artifact name and the buildx cache scope. No free native
+          # 32-bit-ARM runner exists (see publish.yml's comment), so this
+          # one platform builds under QEMU -- affordable because
+          # requirements.txt drops uvicorn[standard].
+          - platform: linux/arm/v7
+            runner: ubuntu-latest
+            suffix: armv7
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0   # setuptools-scm needs full history + tags
+
+      - name: Generate version file
+        run: pip install setuptools-scm && python -m setuptools_scm --force-write-version-files
 
       # GHCR requires lowercase image names; github.repository is mixed-case
       - name: Resolve image name
@@ -108,9 +139,14 @@ jobs:
         env:
           REPO: ${{ github.repository }}
 
+      - if: matrix.platform == 'linux/arm/v7'
+        uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+        with:
+          platforms: arm
+
       - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
 
-      - uses: docker/login-action@b45d80f862d83dbcd57f89517bcf500b2ab88fb2 # v4.0.0
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -135,7 +171,7 @@ jobs:
         env:
           DIGEST: ${{ steps.build.outputs.digest }}
 
-      - uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: digest-${{ matrix.suffix }}
           path: /tmp/digests/*
@@ -145,6 +181,13 @@ jobs:
     name: merge manifest + tag
     needs: build
     runs-on: ubuntu-latest
+    # Same environment as `authorize`: DOCKERHUB_USERNAME/DOCKERHUB_TOKEN
+    # are scoped to it (see the issue's maintainer setup), and only a job
+    # that declares the environment can read secrets scoped to it. Without
+    # this, the docker.io login below would silently get empty credentials
+    # and fail after the GHCR push already succeeded -- exactly the
+    # half-published release `authorize`'s preflight exists to prevent.
+    environment: release
     permissions:
       contents: read
       packages: write
@@ -154,6 +197,10 @@ jobs:
       digest: ${{ steps.push.outputs.digest }}
       version: ${{ steps.meta.outputs.version }}
     steps:
+      # Only needed for the Docker Hub description sync (reads README.md),
+      # but cheap enough to always run rather than condition the checkout.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
       - name: Resolve image name
         run: echo "IMAGE=${REGISTRY}/${REPO,,}" >> "$GITHUB_ENV"
         env:
@@ -167,16 +214,29 @@ jobs:
 
       - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
 
-      - uses: docker/login-action@b45d80f862d83dbcd57f89517bcf500b2ab88fb2 # v4.0.0
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - id: meta
-        uses: docker/metadata-action@030e881283bb7a6894de51c315a6bfe6a94e05cf # v6.0.0
+      # Docker Hub mirror. Only logs in when vars.DOCKERHUB_IMAGE is set --
+      # forks and the default path never touch docker.io at all.
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        if: vars.DOCKERHUB_IMAGE != ''
         with:
-          images: ${{ env.IMAGE }}
+          registry: docker.io
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          # Second line is dropped (metadata-action ignores blank entries)
+          # when the mirror is off, so GHCR is the only target by default.
+          images: |
+            ${{ env.IMAGE }}
+            ${{ vars.DOCKERHUB_IMAGE != '' && format('docker.io/{0}', vars.DOCKERHUB_IMAGE) || '' }}
           tags: |
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
@@ -199,12 +259,65 @@ jobs:
         env:
           VERSION: ${{ steps.meta.outputs.version }}
 
-      - name: Attest build provenance
-        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
+      # The manifest list on Docker Hub is a copy made by imagetools create
+      # above, not a rebuild -- this proves it's byte-identical to GHCR's.
+      - name: Verify Docker Hub digest matches GHCR
+        if: vars.DOCKERHUB_IMAGE != ''
+        run: |
+          DOCKERHUB_DIGEST=$(docker buildx imagetools inspect \
+            "docker.io/${DOCKERHUB_IMAGE}:${VERSION}" --format '{{json .Manifest}}' | jq -r .digest)
+          if [ "$DOCKERHUB_DIGEST" != "$GHCR_DIGEST" ]; then
+            echo "::error::Docker Hub digest ($DOCKERHUB_DIGEST) does not match GHCR digest ($GHCR_DIGEST)"
+            exit 1
+          fi
+          echo "Docker Hub digest matches GHCR: $GHCR_DIGEST"
+        env:
+          DOCKERHUB_IMAGE: ${{ vars.DOCKERHUB_IMAGE }}
+          VERSION: ${{ steps.meta.outputs.version }}
+          GHCR_DIGEST: ${{ steps.push.outputs.digest }}
+
+      - name: Attest build provenance (GHCR)
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-name: ${{ env.IMAGE }}
           subject-digest: ${{ steps.push.outputs.digest }}
           push-to-registry: true
+
+      - name: Attest build provenance (Docker Hub)
+        if: vars.DOCKERHUB_IMAGE != ''
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: docker.io/${{ vars.DOCKERHUB_IMAGE }}
+          subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: true
+
+      # peter-evans/dockerhub-description isn't from a GitHub-owned or
+      # verified creator, which this repo's Actions policy restricts to --
+      # a plain API call needs no such allowlisting and uses the same token.
+      - name: Sync Docker Hub description from README
+        if: vars.DOCKERHUB_IMAGE != ''
+        run: |
+          JWT=$(curl -sS -X POST https://hub.docker.com/v2/users/login/ \
+            -H "Content-Type: application/json" \
+            -d "$(jq -n --arg u "$DOCKERHUB_USERNAME" --arg p "$DOCKERHUB_TOKEN" '{username:$u,password:$p}')" \
+            | jq -r .token)
+          if [ -z "$JWT" ] || [ "$JWT" = "null" ]; then
+            echo "::error::Docker Hub login failed; not updating the repository description."
+            exit 1
+          fi
+          jq -n --rawfile full README.md '{full_description: $full}' > /tmp/dockerhub-description.json
+          HTTP_CODE=$(curl -sS -X PATCH "https://hub.docker.com/v2/repositories/${DOCKERHUB_IMAGE}/" \
+            -H "Authorization: JWT ${JWT}" \
+            -H "Content-Type: application/json" \
+            --data @/tmp/dockerhub-description.json -o /dev/null -w '%{http_code}')
+          case "$HTTP_CODE" in
+            2*) echo "Docker Hub description updated (HTTP $HTTP_CODE)" ;;
+            *) echo "::error::Docker Hub description sync failed with HTTP $HTTP_CODE"; exit 1 ;;
+          esac
+        env:
+          DOCKERHUB_IMAGE: ${{ vars.DOCKERHUB_IMAGE }}
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
 
   release:
     name: GitHub Release
@@ -293,7 +406,7 @@ jobs:
           TAG: ${{ github.ref_name }}
 
       - name: Log in to GHCR
-        uses: docker/login-action@b45d80f862d83dbcd57f89517bcf500b2ab88fb2 # v4.0.0
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -341,11 +454,14 @@ jobs:
             echo
             echo '```'
             echo "docker pull ${IMAGE_LOWER}:${VERSION}"
+            if [ -n "$DOCKERHUB_IMAGE" ]; then
+              echo "docker pull docker.io/${DOCKERHUB_IMAGE}:${VERSION}"
+            fi
             echo '```'
             echo
             echo "Digest: \`${DIGEST}\`"
             echo
-            echo "Multi-arch: \`linux/amd64\`, \`linux/arm64\`. Build provenance is attested and pushed to the registry."
+            echo "Multi-arch: \`linux/amd64\`, \`linux/arm64\`, \`linux/arm/v7\`. Build provenance is attested and pushed to the registry."
           } >> /tmp/notes.md
         env:
           GH_TOKEN: ${{ github.token }}
@@ -357,6 +473,7 @@ jobs:
           PLUGINS: ${{ steps.stats.outputs.plugins }}
           DIFFSTAT: ${{ steps.stats.outputs.diffstat }}
           IMAGE_MB: ${{ steps.imagesize.outputs.mb }}
+          DOCKERHUB_IMAGE: ${{ vars.DOCKERHUB_IMAGE }}
 
       - name: Create release
         run: |

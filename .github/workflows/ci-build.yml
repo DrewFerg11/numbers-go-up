@@ -4,6 +4,7 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch: {}
 
 permissions:
   contents: read
@@ -14,6 +15,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0   # setuptools-scm needs full history + tags
+      - name: Generate version file
+        run: pip install setuptools-scm && python -m setuptools_scm --force-write-version-files
       - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
       - uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
@@ -41,3 +46,239 @@ jobs:
       - name: Container logs
         if: always()
         run: docker logs ngu-ci || true
+
+      - name: Clean up
+        if: always()
+        run: docker rm -f ngu-ci || true
+
+      # (a) default root start, no PUID/PGID: entrypoint drops to 1000:1000.
+      - name: Default run as root drops to UID 1000
+        run: |
+          docker run -d --name ngu-default app:ci
+          for i in $(seq 1 30); do
+            if curl -fsS localhost:8080/health >/dev/null 2>&1; then break; fi
+            sleep 1
+          done
+          # `docker exec` runs as the image's configured USER (root, so the
+          # entrypoint can drop privileges) regardless of what PID 1 is
+          # actually running as -- stat PID 1's own /proc entry instead of
+          # `id -u` to see its real credentials.
+          UID_IN_CONTAINER=$(docker exec ngu-default stat -c '%u' /proc/1)
+          if [ "$UID_IN_CONTAINER" != "1000" ]; then
+            echo "::error::Expected UID 1000 inside the container, got $UID_IN_CONTAINER"
+            docker logs ngu-default
+            exit 1
+          fi
+          docker inspect ngu-default --format '{{json .State.Health}}'
+          docker rm -f ngu-default
+
+      # (b) custom PUID/PGID: process and fresh bind mount both get the new IDs.
+      - name: PUID/PGID=1026/100 applies to process and bind mount
+        run: |
+          mkdir -p /tmp/ngu-data
+          docker run -d --name ngu-puid -e PUID=1026 -e PGID=100 \
+            -v /tmp/ngu-data:/data app:ci
+          for i in $(seq 1 30); do
+            if curl -fsS localhost:8080/health >/dev/null 2>&1; then break; fi
+            sleep 1
+          done
+          UID_IN_CONTAINER=$(docker exec ngu-puid stat -c '%u' /proc/1)
+          GID_IN_CONTAINER=$(docker exec ngu-puid stat -c '%g' /proc/1)
+          if [ "$UID_IN_CONTAINER" != "1026" ] || [ "$GID_IN_CONTAINER" != "100" ]; then
+            echo "::error::Expected 1026:100 inside the container, got ${UID_IN_CONTAINER}:${GID_IN_CONTAINER}"
+            docker logs ngu-puid
+            exit 1
+          fi
+          OWNER=$(stat -c '%u:%g' /tmp/ngu-data)
+          if [ "$OWNER" != "1026:100" ]; then
+            echo "::error::Expected /tmp/ngu-data owned by 1026:100 on the host, got $OWNER"
+            exit 1
+          fi
+          docker rm -f ngu-puid
+
+      # A second start with already-correct ownership must not re-walk the
+      # tree: assert via the entrypoint's log line, not by timing (CI
+      # runners are too noisy for a timing assertion to be reliable).
+      - name: Second start with correct ownership skips the recursive chown
+        run: |
+          docker run -d --name ngu-puid2 -e PUID=1026 -e PGID=100 \
+            -v /tmp/ngu-data:/data app:ci
+          for i in $(seq 1 30); do
+            if curl -fsS localhost:8080/health >/dev/null 2>&1; then break; fi
+            sleep 1
+          done
+          if docker logs ngu-puid2 2>&1 | grep -q "chown"; then
+            echo "::error::Expected no chown on a second start with matching ownership"
+            docker logs ngu-puid2
+            exit 1
+          fi
+          docker rm -f ngu-puid2
+
+      # (c) pre-existing non-root mode: compose's `user:` skips the
+      # entrypoint's privileged steps entirely.
+      - name: --user 1000:1000 skips entrypoint privilege steps
+        run: |
+          docker run -d --name ngu-nonroot --user 1000:1000 app:ci
+          for i in $(seq 1 30); do
+            if curl -fsS localhost:8080/health >/dev/null 2>&1; then break; fi
+            sleep 1
+          done
+          docker logs ngu-nonroot
+          docker rm -f ngu-nonroot
+
+      # (d) PUID=0 must refuse to start with a clear error.
+      - name: PUID=0 is refused
+        run: |
+          set +e
+          docker run --name ngu-puid0 -e PUID=0 app:ci
+          STATUS=$(docker inspect ngu-puid0 --format '{{.State.ExitCode}}')
+          LOGS=$(docker logs ngu-puid0 2>&1)
+          docker rm -f ngu-puid0
+          if [ "$STATUS" = "0" ]; then
+            echo "::error::PUID=0 should have exited non-zero"
+            exit 1
+          fi
+          echo "$LOGS" | grep -qi "PUID" || { echo "::error::Expected a PUID error message, got: $LOGS"; exit 1; }
+
+      # Zero-padded PUID=00 must be refused too -- setpriv/getent/chown all
+      # parse it as decimal zero, so a naive string compare against "0"
+      # alone would let this one through and start the app as root.
+      - name: PUID=00 is refused
+        run: |
+          set +e
+          docker run --name ngu-puid00 -e PUID=00 app:ci
+          STATUS=$(docker inspect ngu-puid00 --format '{{.State.ExitCode}}')
+          LOGS=$(docker logs ngu-puid00 2>&1)
+          docker rm -f ngu-puid00
+          if [ "$STATUS" = "0" ]; then
+            echo "::error::PUID=00 should have exited non-zero"
+            exit 1
+          fi
+          echo "$LOGS" | grep -qi "PUID" || { echo "::error::Expected a PUID error message, got: $LOGS"; exit 1; }
+
+      # docker stop must finish well inside Docker's 10s SIGTERM grace
+      # period, which only happens if uvicorn is PID 1's direct exec'd
+      # replacement.
+      - name: docker stop completes quickly
+        run: |
+          docker run -d --name ngu-stop app:ci
+          for i in $(seq 1 30); do
+            if curl -fsS localhost:8080/health >/dev/null 2>&1; then break; fi
+            sleep 1
+          done
+          START=$(date +%s)
+          docker stop ngu-stop
+          END=$(date +%s)
+          ELAPSED=$((END - START))
+          echo "docker stop took ${ELAPSED}s"
+          docker rm -f ngu-stop || true
+          if [ "$ELAPSED" -ge 10 ]; then
+            echo "::error::docker stop took ${ELAPSED}s, expected well under 10s"
+            exit 1
+          fi
+
+      # Hardened compose config: read-only rootfs, all caps dropped,
+      # no-new-privileges -- the non-root (`user:`) combination from the
+      # README, which works with all four restrictions simultaneously.
+      - name: Hardened runtime reaches healthy and writes the DB
+        run: |
+          # --user 1000:1000 means non-root mode: the entrypoint skips its
+          # own chown (by design -- see docker-entrypoint.sh), so the host
+          # dir has to already be owned by 1000:1000, same as a real
+          # deployment following the README's non-root instructions.
+          mkdir -p /tmp/ngu-hardened-data
+          sudo chown -R 1000:1000 /tmp/ngu-hardened-data
+          docker run -d --name ngu-hardened \
+            --read-only --tmpfs /tmp \
+            --cap-drop ALL \
+            --security-opt no-new-privileges \
+            --user 1000:1000 \
+            -v /tmp/ngu-hardened-data:/data \
+            app:ci
+          for i in $(seq 1 30); do
+            HEALTH=$(docker inspect ngu-hardened --format '{{.State.Health.Status}}' 2>/dev/null || echo starting)
+            if [ "$HEALTH" = "healthy" ]; then break; fi
+            sleep 2
+          done
+          docker inspect ngu-hardened --format '{{.State.Health.Status}}'
+          if [ "$HEALTH" != "healthy" ]; then
+            echo "::error::Hardened container never reached healthy"
+            docker logs ngu-hardened
+            exit 1
+          fi
+          if [ ! -f /tmp/ngu-hardened-data/stats.db ]; then
+            echo "::error::Expected /data/stats.db to exist"
+            exit 1
+          fi
+          docker rm -f ngu-hardened
+
+      - name: Clean up test volumes
+        if: always()
+        run: sudo rm -rf /tmp/ngu-data /tmp/ngu-hardened-data
+
+  armv7-smoke:
+    name: arm/v7 boot smoke test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      # Not on every PR -- QEMU emulation adds real wall time, and the fast
+      # amd64 job above is the PR signal for most changes. But a blanket
+      # "PRs never run this" would mean the first-ever arm/v7 build+boot
+      # races the edge publish on the merge push itself. So: always on
+      # push-to-main/workflow_dispatch, and on a PR only when it touches
+      # something arm/v7-relevant (deps, the Dockerfile, or these
+      # workflows), so that PR blocks on it before merging.
+      - id: relevant
+        run: |
+          if [ "${{ github.event_name }}" != "pull_request" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          elif git diff --name-only "${{ github.event.pull_request.base.sha }}" HEAD \
+               | grep -qE '^(Dockerfile|requirements.*\.txt|\.github/workflows/(ci-build|publish|release)\.yml)$'; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - if: steps.relevant.outputs.run == 'true'
+        uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+        with:
+          platforms: arm
+
+      - if: steps.relevant.outputs.run == 'true'
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+      - if: steps.relevant.outputs.run == 'true'
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          platforms: linux/arm/v7
+          push: false
+          tags: app:ci-armv7
+          load: true
+          cache-from: type=gha,scope=armv7
+          cache-to: type=gha,mode=max,scope=armv7
+
+      # Nobody has ever booted this architecture's image without this test --
+      # QEMU makes the boot itself slower, so this allows more time than the
+      # native amd64 job's health-check loop.
+      - if: steps.relevant.outputs.run == 'true'
+        name: Boot the image under QEMU and check /health
+        run: |
+          docker run -d --name ngu-armv7 -p 8081:8080 app:ci-armv7
+          for i in $(seq 1 90); do
+            if curl -fsS localhost:8081/health; then echo; exit 0; fi
+            sleep 2
+          done
+          echo "::error::/health never came up under QEMU"
+          docker logs ngu-armv7
+          exit 1
+
+      - if: always() && steps.relevant.outputs.run == 'true'
+        name: Container logs
+        run: docker logs ngu-armv7 || true
+
+      - if: always() && steps.relevant.outputs.run == 'true'
+        name: Clean up
+        run: docker rm -f ngu-armv7 || true
