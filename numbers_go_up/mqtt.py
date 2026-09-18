@@ -521,7 +521,20 @@ class MqttPublisher:
             for row in rows
             if row["active"] and self._is_selected(row["metric_key"])
         ]
-        inactive_rows = [row for row in rows if not row["active"]]
+        # A series excluded by mqtt.exclude is never published in the first
+        # place, so it must not go through the removal path either: doing
+        # so would call _object_id_for on it and permanently claim its
+        # object_id slot -- possibly stealing it from a legitimate,
+        # included, active series that collides with it (e.g. "acme.a_b"
+        # excluded+inactive vs "acme.a.b" included+active). Excluding it
+        # here leaves any of its previously-published retained state
+        # alone, same as an active-but-excluded series -- filtering is a
+        # publish-time decision, not the same as deactivation.
+        inactive_rows = [
+            row
+            for row in rows
+            if not row["active"] and self._is_selected(row["metric_key"])
+        ]
 
         for row in active_rows:
             self._maybe_publish_discovery(row, force=True)

@@ -552,6 +552,29 @@ class TestIncludeExcludeFiltering:
 
         assert fake.published_dict("numbers-go-up/acme.a.b/state") == "2"
 
+    def test_excluded_inactive_series_does_not_claim_its_object_id_on_snapshot(
+        self, db_path
+    ):
+        # Same hazard as test_excluded_series_does_not_claim_its_object_id,
+        # but through the snapshot's removal path for an *inactive* series:
+        # _republish_snapshot must not let an excluded-and-deactivated
+        # series claim an object_id it will never actually publish to,
+        # which would otherwise permanently steal the slot from a
+        # legitimate, included, active colliding series.
+        excluded_id = _seed_series(db_path, "acme.a_b", value=1)
+        storage.set_series_active_bulk(db_path, [], [excluded_id])
+        _seed_series(db_path, "acme.a.b", value=2)
+        publisher, fake = _publisher(
+            db_path, mqtt_config_overrides={"exclude": ["acme.a_b"]}
+        )
+
+        publisher._republish_snapshot()
+
+        discovery_topic = "homeassistant/sensor/numbers_go_up/ngu_acme_a_b/config"
+        payload = json.loads(fake.published_dict(discovery_topic))
+        assert payload["unique_id"] == "ngu_acme_a_b"
+        assert fake.published_dict("numbers-go-up/acme.a.b/state") == "2"
+
     def test_no_include_or_exclude_publishes_everything(self, db_path):
         _seed_series(db_path, "acme.a", value=1)
         _seed_series(db_path, "other.b", value=2)
