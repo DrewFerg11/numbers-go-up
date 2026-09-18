@@ -294,8 +294,17 @@ jobs:
       # peter-evans/dockerhub-description isn't from a GitHub-owned or
       # verified creator, which this repo's Actions policy restricts to --
       # a plain API call needs no such allowlisting and uses the same token.
+      #
+      # continue-on-error: this is cosmetic (the Docker Hub listing text),
+      # not the release itself -- the images are already correctly published
+      # and digest-verified by this point. A Hub API hiccup here (e.g. a
+      # DOCKERHUB_TOKEN scoped Read & Write instead of the Read, Write,
+      # Delete that this specific endpoint requires) must not block the
+      # GitHub Release from being created. It still fails loudly via the
+      # ::error:: annotation below.
       - name: Sync Docker Hub description from README
         if: vars.DOCKERHUB_IMAGE != ''
+        continue-on-error: true
         run: |
           JWT=$(curl -sS -X POST https://hub.docker.com/v2/users/login/ \
             -H "Content-Type: application/json" \
