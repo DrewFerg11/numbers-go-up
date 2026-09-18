@@ -142,6 +142,8 @@ def test_example_config_documents_the_mqtt_block_commented_out():
     assert "# mqtt:" in EXAMPLE_CONFIG
     assert '#   host: "192.168.1.x"' in EXAMPLE_CONFIG
     assert "NGU_MQTT_PASSWORD" in EXAMPLE_CONFIG
+    assert "#   include: []" in EXAMPLE_CONFIG
+    assert "#   exclude: []" in EXAMPLE_CONFIG
     # Commented out -- an example config alone must never turn MQTT on.
     assert "\nmqtt:" not in EXAMPLE_CONFIG
 

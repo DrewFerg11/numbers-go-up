@@ -25,6 +25,7 @@ When ``config["mqtt"]`` is absent, :func:`build_publisher` returns a
 
 from __future__ import annotations
 
+import fnmatch
 import json
 import logging
 import os
@@ -136,6 +137,9 @@ def validate_mqtt_config(raw: Any) -> dict[str, Any] | None:
     if not isinstance(topic_prefix, str) or not topic_prefix.strip():
         raise ConfigError("mqtt.topic_prefix must be a non-empty string")
 
+    include = _validate_pattern_list(raw.get("include"), "mqtt.include")
+    exclude = _validate_pattern_list(raw.get("exclude"), "mqtt.exclude")
+
     return {
         "host": host,
         "port": port,
@@ -143,7 +147,22 @@ def validate_mqtt_config(raw: Any) -> dict[str, Any] | None:
         "tls": tls,
         "discovery_prefix": discovery_prefix,
         "topic_prefix": topic_prefix,
+        "include": include,
+        "exclude": exclude,
     }
+
+
+def _validate_pattern_list(raw: Any, field: str) -> list[str]:
+    """A list of non-empty glob (``fnmatch``) pattern strings. ``None``
+    (the field omitted) means "no patterns" -- for ``include`` that means
+    "everything is eligible", not "nothing is"."""
+    if raw is None:
+        return []
+    if not isinstance(raw, list) or not all(
+        isinstance(pattern, str) and pattern.strip() for pattern in raw
+    ):
+        raise ConfigError(f"{field} must be a list of non-empty strings")
+    return list(raw)
 
 
 def _format_number(value: float) -> str:
@@ -183,6 +202,8 @@ class MqttPublisher:
             "discovery_prefix", DEFAULT_DISCOVERY_PREFIX
         )
         self._topic_prefix = mqtt_config.get("topic_prefix", DEFAULT_TOPIC_PREFIX)
+        self._include = mqtt_config.get("include") or []
+        self._exclude = mqtt_config.get("exclude") or []
         self._db_path = db_path
         self._plugin_intervals = plugin_intervals
         self._default_interval = default_interval
@@ -253,6 +274,24 @@ class MqttPublisher:
 
     def _discovery_topic(self, object_id: str) -> str:
         return f"{self._discovery_prefix}/sensor/numbers_go_up/{object_id}/config"
+
+    # -- filtering -------------------------------------------------------
+
+    def _is_selected(self, metric_key: str) -> bool:
+        """Whether ``metric_key`` should be published, per ``mqtt.include``/
+        ``mqtt.exclude``. An empty ``include`` means "everything is
+        eligible"; a non-empty one is an allowlist. ``exclude`` is applied
+        after ``include`` and always wins. A series this excludes is simply
+        never published -- it's not the same as deactivation (see
+        :meth:`_publish_removal`), so an already-published entity in HA is
+        left alone rather than actively removed when config changes."""
+        if self._include and not any(
+            fnmatch.fnmatchcase(metric_key, pattern) for pattern in self._include
+        ):
+            return False
+        return not any(
+            fnmatch.fnmatchcase(metric_key, pattern) for pattern in self._exclude
+        )
 
     # -- lifecycle -------------------------------------------------------
 
@@ -477,7 +516,11 @@ class MqttPublisher:
             logger.exception("MQTT: failed to load series for snapshot republish")
             return
 
-        active_rows = [row for row in rows if row["active"]]
+        active_rows = [
+            row
+            for row in rows
+            if row["active"] and self._is_selected(row["metric_key"])
+        ]
         inactive_rows = [row for row in rows if not row["active"]]
 
         for row in active_rows:
@@ -544,7 +587,7 @@ class MqttPublisher:
 
         for key, row in rows.items():
             if row["active"]:
-                if status == "ok" and key in returned_keys:
+                if status == "ok" and key in returned_keys and self._is_selected(key):
                     self._maybe_publish_discovery(row)
                     if self._object_id_for(key) is not None:
                         self._publish_state(row)

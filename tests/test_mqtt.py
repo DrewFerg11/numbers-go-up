@@ -198,11 +198,36 @@ class TestValidateMqttConfig:
             "tls": False,
             "discovery_prefix": "homeassistant",
             "topic_prefix": "numbers-go-up",
+            "include": [],
+            "exclude": [],
         }
 
     def test_non_mapping_raises_config_error(self):
         with pytest.raises(ConfigError):
             mqtt.validate_mqtt_config("broker.local")
+
+    def test_include_and_exclude_are_carried_through(self):
+        result = mqtt.validate_mqtt_config(
+            {
+                "host": "broker.local",
+                "include": ["makerworld.*"],
+                "exclude": ["makerworld.*.comments"],
+            }
+        )
+        assert result["include"] == ["makerworld.*"]
+        assert result["exclude"] == ["makerworld.*.comments"]
+
+    def test_non_list_include_raises_config_error(self):
+        with pytest.raises(ConfigError, match="include"):
+            mqtt.validate_mqtt_config({"host": "broker.local", "include": "acme.*"})
+
+    def test_non_string_exclude_entry_raises_config_error(self):
+        with pytest.raises(ConfigError, match="exclude"):
+            mqtt.validate_mqtt_config({"host": "broker.local", "exclude": [123]})
+
+    def test_empty_string_pattern_raises_config_error(self):
+        with pytest.raises(ConfigError, match="include"):
+            mqtt.validate_mqtt_config({"host": "broker.local", "include": [""]})
 
 
 # --- discovery payload ----------------------------------------------------
@@ -453,6 +478,89 @@ class TestOnPollFinished:
 
         attrs = json.loads(fake.published_dict("numbers-go-up/acme.a/attrs"))
         assert attrs == {"foo": "bar"}
+
+
+# --- include/exclude filtering ---------------------------------------------
+
+
+class TestIncludeExcludeFiltering:
+    def test_snapshot_publishes_only_included_series(self, db_path):
+        _seed_series(db_path, "acme.a", value=1)
+        _seed_series(db_path, "other.b", value=2)
+        publisher, fake = _publisher(
+            db_path, mqtt_config_overrides={"include": ["acme.*"]}
+        )
+
+        publisher._republish_snapshot()
+
+        assert fake.published_dict("numbers-go-up/acme.a/state") == "1"
+        assert fake.published_dict("numbers-go-up/other.b/state") is None
+        assert (
+            fake.published_dict("homeassistant/sensor/numbers_go_up/ngu_other_b/config")
+            is None
+        )
+
+    def test_exclude_wins_over_include(self, db_path):
+        _seed_series(db_path, "acme.a", value=1)
+        _seed_series(db_path, "acme.b", value=2)
+        publisher, fake = _publisher(
+            db_path,
+            mqtt_config_overrides={"include": ["acme.*"], "exclude": ["acme.b"]},
+        )
+
+        publisher._republish_snapshot()
+
+        assert fake.published_dict("numbers-go-up/acme.a/state") == "1"
+        assert fake.published_dict("numbers-go-up/acme.b/state") is None
+
+    def test_exclude_alone_drops_matching_series(self, db_path):
+        _seed_series(db_path, "acme.a", value=1)
+        _seed_series(db_path, "acme.b", value=2)
+        publisher, fake = _publisher(
+            db_path, mqtt_config_overrides={"exclude": ["acme.b"]}
+        )
+
+        publisher._republish_snapshot()
+
+        assert fake.published_dict("numbers-go-up/acme.a/state") == "1"
+        assert fake.published_dict("numbers-go-up/acme.b/state") is None
+
+    def test_on_poll_finished_skips_excluded_key(self, db_path):
+        _seed_series(db_path, "acme.a", value=1)
+        _seed_series(db_path, "acme.b", value=2)
+        publisher, fake = _publisher(
+            db_path, mqtt_config_overrides={"exclude": ["acme.b"]}
+        )
+
+        publisher.on_poll_finished("acme", "ok", frozenset({"acme.a", "acme.b"}))
+
+        assert fake.published_dict("numbers-go-up/acme.a/state") == "1"
+        assert fake.published_dict("numbers-go-up/acme.b/state") is None
+
+    def test_excluded_series_does_not_claim_its_object_id(self, db_path):
+        # An excluded series is never published at all, so it must not
+        # occupy the object_id slot a colliding, *included* series needs.
+        _seed_series(db_path, "acme.a_b", value=1)
+        publisher, fake = _publisher(
+            db_path, mqtt_config_overrides={"exclude": ["acme.a_b"]}
+        )
+        publisher._republish_snapshot()
+        fake.published.clear()
+
+        _seed_series(db_path, "acme.a.b", value=2)
+        publisher.on_poll_finished("acme", "ok", frozenset({"acme.a.b"}))
+
+        assert fake.published_dict("numbers-go-up/acme.a.b/state") == "2"
+
+    def test_no_include_or_exclude_publishes_everything(self, db_path):
+        _seed_series(db_path, "acme.a", value=1)
+        _seed_series(db_path, "other.b", value=2)
+        publisher, fake = _publisher(db_path)
+
+        publisher._republish_snapshot()
+
+        assert fake.published_dict("numbers-go-up/acme.a/state") == "1"
+        assert fake.published_dict("numbers-go-up/other.b/state") == "2"
 
 
 # --- deactivation / reactivation -------------------------------------------
