@@ -118,6 +118,7 @@ def _is_stale(
     last_seen: int | None,
     interval_seconds: int,
     now: int,
+    finished_run_cache: dict[str, Any] | None = None,
 ) -> bool:
     """Both halves of the stale rule: an old newest sample *and* a plugin
     whose newest *finished* run failed. Age alone would mark every flat,
@@ -125,10 +126,23 @@ def _is_stale(
     not used here: start_run() inserts every run as status='error' (the
     _RUN_IN_PROGRESS sentinel) and only finish_run() overwrites it, so
     while a poll is in flight it counts a healthy plugin as failing.
+
+    ``finished_run_cache``, when given, memoizes ``latest_finished_run`` per
+    ``plugin_name`` in that dict -- every series belonging to one plugin
+    shares the same result, so a caller checking many series for one
+    request (the dashboard overview) can pass the same dict across calls
+    and collapse what would otherwise be one connection+query per stale
+    series down to one per plugin. ``None`` (the default) looks it up
+    fresh every time, unchanged from before this parameter existed.
     """
     if last_seen is None or now - last_seen <= 3 * interval_seconds:
         return False
-    finished = storage.latest_finished_run(db_path, plugin_name)
+    if finished_run_cache is not None and plugin_name in finished_run_cache:
+        finished = finished_run_cache[plugin_name]
+    else:
+        finished = storage.latest_finished_run(db_path, plugin_name)
+        if finished_run_cache is not None:
+            finished_run_cache[plugin_name] = finished
     return finished is not None and finished["status"] != "ok"
 
 

@@ -729,6 +729,86 @@ class TestRangeStatsConn:
         assert second["open"] == 2
 
 
+class TestRangeStatsBulkConn:
+    def _series(self, db_path, key):
+        return storage.get_or_create_series(
+            db_path, key, "demo", "cumulative", "Label", "", "", 1000
+        )
+
+    def test_matches_range_stats_conn_for_every_series_shape(self, db_path):
+        # One series of each shape range_stats_conn has to special-case:
+        # anchored with points after start, anchored and flat (no points
+        # after start), no anchor (younger than the range, falls back to
+        # its own first sample), a single-sample series, and one with no
+        # samples at all.
+        anchored = self._series(db_path, "demo.anchored")
+        flat = self._series(db_path, "demo.flat")
+        younger = self._series(db_path, "demo.younger")
+        single = self._series(db_path, "demo.single")
+        empty = self._series(db_path, "demo.empty")
+
+        storage.record_sample(db_path, anchored, 0, 10, heartbeat_seconds=1)
+        storage.record_sample(db_path, anchored, 150, 30, heartbeat_seconds=1)
+        storage.record_sample(db_path, anchored, 250, 40, heartbeat_seconds=1)
+
+        storage.record_sample(db_path, flat, 0, 100, heartbeat_seconds=100000)
+
+        storage.record_sample(db_path, younger, 120, 5, heartbeat_seconds=1)
+        storage.record_sample(db_path, younger, 300, 25, heartbeat_seconds=1)
+
+        storage.record_sample(db_path, single, 130, 7, heartbeat_seconds=100000)
+
+        start, end = 100, 400
+        series_ids = [anchored, flat, younger, single, empty]
+
+        conn = storage.connect(db_path)
+        try:
+            expected = {
+                sid: storage.range_stats_conn(conn, sid, start, end)
+                for sid in series_ids
+            }
+            actual = storage.range_stats_bulk_conn(
+                conn, dict.fromkeys(series_ids, start), end
+            )
+        finally:
+            conn.close()
+
+        assert actual == expected
+
+    def test_groups_by_distinct_start(self, db_path):
+        # The ALL range gives each series its own start (its first_seen) --
+        # distinct starts must still match range_stats_conn per series,
+        # not just when every series shares one start.
+        first = self._series(db_path, "demo.first")
+        second = self._series(db_path, "demo.second")
+        storage.record_sample(db_path, first, 0, 10, heartbeat_seconds=1)
+        storage.record_sample(db_path, first, 150, 30, heartbeat_seconds=1)
+        storage.record_sample(db_path, second, 400, 100, heartbeat_seconds=1)
+        storage.record_sample(db_path, second, 450, 110, heartbeat_seconds=1)
+
+        starts = {first: 0, second: 400}
+        end = 500
+
+        conn = storage.connect(db_path)
+        try:
+            expected = {
+                sid: storage.range_stats_conn(conn, sid, starts[sid], end)
+                for sid in starts
+            }
+            actual = storage.range_stats_bulk_conn(conn, starts, end)
+        finally:
+            conn.close()
+
+        assert actual == expected
+
+    def test_empty_input_returns_empty(self, db_path):
+        conn = storage.connect(db_path)
+        try:
+            assert storage.range_stats_bulk_conn(conn, {}, 1000) == {}
+        finally:
+            conn.close()
+
+
 class TestRecentChanges:
     def _series(self, db_path, key, plugin="demo"):
         return storage.get_or_create_series(

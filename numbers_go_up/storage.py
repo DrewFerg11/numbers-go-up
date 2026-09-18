@@ -568,6 +568,147 @@ def range_stats_conn(
     }
 
 
+def range_stats_bulk_conn(
+    conn: sqlite3.Connection, starts: dict[int, int], end: int
+) -> dict[int, dict[str, Any]]:
+    """Same per-series contract as :func:`range_stats_conn` (keyed by
+    ``series_id``, one entry per key in ``starts``), but grouped by
+    distinct ``start`` value so every series sharing one applies just two
+    queries total instead of :func:`range_stats_conn`'s 2-3 *per series*.
+
+    Every named range but ``ALL`` shares one ``start`` across every series
+    in a dashboard overview request, so this is the common case's win; for
+    ``ALL`` (each series' own ``first_seen``), starts rarely coincide and
+    this falls back to one group per series -- no worse than calling
+    :func:`range_stats_conn` in a loop, just routed through the same
+    grouped-query path.
+    """
+    by_start: dict[int, list[int]] = {}
+    for series_id, start in starts.items():
+        by_start.setdefault(start, []).append(series_id)
+
+    result: dict[int, dict[str, Any]] = {}
+    for start, series_ids in by_start.items():
+        result.update(_range_stats_group(conn, series_ids, start, end))
+    return result
+
+
+def _range_stats_group(
+    conn: sqlite3.Connection, series_ids: list[int], start: int, end: int
+) -> dict[int, dict[str, Any]]:
+    """One ``start``/``end`` window's worth of :func:`range_stats_conn`,
+    batched across ``series_ids`` in a constant number of queries rather
+    than one round trip per series. See :func:`range_stats_bulk_conn`.
+    """
+    placeholders = ",".join("?" for _ in series_ids)
+
+    # Anchor: the newest sample at or before `start`, per series -- the
+    # window-function equivalent of range_stats_conn's per-series
+    # "ORDER BY ts DESC LIMIT 1", batched into one query.
+    anchors: dict[int, float] = dict(
+        conn.execute(
+            f"""
+            SELECT series_id, value FROM (
+                SELECT series_id, value,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY series_id ORDER BY ts DESC
+                       ) AS rn
+                FROM samples
+                WHERE series_id IN ({placeholders}) AND ts <= ?
+            )
+            WHERE rn = 1
+            """,
+            (*series_ids, start),
+        ).fetchall()
+    )
+
+    # Series younger than the range (no anchor): same fallback as
+    # range_stats_conn -- their own first sample becomes `open`.
+    unanchored_ids = [sid for sid in series_ids if sid not in anchors]
+    firsts: dict[int, tuple[int, float]] = {}
+    if unanchored_ids:
+        placeholders_u = ",".join("?" for _ in unanchored_ids)
+        firsts = {
+            series_id: (ts, value)
+            for series_id, ts, value in conn.execute(
+                f"""
+                SELECT series_id, ts, value FROM (
+                    SELECT series_id, ts, value,
+                           ROW_NUMBER() OVER (
+                               PARTITION BY series_id ORDER BY ts ASC
+                           ) AS rn
+                    FROM samples
+                    WHERE series_id IN ({placeholders_u})
+                )
+                WHERE rn = 1
+                """,
+                unanchored_ids,
+            ).fetchall()
+        }
+
+    points_by_series: dict[int, list[tuple[int, float]]] = {
+        sid: [] for sid in series_ids
+    }
+
+    anchored_ids = [sid for sid in series_ids if sid in anchors]
+    if anchored_ids:
+        placeholders_a = ",".join("?" for _ in anchored_ids)
+        for series_id, ts, value in conn.execute(
+            f"SELECT series_id, ts, value FROM samples "
+            f"WHERE series_id IN ({placeholders_a}) AND ts > ? AND ts <= ? "
+            f"ORDER BY series_id, ts",
+            (*anchored_ids, start, end),
+        ):
+            points_by_series[series_id].append((ts, value))
+
+    if unanchored_ids:
+        # Every sample after the series' own first (rn > 1), same
+        # "strictly after the opening sample" rule range_stats_conn
+        # applies via `after_ts = first[0]`.
+        placeholders_u2 = ",".join("?" for _ in unanchored_ids)
+        for series_id, ts, value in conn.execute(
+            f"""
+            SELECT series_id, ts, value FROM (
+                SELECT series_id, ts, value,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY series_id ORDER BY ts ASC
+                       ) AS rn
+                FROM samples
+                WHERE series_id IN ({placeholders_u2}) AND ts <= ?
+            )
+            WHERE rn > 1
+            ORDER BY series_id, ts
+            """,
+            (*unanchored_ids, end),
+        ):
+            points_by_series[series_id].append((ts, value))
+
+    result: dict[int, dict[str, Any]] = {}
+    for series_id in series_ids:
+        if series_id in anchors:
+            open_value: float | None = anchors[series_id]
+            points: list[tuple[int, float]] = [(start, open_value)]
+        elif series_id in firsts:
+            first_ts, open_value = firsts[series_id]
+            points = [(first_ts, open_value)]
+        else:
+            open_value = None
+            points = []
+
+        extra = points_by_series[series_id]
+        points.extend(extra)
+
+        values = [value for _, value in points]
+        result[series_id] = {
+            "open": open_value,
+            "high": max(values) if values else None,
+            "low": min(values) if values else None,
+            "changes": len(extra),
+            "points": points,
+        }
+    return result
+
+
 def range_stats(
     db_path: str | Path, series_id: int, start: int, end: int
 ) -> dict[str, Any]:
