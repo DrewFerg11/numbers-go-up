@@ -1,5 +1,10 @@
 fastapi
-uvicorn[standard]
+# Plain uvicorn, not uvicorn[standard]: the [standard] extra pulls in uvloop
+# and httptools, which have no prebuilt linux/arm/v7 wheel and would compile
+# from source under QEMU on that platform's release/publish build. Neither
+# is measurable for this app's workload (I/O-bound polling plus a handful of
+# local dashboard requests, not a high-QPS server). Do not restore the extra.
+uvicorn
 pyyaml
 apscheduler>=3.11,<4
 httpx

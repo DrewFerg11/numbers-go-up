@@ -38,7 +38,7 @@ body:
       label: Environment
       value: |
         - Image tag:
-        - Architecture (amd64/arm64):
+        - Architecture (amd64/arm64/armv7):
         - Host (NAS model / distro):
         - `./data` on local disk, not NFS/SMB:  yes / no
     validations:

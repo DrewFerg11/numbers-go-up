@@ -4,6 +4,12 @@
 # replaces QEMU emulation, which is roughly an order of magnitude slower and
 # far flakier for any compiled wheel.
 #
+# linux/arm/v7 is the one exception: there is no free native 32-bit-ARM
+# runner (ubuntu-24.04-arm is aarch64, and Armv9-A silicon like GitHub's
+# Cobalt 100 runners has dropped AArch32 support entirely), so it builds
+# under QEMU. That's only affordable because requirements.txt drops
+# uvicorn[standard] -- see docs/gh-workflows/README.md ("Multi-arch").
+#
 # Tagged v* releases (semver + latest, GitHub Release, provenance
 # attestation) are handled separately by release.yml, which is gated by the
 # "release" environment and the "release tags" ruleset -- this workflow never
@@ -45,6 +51,11 @@ jobs:
           - platform: linux/arm64
             runner: ubuntu-24.04-arm      # free on public repos; fails on private
             suffix: arm64
+          # Not "arm/v7": the slash breaks the digest-${{ matrix.suffix }}
+          # artifact name and the buildx cache scope.
+          - platform: linux/arm/v7
+            runner: ubuntu-latest
+            suffix: armv7
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -58,6 +69,12 @@ jobs:
         run: echo "IMAGE=${REGISTRY}/${REPO,,}" >> "$GITHUB_ENV"
         env:
           REPO: ${{ github.repository }}
+
+      # Only linux/arm/v7 needs emulation; amd64 and arm64 stay native.
+      - if: matrix.platform == 'linux/arm/v7'
+        uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+        with:
+          platforms: arm
 
       - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
 
