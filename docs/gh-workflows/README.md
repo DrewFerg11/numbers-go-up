@@ -21,14 +21,18 @@ and far flakier for any compiled wheel.
 
 `linux/arm/v7` (32-bit ARM -- older Raspberry Pis) is the one exception,
 built under QEMU on `ubuntu-latest`. There's no free native 32-bit-ARM
-runner: `ubuntu-24.04-arm` is aarch64, and Armv9-A silicon (GitHub's free
-arm64 runners included) has dropped AArch32 support entirely, so 32-bit ARM
-binaries can't execute there at all. QEMU's real cost is compiling C
-extensions, not running Python, so `requirements.txt` uses plain `uvicorn`
-instead of `uvicorn[standard]` -- the `[standard]` extra's `uvloop` and
-`httptools` are the only dependencies without a prebuilt `armv7l` wheel, and
-without them the whole dependency tree installs as wheels even under
-emulation. Keep it that way; restoring the extra makes `arm/v7` slow again.
+runner: `ubuntu-24.04-arm` is aarch64, and its image ships an aarch64-only
+userland -- nobody has demonstrated AArch32 execution on GitHub's arm64
+runners, so QEMU is the proven path (the silicon itself, Neoverse N2, does
+support AArch32 at EL0; it's the runner image, not the CPU, that rules it
+out). QEMU's real cost is compiling C extensions, not running Python, so
+`requirements.txt` uses plain `uvicorn` instead of `uvicorn[standard]` --
+the `[standard]` extra's `uvloop` and `httptools` are the two dependencies
+in the tree with no prebuilt `armv7l` wheel *and* a slow build (a handful of
+other packages, like `pyyaml` and `MarkupSafe`, also lack an `armv7l` wheel,
+but they're small C extensions that compile from sdist in seconds even
+under emulation). Keep the extra dropped; restoring it makes `arm/v7` slow
+again.
 
 ## Why GHCR and not Docker Hub
 
