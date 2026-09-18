@@ -808,6 +808,39 @@ class TestRangeStatsBulkConn:
         finally:
             conn.close()
 
+    def test_anchor_and_firsts_queries_are_index_seeks_not_temp_btrees(self, db_path):
+        # Regression pin for a real perf bug caught in review: a
+        # ROW_NUMBER()/PARTITION BY translation of "newest/oldest sample
+        # per series" reads naturally, but SQLite has to materialize every
+        # matching row into a temp B-tree to number them before filtering
+        # to rn=1/rn=n -- turning an index seek into a sort, exactly where
+        # this function's whole point is to be fast. The MAX(ts)/MIN(ts)
+        # GROUP BY form it uses instead must compile to a plain index
+        # search on every query this function issues.
+        anchored = self._series(db_path, "demo.anchored")
+        younger = self._series(db_path, "demo.younger")
+        storage.record_sample(db_path, anchored, 0, 10, heartbeat_seconds=1)
+        storage.record_sample(db_path, younger, 500, 20, heartbeat_seconds=1)
+
+        conn = storage.connect(db_path)
+        try:
+            storage.range_stats_bulk_conn(conn, {anchored: 100, younger: 100}, 1000)
+
+            plans = "\n".join(
+                " ".join(str(cell) for cell in row)
+                for row in conn.execute(
+                    "EXPLAIN QUERY PLAN "
+                    "SELECT series_id, MAX(ts), value FROM samples "
+                    "WHERE series_id IN (?, ?) AND ts <= ? GROUP BY series_id",
+                    (anchored, younger, 100),
+                )
+            )
+        finally:
+            conn.close()
+
+        assert "SEARCH" in plans
+        assert "TEMP B-TREE" not in plans.upper()
+
 
 class TestRecentChanges:
     def _series(self, db_path, key, plugin="demo"):

@@ -579,9 +579,10 @@ def range_stats_bulk_conn(
     Every named range but ``ALL`` shares one ``start`` across every series
     in a dashboard overview request, so this is the common case's win; for
     ``ALL`` (each series' own ``first_seen``), starts rarely coincide and
-    this falls back to one group per series -- no worse than calling
-    :func:`range_stats_conn` in a loop, just routed through the same
-    grouped-query path.
+    this falls back to one group per series, each still answered by the
+    same index-seek queries :func:`_range_stats_group` uses for a shared
+    group -- not the O(series) round trips of a naive loop, just no
+    longer able to batch the anchor/points lookups *across* series either.
     """
     by_start: dict[int, list[int]] = {}
     for series_id, start in starts.items():
@@ -602,28 +603,32 @@ def _range_stats_group(
     """
     placeholders = ",".join("?" for _ in series_ids)
 
-    # Anchor: the newest sample at or before `start`, per series -- the
-    # window-function equivalent of range_stats_conn's per-series
-    # "ORDER BY ts DESC LIMIT 1", batched into one query.
-    anchors: dict[int, float] = dict(
-        conn.execute(
-            f"""
-            SELECT series_id, value FROM (
-                SELECT series_id, value,
-                       ROW_NUMBER() OVER (
-                           PARTITION BY series_id ORDER BY ts DESC
-                       ) AS rn
-                FROM samples
-                WHERE series_id IN ({placeholders}) AND ts <= ?
-            )
-            WHERE rn = 1
-            """,
+    # Anchor: the newest sample at or before `start`, per series. A bare
+    # ROW_NUMBER/PARTITION BY reads as the natural translation of
+    # range_stats_conn's per-series "ORDER BY ts DESC LIMIT 1", but SQLite
+    # has to materialize every matching row per group into a temp B-tree to
+    # number them before filtering to rn=1 -- an index seek turned into a
+    # sort. MAX(ts) GROUP BY compiles to a plain indexed seek per group
+    # instead, and SQLite's documented "bare column" rule for a lone
+    # MIN/MAX aggregate (https://www.sqlite.org/lang_select.html#bareagg)
+    # guarantees `value` here comes from the same row that produced that
+    # MAX(ts) -- exactly the row ROW_NUMBER's rn=1 would have picked, since
+    # (series_id, ts) is a unique index and a series can't have two rows
+    # tied on ts.
+    anchors: dict[int, float] = {
+        series_id: value
+        for series_id, _, value in conn.execute(
+            f"SELECT series_id, MAX(ts), value FROM samples "
+            f"WHERE series_id IN ({placeholders}) AND ts <= ? "
+            f"GROUP BY series_id",
             (*series_ids, start),
         ).fetchall()
-    )
+    }
 
     # Series younger than the range (no anchor): same fallback as
-    # range_stats_conn -- their own first sample becomes `open`.
+    # range_stats_conn -- their own first sample becomes `open`. Same
+    # MIN(ts) GROUP BY shape as the anchor query above, for the same
+    # index-seek-not-sort reason.
     unanchored_ids = [sid for sid in series_ids if sid not in anchors]
     firsts: dict[int, tuple[int, float]] = {}
     if unanchored_ids:
@@ -631,17 +636,9 @@ def _range_stats_group(
         firsts = {
             series_id: (ts, value)
             for series_id, ts, value in conn.execute(
-                f"""
-                SELECT series_id, ts, value FROM (
-                    SELECT series_id, ts, value,
-                           ROW_NUMBER() OVER (
-                               PARTITION BY series_id ORDER BY ts ASC
-                           ) AS rn
-                    FROM samples
-                    WHERE series_id IN ({placeholders_u})
-                )
-                WHERE rn = 1
-                """,
+                f"SELECT series_id, MIN(ts), value FROM samples "
+                f"WHERE series_id IN ({placeholders_u}) "
+                f"GROUP BY series_id",
                 unanchored_ids,
             ).fetchall()
         }
