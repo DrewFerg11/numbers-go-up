@@ -13,7 +13,7 @@ import pytest
 from apscheduler.executors.pool import ThreadPoolExecutor
 from apscheduler.schedulers.background import BackgroundScheduler
 
-from numbers_go_up import migrate, plugins, scheduler, storage
+from numbers_go_up import migrate, mqtt, plugins, scheduler, storage
 from numbers_go_up.http import BLOCKED_ERROR_PREFIX, Blocked, RateLimited
 
 FIXTURES_DIR = Path(__file__).resolve().parent / "fixtures" / "plugins"
@@ -1738,3 +1738,151 @@ class TestPatternSeriesLifecycle:
         assert (
             storage.get_series_by_key(db_path, "fake_constant.demo.value") is not None
         )
+
+
+class TestMqttPublisherHook:
+    """The scheduler calls one publisher interface after every finished
+    poll -- see numbers_go_up/mqtt.py. A publisher that raises must never
+    fail the plugin run itself."""
+
+    def test_run_result_carries_the_returned_keys(self, db_path):
+        plugin = _load_fixture_plugin("_fake_constant.py")
+
+        result = scheduler.run_plugin_once(
+            db_path, plugin, http=None, now=1000, heartbeat_seconds=86400
+        )
+
+        assert result.returned_keys == frozenset({"fake_constant.demo.value"})
+
+    def test_publisher_hook_called_with_status_and_returned_keys(self, db_path):
+        plugin = _load_fixture_plugin("_fake_constant.py")
+        calls = []
+
+        class RecordingPublisher:
+            def on_poll_finished(self, plugin_name, status, returned_keys):
+                calls.append((plugin_name, status, returned_keys))
+
+        scheduler._run_scheduled_plugin(
+            _FakeSchedulerStub(),
+            "plugin:fake_constant",
+            {},
+            db_path,
+            plugin,
+            None,
+            86400,
+            publisher=RecordingPublisher(),
+        )
+
+        assert calls == [
+            ("fake_constant", "ok", frozenset({"fake_constant.demo.value"}))
+        ]
+
+    def test_publisher_hook_receives_error_status_and_nothing_is_skipped(self, db_path):
+        plugin = _load_fixture_plugin("_fake_raises.py")
+        calls = []
+
+        class RecordingPublisher:
+            def on_poll_finished(self, plugin_name, status, returned_keys):
+                calls.append((plugin_name, status, returned_keys))
+
+        scheduler._run_scheduled_plugin(
+            _FakeSchedulerStub(),
+            "plugin:fake_raises",
+            {},
+            db_path,
+            plugin,
+            None,
+            86400,
+            publisher=RecordingPublisher(),
+        )
+
+        assert calls == [("fake_raises", "error", frozenset())]
+
+    def test_a_raising_publisher_does_not_fail_the_plugin_run(self, db_path, caplog):
+        plugin = _load_fixture_plugin("_fake_constant.py")
+
+        class ExplodingPublisher:
+            def on_poll_finished(self, plugin_name, status, returned_keys):
+                raise RuntimeError("broker on fire")
+
+        # Must not raise out of _run_scheduled_plugin.
+        scheduler._run_scheduled_plugin(
+            _FakeSchedulerStub(),
+            "plugin:fake_constant",
+            {},
+            db_path,
+            plugin,
+            None,
+            86400,
+            publisher=ExplodingPublisher(),
+        )
+
+        assert storage.consecutive_failures(db_path, "fake_constant") == 0
+
+    def test_no_publisher_defaults_to_a_noop(self, db_path):
+        plugin = _load_fixture_plugin("_fake_constant.py")
+
+        # publisher omitted entirely -- must not raise, same as passing a
+        # NoopPublisher explicitly.
+        scheduler._run_scheduled_plugin(
+            _FakeSchedulerStub(),
+            "plugin:fake_constant",
+            {},
+            db_path,
+            plugin,
+            None,
+            86400,
+        )
+
+    def test_backoff_path_notifies_publisher_with_error_status(self, db_path):
+        module = ModuleType("rl_plugin_mqtt")
+        module.METRICS = {
+            "rl_plugin_mqtt.x": {"kind": "gauge", "label": "X", "unit": ""}
+        }
+
+        def collect(config, http):
+            raise RateLimited(retry_after=5)
+
+        module.collect = collect
+        plugin = plugins.LoadedPlugin(
+            name="rl_plugin_mqtt",
+            module=module,
+            metrics=module.METRICS,
+            interval_seconds=1800,
+            config={},
+            source="user",
+        )
+        calls = []
+
+        class RecordingPublisher:
+            def on_poll_finished(self, plugin_name, status, returned_keys):
+                calls.append((plugin_name, status, returned_keys))
+
+        scheduler._run_scheduled_plugin(
+            _FakeSchedulerStub(),
+            "plugin:rl_plugin_mqtt",
+            {},
+            db_path,
+            plugin,
+            None,
+            86400,
+            publisher=RecordingPublisher(),
+        )
+
+        assert calls == [("rl_plugin_mqtt", "error", frozenset())]
+
+    def test_build_scheduler_defaults_to_a_noop_publisher(self, tmp_path):
+        db_path = tmp_path / "stats.db"
+        migrate.run_migrations(db_path)
+        config = {
+            "storage": {"path": str(db_path), "heartbeat_seconds": 86400},
+            "poll": {"default_interval": 1800, "jitter_fraction": 0.2},
+            "plugins": {"valid": {"enabled": True}},
+            "plugin_dir": str(FIXTURES_DIR),
+        }
+
+        job_scheduler = scheduler.build_scheduler(config)
+
+        job = job_scheduler.get_job("plugin:valid")
+        assert job is not None
+        assert isinstance(job.args[-1], mqtt.NoopPublisher)

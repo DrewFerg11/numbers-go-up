@@ -140,6 +140,21 @@ a {
   font-size: 12px;
 }
 
+.api-link {
+  border: 1px solid var(--border);
+  background: var(--bg-raised);
+  color: var(--text-muted);
+  border-radius: calc(var(--radius) - 3px);
+  padding: 4px 8px;
+  font-size: 12px;
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.api-link:hover {
+  color: var(--text);
+}
+
 .theme-toggle {
   border: 1px solid var(--border);
   background: var(--bg-raised);

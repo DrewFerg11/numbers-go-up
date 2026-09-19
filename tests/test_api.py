@@ -493,3 +493,70 @@ def test_is_stale_without_cache_looks_up_every_call(tmp_path, monkeypatch):
         api._is_stale(db_path, "acme", old_ts, 1800, now)
 
     assert calls == ["acme", "acme", "acme"]
+
+
+# --- /api/integrations ---------------------------------------------------
+
+
+def test_integrations_with_no_mqtt_publisher_reports_disabled(tmp_path):
+    client, _ = client_for(tmp_path)
+
+    response = client.get("/api/integrations")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "mqtt": {
+            "enabled": False,
+            "connected": False,
+            "broker": None,
+            "last_publish": None,
+            "last_error": None,
+        }
+    }
+
+
+def test_integrations_reports_mqtt_publisher_status(tmp_path):
+    client, db_path = client_for(tmp_path)
+
+    class FakePublisher:
+        @property
+        def status(self):
+            return {
+                "enabled": True,
+                "connected": True,
+                "broker": "broker.local:1883",
+                "last_publish": 1_700_000_000,
+                "last_error": None,
+            }
+
+    client.app.state.mqtt_publisher = FakePublisher()
+
+    response = client.get("/api/integrations")
+
+    body = response.json()
+    assert body["mqtt"]["enabled"] is True
+    assert body["mqtt"]["connected"] is True
+    assert body["mqtt"]["broker"] == "broker.local:1883"
+    assert body["mqtt"]["last_publish"] is not None
+    assert body["mqtt"]["last_error"] is None
+
+
+def test_integrations_response_never_includes_a_password_field(tmp_path):
+    client, _ = client_for(tmp_path)
+
+    class FakePublisher:
+        @property
+        def status(self):
+            return {
+                "enabled": True,
+                "connected": True,
+                "broker": "broker.local:1883",
+                "last_publish": None,
+                "last_error": None,
+            }
+
+    client.app.state.mqtt_publisher = FakePublisher()
+
+    response = client.get("/api/integrations")
+
+    assert "password" not in response.text.lower()

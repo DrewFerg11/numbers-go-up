@@ -21,9 +21,20 @@ See [`LICENSE`](LICENSE) for the terms this software itself is distributed
 under, and [`CONTRIBUTING.md`](CONTRIBUTING.md) for the rules a plugin has to
 meet before it's accepted.
 
-## Third-party code
+## Third-party software
 
+- **[paho-mqtt](https://pypi.org/project/paho-mqtt/)** (Eclipse Paho MQTT
+  Python client), used for the optional Home Assistant MQTT discovery
+  integration. Dual-licensed; used here under the
+  [Eclipse Distribution License 1.0](https://www.eclipse.org/org/documents/edl-v10.php)
+  (BSD-3-Clause).
 - **[uPlot](https://github.com/leeoniya/uPlot)** v1.6.31, MIT License,
   Copyright (c) 2022 Leon Sorokin. Vendored at
   `numbers_go_up/static/vendor/uplot/` (license file alongside) for the
   dashboard's big chart. Not loaded from a CDN; served from this repo.
+
+`/docs` and `/redoc` are served offline via
+[fastapi-offline](https://github.com/turettn/fastapi_offline) (MIT License),
+a regular pip dependency (see `requirements.txt`) that bundles Swagger UI
+(Apache License 2.0, Copyright (c) 2016 SmartBear Software) and ReDoc (MIT
+License) instead of loading either from a CDN.

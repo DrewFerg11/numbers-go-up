@@ -5,8 +5,19 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
+from fastapi_offline import FastAPIOffline
 
-from numbers_go_up import __version__, api, dashboard, http, migrate, netfs, scheduler
+from numbers_go_up import (
+    __version__,
+    api,
+    dashboard,
+    http,
+    migrate,
+    mqtt,
+    netfs,
+    scheduler,
+)
+from numbers_go_up.api import HealthResponse
 from numbers_go_up.config import load_config
 from numbers_go_up.plugins import discover_plugin_names, discover_plugins
 
@@ -105,7 +116,18 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.plugin_names = discover_plugin_names(config)
 
     shared_http_client = http.build_client()
-    job_scheduler = scheduler.build_scheduler(config, http=shared_http_client)
+
+    # Built (and started) whether or not config["mqtt"] is set -- a
+    # NoopPublisher when it's absent, so nothing downstream ever branches on
+    # "is MQTT on". A broker that's unreachable never fails startup: the
+    # client just keeps retrying on its own network thread.
+    mqtt_publisher = mqtt.build_publisher(config, app.state.plugin_intervals)
+    app.state.mqtt_publisher = mqtt_publisher
+    mqtt_publisher.start()
+
+    job_scheduler = scheduler.build_scheduler(
+        config, http=shared_http_client, publisher=mqtt_publisher
+    )
     app.state.scheduler = job_scheduler
     job_scheduler.start()
     try:
@@ -114,17 +136,45 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         # wait=False: shutdown must not hang on an in-flight collect() --
         # Python can't safely kill a thread, so we just stop waiting on it.
         job_scheduler.shutdown(wait=False)
+        mqtt_publisher.stop()
         shared_http_client.close()
 
 
-app = FastAPI(title="numbers-go-up", version=__version__, lifespan=lifespan)
+# FastAPIOffline (not FastAPI directly) serves /docs and /redoc from its
+# own bundled Swagger UI / ReDoc assets instead of a CDN, so both render
+# with the container's network fully blocked (#92) -- pulled via pip at
+# build time like every other dependency, not vendored in this repo.
+app = FastAPIOffline(
+    title="numbers-go-up",
+    version=__version__,
+    description=(
+        "Self-hosted, plugin-based tracker for the counters you care about, "
+        "with history, rate-of-change, and a Home Assistant integration. "
+        "This is the REST API a running instance exposes; see the project's "
+        "[README](https://github.com/DrewFerg11/numbers-go-up) for setup."
+    ),
+    contact={
+        "name": "numbers-go-up",
+        "url": "https://github.com/DrewFerg11/numbers-go-up",
+    },
+    license_info={
+        "name": "MIT",
+        "url": "https://github.com/DrewFerg11/numbers-go-up/blob/main/LICENSE",
+    },
+    lifespan=lifespan,
+)
 app.include_router(api.router)
 app.include_router(api.health_router)
 app.include_router(dashboard.router)
 app.mount("/static", StaticFiles(directory=str(dashboard.STATIC_DIR)), name="static")
 
 
-@app.get("/health")
+@app.get(
+    "/health",
+    tags=["health"],
+    summary="Liveness probe",
+    response_model=HealthResponse,
+)
 def health() -> dict[str, str]:
     """Liveness only: 200 while the process serves requests. Deliberately
     ignores plugin state -- a source being down is not a reason to restart

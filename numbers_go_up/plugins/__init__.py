@@ -64,6 +64,16 @@ _PATTERN_PLACEHOLDER = re.compile(r"^\{[a-zA-Z_][a-zA-Z0-9_]*\}$")
 _PLACEHOLDER_CHARSET = "[a-z0-9_-]+"
 _PLACEHOLDER_VALUE = re.compile(f"^{_PLACEHOLDER_CHARSET}$")
 
+# An *exact* (non-pattern) METRICS key gets the same charset discipline as
+# a resolved placeholder segment, plus ``.`` as the segment separator.
+# Without this, only the prefix ("<plugin>.") is checked, so a key like
+# "acme.a b" or "acme.a/b" would pass -- and every metric key is embedded,
+# unvalidated, into an MQTT topic (see mqtt.py's _state_topic/_attrs_topic)
+# and turned into a Home Assistant object_id, where a stray space, ``/``,
+# ``+``, or ``#`` corrupts entity identity or collides with MQTT's own
+# wildcard semantics.
+_VALID_EXACT_KEY = re.compile(r"^[a-z0-9_.-]+$")
+
 
 def is_pattern_key(key: str) -> bool:
     """True if ``key`` is a METRICS pattern template (has a ``{placeholder}``)
@@ -236,13 +246,22 @@ def validate_plugin_contract(
             )
             return None
 
-        if is_pattern_key(key) and not _is_valid_pattern_key(key):
+        if is_pattern_key(key):
+            if not _is_valid_pattern_key(key):
+                logger.warning(
+                    "Plugin %s: pattern metric key %r must have exactly one "
+                    "{placeholder} occupying a whole dot-separated segment; "
+                    "skipping",
+                    name,
+                    key,
+                )
+                return None
+        elif not _VALID_EXACT_KEY.fullmatch(key):
             logger.warning(
-                "Plugin %s: pattern metric key %r must have exactly one "
-                "{placeholder} occupying a whole dot-separated segment; "
-                "skipping",
+                "Plugin %s: metric key %r must match %s; skipping",
                 name,
                 key,
+                _VALID_EXACT_KEY.pattern,
             )
             return None
 
