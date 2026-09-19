@@ -63,11 +63,23 @@ def _plugin_from_module(
     )
 
 
-def _scheduler_config(tmp_path, plugins_config=None, jitter_fraction=0.2, db_path=None):
+def _scheduler_config(
+    tmp_path,
+    plugins_config=None,
+    jitter_fraction=0.2,
+    db_path=None,
+    keep_daily=7,
+    plugin_runs_retention_days=30,
+):
     db_path = db_path or (tmp_path / "stats.db")
     migrate.run_migrations(db_path)
     return {
-        "storage": {"path": str(db_path), "heartbeat_seconds": 86400},
+        "storage": {
+            "path": str(db_path),
+            "heartbeat_seconds": 86400,
+            "backups": {"keep_daily": keep_daily},
+            "plugin_runs_retention_days": plugin_runs_retention_days,
+        },
         "poll": {"default_interval": 1800, "jitter_fraction": jitter_fraction},
         "plugins": plugins_config or {},
         "plugin_dir": str(FIXTURES_DIR),
@@ -541,23 +553,31 @@ class TestBuildScheduler:
         db_path = tmp_path / "stats.db"
         migrate.run_migrations(db_path)
         return {
-            "storage": {"path": str(db_path), "heartbeat_seconds": 86400},
+            "storage": {
+                "path": str(db_path),
+                "heartbeat_seconds": 86400,
+                "plugin_runs_retention_days": 30,
+            },
             "poll": {"default_interval": 1800, "jitter_fraction": jitter_fraction},
             "plugins": plugins_config or {},
             "plugin_dir": str(FIXTURES_DIR),
         }
 
-    def test_zero_plugins_enabled_has_no_jobs(self, tmp_path):
+    def test_zero_plugins_enabled_has_no_plugin_jobs(self, tmp_path):
         job_scheduler = scheduler.build_scheduler(self._config(tmp_path))
 
-        assert job_scheduler.get_jobs() == []
+        assert [job.id for job in job_scheduler.get_jobs()] == [
+            scheduler.MAINTENANCE_JOB_ID
+        ]
 
     def test_only_enabled_plugins_get_jobs(self, tmp_path):
         config = self._config(tmp_path, plugins_config={"valid": {"enabled": True}})
 
         job_scheduler = scheduler.build_scheduler(config)
 
-        assert [job.id for job in job_scheduler.get_jobs()] == ["plugin:valid"]
+        assert sorted(job.id for job in job_scheduler.get_jobs()) == sorted(
+            ["plugin:valid", scheduler.MAINTENANCE_JOB_ID]
+        )
 
     def test_job_has_max_instances_1_and_coalesce_true(self, tmp_path):
         config = self._config(tmp_path, plugins_config={"valid": {"enabled": True}})
@@ -593,6 +613,100 @@ class TestBuildScheduler:
             <= next_run
             <= after + timedelta(seconds=scheduler.FIRST_RUN_MAX_DELAY_SECONDS)
         )
+
+    def test_maintenance_job_is_scheduled_daily_with_jitter_and_delayed_first_run(
+        self, tmp_path
+    ):
+        before = datetime.now(UTC)
+
+        job_scheduler = scheduler.build_scheduler(self._config(tmp_path))
+
+        after = datetime.now(UTC)
+        job = job_scheduler.get_job(scheduler.MAINTENANCE_JOB_ID)
+        assert job is not None
+        assert (
+            job.trigger.interval.total_seconds()
+            == scheduler.MAINTENANCE_INTERVAL_SECONDS
+        )
+        assert job.max_instances == 1
+        assert job.coalesce is True
+        assert job.misfire_grace_time is None
+
+        next_run = job.next_run_time.astimezone(UTC)
+        assert (
+            before + timedelta(seconds=scheduler.MAINTENANCE_FIRST_RUN_DELAY_SECONDS)
+            <= next_run
+            <= after + timedelta(seconds=scheduler.MAINTENANCE_FIRST_RUN_DELAY_SECONDS)
+        )
+
+
+class TestRunMaintenance:
+    def _config(self, db_path, retention_days=30, keep_daily=7):
+        return {
+            "storage": {
+                "path": str(db_path),
+                "heartbeat_seconds": 86400,
+                "plugin_runs_retention_days": retention_days,
+                "backups": {"keep_daily": keep_daily},
+            }
+        }
+
+    def test_records_a_summary_in_state(self, db_path):
+        run_id = storage.start_run(db_path, "demo", 1000)
+        storage.finish_run(
+            db_path, run_id, "ok", None, samples_written=1, finished_at=1000
+        )
+
+        scheduler._run_maintenance(db_path, self._config(db_path))
+
+        raw = storage.get_state(db_path, scheduler.MAINTENANCE_STATE_KEY)
+        assert raw is not None
+        record = json.loads(raw)
+        assert record["errors"] == []
+        assert record["backup_file"] is not None
+        assert record["backup_file"].endswith(".db")
+        assert record["pruned_rows"] == 0
+
+    def test_keep_daily_zero_backs_up_nothing_but_still_prunes_and_optimizes(
+        self, db_path
+    ):
+        scheduler._run_maintenance(db_path, self._config(db_path, keep_daily=0))
+
+        raw = storage.get_state(db_path, scheduler.MAINTENANCE_STATE_KEY)
+        record = json.loads(raw)
+        assert record["backup_file"] is None
+        assert record["errors"] == []
+
+    def test_a_failing_step_is_isolated_and_reported(self, db_path, monkeypatch):
+        def boom(*args, **kwargs):
+            raise OSError("backups directory is unwritable")
+
+        monkeypatch.setattr(storage, "backup_database", boom)
+
+        scheduler._run_maintenance(db_path, self._config(db_path))
+
+        raw = storage.get_state(db_path, scheduler.MAINTENANCE_STATE_KEY)
+        record = json.loads(raw)
+        assert len(record["errors"]) == 1
+        assert "backup_database" in record["errors"][0]
+        # Pruning and the pragmas still ran despite the backup failing.
+        assert record["pruned_rows"] == 0
+
+    def test_a_failing_step_does_not_affect_plugin_polling(self, db_path, monkeypatch):
+        # A maintenance failure must be isolated from run_plugin_once --
+        # simulate the crash and confirm a plugin poll right after still
+        # writes a normal plugin_runs row.
+        monkeypatch.setattr(
+            storage, "optimize", lambda *a, **k: (_ for _ in ()).throw(OSError("boom"))
+        )
+
+        scheduler._run_maintenance(db_path, self._config(db_path))
+        run_id = storage.start_run(db_path, "demo", 2000)
+        storage.finish_run(
+            db_path, run_id, "ok", None, samples_written=1, finished_at=2000
+        )
+
+        assert storage.latest_run(db_path, "demo")["status"] == "ok"
 
 
 class TestMisfireGrace:
@@ -806,6 +920,118 @@ class TestJitterFraction:
 
         job = job_scheduler.get_job("plugin:valid")
         assert job.trigger.jitter == pytest.approx(1800 * 0.2)
+
+
+class TestKeepDaily:
+    def test_quoted_keep_daily_raises_config_error_at_build_time(self, tmp_path):
+        # A quoted "7" would reach keep_daily <= 0 in storage.backup_database
+        # and raise TypeError on every maintenance run, silently disabling
+        # backups one daily warning at a time. Now it fails startup instead.
+        config = _scheduler_config(
+            tmp_path, plugins_config={"valid": {"enabled": True}}, keep_daily="7"
+        )
+
+        with pytest.raises(scheduler.ConfigError):
+            scheduler.build_scheduler(config)
+
+    def test_negative_keep_daily_raises_config_error(self, tmp_path):
+        config = _scheduler_config(
+            tmp_path, plugins_config={"valid": {"enabled": True}}, keep_daily=-1
+        )
+
+        with pytest.raises(scheduler.ConfigError):
+            scheduler.build_scheduler(config)
+
+    def test_bool_keep_daily_raises_config_error(self, tmp_path):
+        # Bools are ints in Python; storage.backups.keep_daily: true is a
+        # config mistake, not a number (same convention as jitter_fraction).
+        config = _scheduler_config(
+            tmp_path, plugins_config={"valid": {"enabled": True}}, keep_daily=True
+        )
+
+        with pytest.raises(scheduler.ConfigError):
+            scheduler.build_scheduler(config)
+
+    def test_zero_keep_daily_is_valid(self, tmp_path):
+        # 0 disables backups but is not itself a config error.
+        config = _scheduler_config(
+            tmp_path, plugins_config={"valid": {"enabled": True}}, keep_daily=0
+        )
+
+        scheduler.build_scheduler(config)
+
+    def test_run_maintenance_raises_on_quoted_keep_daily(self, db_path):
+        config = {
+            "storage": {
+                "path": str(db_path),
+                "heartbeat_seconds": 86400,
+                "plugin_runs_retention_days": 30,
+                "backups": {"keep_daily": "7"},
+            }
+        }
+
+        with pytest.raises(scheduler.ConfigError):
+            scheduler._run_maintenance(db_path, config)
+
+
+class TestPluginRunsRetentionDays:
+    def test_quoted_retention_days_raises_config_error_at_build_time(self, tmp_path):
+        # A quoted "30" would make `days * 86400` in prune_plugin_runs a
+        # ~173K-char string, and `now - <str>` raises TypeError on every
+        # maintenance run, silently disabling pruning. Fails startup instead.
+        config = _scheduler_config(
+            tmp_path,
+            plugins_config={"valid": {"enabled": True}},
+            plugin_runs_retention_days="30",
+        )
+
+        with pytest.raises(scheduler.ConfigError):
+            scheduler.build_scheduler(config)
+
+    def test_negative_retention_days_raises_config_error(self, tmp_path):
+        config = _scheduler_config(
+            tmp_path,
+            plugins_config={"valid": {"enabled": True}},
+            plugin_runs_retention_days=-1,
+        )
+
+        with pytest.raises(scheduler.ConfigError):
+            scheduler.build_scheduler(config)
+
+    def test_bool_retention_days_raises_config_error(self, tmp_path):
+        # Bools are ints in Python; plugin_runs_retention_days: true is a
+        # config mistake, not a number (same convention as keep_daily).
+        config = _scheduler_config(
+            tmp_path,
+            plugins_config={"valid": {"enabled": True}},
+            plugin_runs_retention_days=True,
+        )
+
+        with pytest.raises(scheduler.ConfigError):
+            scheduler.build_scheduler(config)
+
+    def test_zero_retention_days_is_valid(self, tmp_path):
+        # 0 prunes everything finished each run but is not itself an error.
+        config = _scheduler_config(
+            tmp_path,
+            plugins_config={"valid": {"enabled": True}},
+            plugin_runs_retention_days=0,
+        )
+
+        scheduler.build_scheduler(config)
+
+    def test_run_maintenance_raises_on_quoted_retention_days(self, db_path):
+        config = {
+            "storage": {
+                "path": str(db_path),
+                "heartbeat_seconds": 86400,
+                "plugin_runs_retention_days": "30",
+                "backups": {"keep_daily": 7},
+            }
+        }
+
+        with pytest.raises(scheduler.ConfigError):
+            scheduler._run_maintenance(db_path, config)
 
 
 def test_shutdown_wait_false_does_not_block_on_a_slow_job(tmp_path):
@@ -1875,7 +2101,11 @@ class TestMqttPublisherHook:
         db_path = tmp_path / "stats.db"
         migrate.run_migrations(db_path)
         config = {
-            "storage": {"path": str(db_path), "heartbeat_seconds": 86400},
+            "storage": {
+                "path": str(db_path),
+                "heartbeat_seconds": 86400,
+                "plugin_runs_retention_days": 30,
+            },
             "poll": {"default_interval": 1800, "jitter_fraction": 0.2},
             "plugins": {"valid": {"enabled": True}},
             "plugin_dir": str(FIXTURES_DIR),

@@ -190,6 +190,47 @@ your own zone in `docker-compose.yml` (e.g. `TZ=America/New_York`), because it
 affects timestamp correctness in the SQLite history and the daily heartbeat
 boundary.
 
+### Backup & restore
+
+The database looks after itself: a scheduled `maintenance` job runs once a
+day (first run 10 minutes after startup) and does four things, each isolated
+so one failing step doesn't stop the rest:
+
+1. Prunes `plugin_runs` older than `storage.plugin_runs_retention_days`
+   (default 30) — always keeping each plugin's newest finished run
+   regardless of age, so a disabled plugin still reports its last status.
+2. Takes a daily backup to `./data/backups/stats-daily-YYYYMMDD.db` via
+   SQLite's own online backup API (safe under WAL, no downtime), verifies it
+   with `PRAGMA quick_check`, and keeps the newest `storage.backups.keep_daily`
+   files (default 7; `0` disables backups).
+3. Runs `PRAGMA optimize`.
+4. Checkpoints and truncates the WAL file.
+
+Check `GET /api/integrations` for the last run's summary (rows pruned,
+backup file/size, any errors) and when the next run is scheduled.
+
+**Backups sit on the same disk as the live database.** They protect against
+a bad migration or accidental data loss, not a dead drive — `./data` still
+belongs in your NAS's own snapshot/backup job.
+
+**To restore:**
+
+```sh
+docker compose stop
+mv data/stats.db data/stats.db.bak    # keep the current one aside
+# the mv above doesn't rename these -- remove the stale sidecars so
+# a crashed instance's WAL doesn't get replayed over the restored db:
+rm -f data/stats.db-wal data/stats.db-shm
+cp data/backups/stats-daily-<date>.db data/stats.db
+docker compose start
+curl localhost:8080/api/metrics        # confirm it looks right
+```
+
+Restoring a **pre-migration** backup (`stats-pre-v*.db`, made automatically
+before a schema migration) needs the **older image tag** it came from — the
+downgrade guard refuses to start against a database newer than the running
+build understands, by design.
+
 ## Dashboard
 
 `/` is a lightweight overview page — a stock-watchlist view of your own
