@@ -24,12 +24,17 @@ Fire-once semantics (see the issue for the full spec):
   fires; the marker is initialised silently to the highest threshold at or
   below the current value.
 - Delivery is at-least-once and bounded: the pending payload is recorded in
-  ``state`` (key ``milestone_pending:{metric_key}``) *before* it's sent. A
-  2xx response advances the marker and clears the pending row in one
-  transaction. Any other outcome (non-2xx, timeout, connection error) keeps
-  it pending for the next successful poll of that plugin. After 24h of
-  failed retries it's dropped with one WARNING and the marker advances
-  anyway -- a dead webhook can't cause a flood once it comes back.
+  ``state`` (key ``milestone_pending:{metric_key}``) *before* it's sent, and
+  the marker is advanced to (at least) this threshold in that same write --
+  a crossing counts as "fired" the moment it's queued, not only once it's
+  actually delivered, so a later poll's crossing (higher or lower) can
+  never silently replace and lose a still-pending delivery. Any outcome
+  other than 2xx (non-2xx, timeout, connection error) keeps the payload
+  pending for the next successful poll of that plugin; a 2xx response then
+  just clears the pending row (the marker is already covered). After 24h of
+  failed retries it's dropped with one WARNING -- a dead webhook can't
+  cause a flood once it comes back. The marker only ever moves forward
+  (see ``_marker_at_least``), so none of this can regress it.
 """
 
 from __future__ import annotations
@@ -360,10 +365,12 @@ class MilestoneEvaluator:
         return _encode_threshold(max(current, candidate))
 
     def _attempt_delivery(self, metric_key: str, record: dict[str, Any]) -> None:
-        """Send one pending record; on success advance the marker and clear
-        it (one transaction); on failure, drop it after 24h with one
-        WARNING (advancing the marker anyway), otherwise leave it pending
-        for the next successful poll of this series' plugin."""
+        """Send one pending record; on success clear it and re-affirm the
+        marker (one transaction) -- ``_evaluate_key`` already advanced it to
+        this threshold at queue time, so this is normally a no-op via
+        ``_marker_at_least``'s monotonic guard, not a fresh advance; on
+        failure, drop it after 24h with one WARNING, otherwise leave it
+        pending for the next successful poll of this series' plugin."""
         threshold = record["threshold"]
         if self._send(record["payload"]):
             storage.set_state_and_delete(
@@ -454,21 +461,26 @@ class MilestoneEvaluator:
             "timestamp": _iso(now),
         }
         record = {"threshold": threshold, "payload": payload, "queued_at": now}
-        # Recorded before sending, and a newer (higher) crossing overwrites
-        # any older, still-undelivered pending record for the same series
-        # -- the highest threshold always wins, and the retry timer
+        # Recorded before sending. Any older, still-undelivered pending
+        # record for the same series is replaced -- whichever crossing is
+        # freshest wins the single pending slot, and the retry timer
         # restarts for it (it's a different notification, not a retry of
         # the old one). The fire-once invariant lives in the marker, not
         # in whichever pending record happens to survive longest: the
-        # marker is stamped to at least the higher of the two thresholds
-        # right now, in the same transaction as the overwrite -- covering
-        # both the discarded record (so a later dip-and-recross of it
-        # stays silent) and this new one (so a later regression at
-        # delivery time, via ``_marker_at_least``, can't uncover it
-        # either, even if this record itself is later displaced again and
-        # its eventual delivery/24h-drop would otherwise stamp a stale,
-        # lower threshold).
+        # marker is stamped to at least this threshold *right now*, at
+        # queue time, in the same transaction as the write -- covering
+        # this crossing immediately (not only once/if it's delivered), any
+        # discarded record's threshold too (so a later dip-and-recross of
+        # it stays silent), and closing the gap a *lower* fresh crossing
+        # would otherwise open: without an unconditional queue-time stamp,
+        # a still-pending *higher* record with no existing-pending guard
+        # to trigger on would simply be overwritten and lost the moment
+        # any later crossing (even a smaller one) fires while the webhook
+        # is still down. ``_marker_at_least`` also protects this write, and
+        # everything downstream (``_attempt_delivery``'s own stamps on
+        # success/24h-drop), from ever regressing it.
         sets = {f"{PENDING_PREFIX}{metric_key}": json.dumps(record)}
+        covered = threshold
         existing_raw = storage.get_state(self._db_path, f"{PENDING_PREFIX}{metric_key}")
         if existing_raw is not None:
             try:
@@ -476,9 +488,10 @@ class MilestoneEvaluator:
             except json.JSONDecodeError:
                 existing_threshold = None
             if isinstance(existing_threshold, int | float):
-                sets[f"{MARKER_PREFIX}{metric_key}"] = self._marker_at_least(
-                    metric_key, max(existing_threshold, threshold)
-                )
+                covered = max(covered, existing_threshold)
+        sets[f"{MARKER_PREFIX}{metric_key}"] = self._marker_at_least(
+            metric_key, covered
+        )
         storage.set_state_and_delete(self._db_path, sets=sets, delete_keys=[])
         self._attempt_delivery(metric_key, record)
         attempted.add(metric_key)

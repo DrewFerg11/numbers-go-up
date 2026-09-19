@@ -448,9 +448,12 @@ class TestDelivery:
 
         _poll(evaluator, "acme", "acme.x", previous=100, current=550)
         assert len(transport.sent) == 1  # attempted, failed
+        # A crossing counts as "fired" the moment it's queued: the marker
+        # is stamped at queue time, before delivery even succeeds -- a
+        # retry of 500 still finds it pending, just not because the
+        # marker withheld it.
         assert storage.get_state(db_path, "milestone_pending:acme.x") is not None
-        # marker not advanced yet -- a retry of 500 must still find it pending
-        assert storage.get_state(db_path, "milestone:acme.x") == "0.0"
+        assert float(storage.get_state(db_path, "milestone:acme.x")) == 500
 
         # next successful poll of the same plugin retries it, this time ok
         transport.responses.append(200)
@@ -613,6 +616,39 @@ class TestDelivery:
 
         assert float(storage.get_state(db_path, "milestone:acme.x")) == 2500
         assert storage.get_state(db_path, "milestone_pending:acme.x") is None
+
+    def test_a_still_pending_higher_milestone_survives_a_later_lower_crossing(
+        self, db_path
+    ):
+        # A still-undelivered *higher* pending record must not be silently
+        # replaced (and lost) by a *lower* fresh crossing arriving later
+        # while the webhook is still down -- the marker is stamped at
+        # queue time on every fresh crossing, not only when overwriting an
+        # existing pending row, so a lower crossing finds it already
+        # covered and never reaches the overwrite at all.
+        transport = _QueueTransport(responses=[500, 500, 500])
+        _seed_series(db_path, "acme.x", value=100)
+        evaluator, _ = _evaluator(
+            db_path, [_rule("acme.x", every=500)], transport=transport
+        )
+        _poll(evaluator, "acme", "acme.x", previous=None, current=100)
+
+        # Burst straight to 2600: fires 2500 (highest wins), POST fails.
+        _poll(evaluator, "acme", "acme.x", previous=100, current=2600)
+        pending = json.loads(storage.get_state(db_path, "milestone_pending:acme.x"))
+        assert pending["threshold"] == 2500
+        assert float(storage.get_state(db_path, "milestone:acme.x")) == 2500
+
+        # Dip, then recross 1500 -- already covered by the marker, so this
+        # must not touch the still-pending 2500 record at all.
+        _poll(evaluator, "acme", "acme.x", previous=2600, current=900)
+        _poll(evaluator, "acme", "acme.x", previous=900, current=1600)
+
+        still_pending = json.loads(
+            storage.get_state(db_path, "milestone_pending:acme.x")
+        )
+        assert still_pending["threshold"] == 2500
+        assert float(storage.get_state(db_path, "milestone:acme.x")) == 2500
 
     def test_isolation_one_series_error_does_not_block_another(self, db_path):
         _seed_series(db_path, "acme.a", value=100)
