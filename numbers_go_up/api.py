@@ -152,9 +152,30 @@ class MqttStatus(BaseModel):
     last_error: str | None
 
 
+class MilestoneRule(BaseModel):
+    metric: str
+    every: float | None
+    at: list[float]
+
+
+class MilestonePending(BaseModel):
+    metric: str
+    threshold: float
+    since: str | None
+
+
+class MilestoneStatus(BaseModel):
+    enabled: bool
+    rules: list[MilestoneRule]
+    pending: list[MilestonePending]
+    last_sent: str | None
+    last_error: str | None
+
+
 class IntegrationsResponse(BaseModel):
     maintenance: MaintenanceStatus
     mqtt: MqttStatus
+    milestones: MilestoneStatus
 
 
 # Matches the dashboard footer's "red" (Failure Handling #2).
@@ -558,14 +579,14 @@ def _unhealthy_reason(plugin: dict[str, Any], failure_threshold: int) -> str | N
 @router.get(
     "/integrations",
     tags=["integrations"],
-    summary="Status of the scheduled maintenance job and MQTT publisher",
+    summary="Status of the maintenance job, MQTT publisher, and milestone webhooks",
     response_model=IntegrationsResponse,
 )
 def integrations(request: Request) -> dict[str, Any]:
     """Status of background integrations that aren't a plugin poll: the
-    scheduled maintenance job (pruning, backups, PRAGMA tuning) and the MQTT
-    publisher. MQTT's status never includes a password or anything
-    broker-credential-shaped, only connectivity.
+    scheduled maintenance job (pruning, backups, PRAGMA tuning), the MQTT
+    publisher, and milestone webhooks. Never includes a password, broker
+    credential, or webhook URL -- only connectivity/delivery status.
     """
     config = request.app.state.config
     db_path = config["storage"]["path"]
@@ -603,6 +624,28 @@ def integrations(request: Request) -> dict[str, Any]:
     )
     last_publish = mqtt_status.get("last_publish")
 
+    milestone_evaluator = getattr(request.app.state, "milestone_evaluator", None)
+    milestone_status = (
+        milestone_evaluator.status
+        if milestone_evaluator is not None
+        else {
+            "enabled": False,
+            "rules": [],
+            "pending": [],
+            "last_sent": None,
+            "last_error": None,
+        }
+    )
+    last_sent = milestone_status.get("last_sent")
+    pending = [
+        {
+            "metric": item["metric"],
+            "threshold": item["threshold"],
+            "since": _iso(int(item["since"])) if item.get("since") else None,
+        }
+        for item in milestone_status.get("pending", [])
+    ]
+
     return {
         "maintenance": {
             "last_run": last_run,
@@ -614,6 +657,13 @@ def integrations(request: Request) -> dict[str, Any]:
             "broker": mqtt_status["broker"],
             "last_publish": _iso(int(last_publish)) if last_publish else None,
             "last_error": mqtt_status["last_error"],
+        },
+        "milestones": {
+            "enabled": milestone_status["enabled"],
+            "rules": milestone_status["rules"],
+            "pending": pending,
+            "last_sent": _iso(int(last_sent)) if last_sent else None,
+            "last_error": milestone_status["last_error"],
         },
     }
 

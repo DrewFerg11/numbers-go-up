@@ -505,6 +505,14 @@ _DISABLED_MQTT_STATUS = {
     "last_error": None,
 }
 
+_DISABLED_MILESTONE_STATUS = {
+    "enabled": False,
+    "rules": [],
+    "pending": [],
+    "last_sent": None,
+    "last_error": None,
+}
+
 
 def test_integrations_with_no_maintenance_run_yet(tmp_path):
     client, db_path = client_for(tmp_path)
@@ -515,6 +523,7 @@ def test_integrations_with_no_maintenance_run_yet(tmp_path):
     assert response.json() == {
         "maintenance": {"last_run": None, "next_run": None},
         "mqtt": _DISABLED_MQTT_STATUS,
+        "milestones": _DISABLED_MILESTONE_STATUS,
     }
 
 
@@ -538,6 +547,7 @@ def test_integrations_reports_the_last_maintenance_run(tmp_path):
     assert response.json() == {
         "maintenance": {"last_run": record, "next_run": None},
         "mqtt": _DISABLED_MQTT_STATUS,
+        "milestones": _DISABLED_MILESTONE_STATUS,
     }
 
 
@@ -553,6 +563,7 @@ def test_integrations_degrades_to_none_on_unparseable_state(tmp_path):
     assert response.json() == {
         "maintenance": {"last_run": None, "next_run": None},
         "mqtt": _DISABLED_MQTT_STATUS,
+        "milestones": _DISABLED_MILESTONE_STATUS,
     }
 
 
@@ -575,6 +586,7 @@ def test_integrations_degrades_to_none_on_schema_mismatched_state(tmp_path):
     assert response.json() == {
         "maintenance": {"last_run": None, "next_run": None},
         "mqtt": _DISABLED_MQTT_STATUS,
+        "milestones": _DISABLED_MILESTONE_STATUS,
     }
 
 
@@ -593,6 +605,7 @@ def test_integrations_with_no_mqtt_publisher_reports_disabled(tmp_path):
             "last_publish": None,
             "last_error": None,
         },
+        "milestones": _DISABLED_MILESTONE_STATUS,
     }
 
 

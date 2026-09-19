@@ -13,6 +13,7 @@ from numbers_go_up import (
     dashboard,
     http,
     migrate,
+    milestones,
     mqtt,
     netfs,
     scheduler,
@@ -125,8 +126,21 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.mqtt_publisher = mqtt_publisher
     mqtt_publisher.start()
 
+    # Built (and validated) whether or not config["milestones"] is set -- a
+    # NoopEvaluator when it's absent, so nothing downstream ever branches on
+    # "are milestones on". A bad milestones *config* (a missing webhook env
+    # var, an invalid rule) fails startup here; an unreachable *webhook* is
+    # only ever discovered later, on delivery.
+    milestone_evaluator = milestones.build_evaluator(
+        config, enabled_plugins, shared_http_client
+    )
+    app.state.milestone_evaluator = milestone_evaluator
+
     job_scheduler = scheduler.build_scheduler(
-        config, http=shared_http_client, publisher=mqtt_publisher
+        config,
+        http=shared_http_client,
+        publisher=mqtt_publisher,
+        milestone_evaluator=milestone_evaluator,
     )
     app.state.scheduler = job_scheduler
     job_scheduler.start()

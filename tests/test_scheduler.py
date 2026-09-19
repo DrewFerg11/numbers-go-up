@@ -13,7 +13,7 @@ import pytest
 from apscheduler.executors.pool import ThreadPoolExecutor
 from apscheduler.schedulers.background import BackgroundScheduler
 
-from numbers_go_up import migrate, mqtt, plugins, scheduler, storage
+from numbers_go_up import migrate, milestones, mqtt, plugins, scheduler, storage
 from numbers_go_up.http import BLOCKED_ERROR_PREFIX, Blocked, RateLimited
 
 FIXTURES_DIR = Path(__file__).resolve().parent / "fixtures" / "plugins"
@@ -2115,4 +2115,240 @@ class TestMqttPublisherHook:
 
         job = job_scheduler.get_job("plugin:valid")
         assert job is not None
-        assert isinstance(job.args[-1], mqtt.NoopPublisher)
+        assert isinstance(job.args[-2], mqtt.NoopPublisher)
+        assert isinstance(job.args[-1], milestones.NoopEvaluator)
+
+
+class TestMilestoneEvaluatorHook:
+    """The scheduler calls one evaluator interface after every finished
+    poll -- see numbers_go_up/milestones.py. Independent of the MQTT
+    publisher hook: an exception in either must never fail the plugin run,
+    and must never block the other from running."""
+
+    def test_evaluator_hook_called_with_status_returned_keys_and_values(self, db_path):
+        plugin = _load_fixture_plugin("_fake_constant.py")
+        calls = []
+
+        class RecordingEvaluator:
+            def on_poll_finished(
+                self,
+                plugin_name,
+                status,
+                returned_keys,
+                previous_values,
+                current_values,
+            ):
+                calls.append(
+                    (
+                        plugin_name,
+                        status,
+                        returned_keys,
+                        previous_values,
+                        current_values,
+                    )
+                )
+
+        scheduler._run_scheduled_plugin(
+            _FakeSchedulerStub(),
+            "plugin:fake_constant",
+            {},
+            db_path,
+            plugin,
+            None,
+            86400,
+            milestone_evaluator=RecordingEvaluator(),
+        )
+
+        assert calls == [
+            (
+                "fake_constant",
+                "ok",
+                frozenset({"fake_constant.demo.value"}),
+                {"fake_constant.demo.value": None},
+                {"fake_constant.demo.value": 42},
+            )
+        ]
+
+    def test_evaluator_hook_receives_error_status_and_empty_values(self, db_path):
+        plugin = _load_fixture_plugin("_fake_raises.py")
+        calls = []
+
+        class RecordingEvaluator:
+            def on_poll_finished(
+                self,
+                plugin_name,
+                status,
+                returned_keys,
+                previous_values,
+                current_values,
+            ):
+                calls.append((plugin_name, status, returned_keys))
+
+        scheduler._run_scheduled_plugin(
+            _FakeSchedulerStub(),
+            "plugin:fake_raises",
+            {},
+            db_path,
+            plugin,
+            None,
+            86400,
+            milestone_evaluator=RecordingEvaluator(),
+        )
+
+        assert calls == [("fake_raises", "error", frozenset())]
+
+    def test_a_raising_evaluator_does_not_fail_the_plugin_run(self, db_path):
+        plugin = _load_fixture_plugin("_fake_constant.py")
+
+        class ExplodingEvaluator:
+            def on_poll_finished(self, *a, **k):
+                raise RuntimeError("webhook on fire")
+
+        scheduler._run_scheduled_plugin(
+            _FakeSchedulerStub(),
+            "plugin:fake_constant",
+            {},
+            db_path,
+            plugin,
+            None,
+            86400,
+            milestone_evaluator=ExplodingEvaluator(),
+        )
+
+        assert storage.consecutive_failures(db_path, "fake_constant") == 0
+
+    def test_a_raising_evaluator_does_not_block_the_mqtt_publisher(self, db_path):
+        plugin = _load_fixture_plugin("_fake_constant.py")
+        mqtt_calls = []
+
+        class RecordingPublisher:
+            def on_poll_finished(self, plugin_name, status, returned_keys):
+                mqtt_calls.append((plugin_name, status, returned_keys))
+
+        class ExplodingEvaluator:
+            def on_poll_finished(self, *a, **k):
+                raise RuntimeError("webhook on fire")
+
+        scheduler._run_scheduled_plugin(
+            _FakeSchedulerStub(),
+            "plugin:fake_constant",
+            {},
+            db_path,
+            plugin,
+            None,
+            86400,
+            publisher=RecordingPublisher(),
+            milestone_evaluator=ExplodingEvaluator(),
+        )
+
+        assert mqtt_calls == [
+            ("fake_constant", "ok", frozenset({"fake_constant.demo.value"}))
+        ]
+
+    def test_a_raising_mqtt_publisher_does_not_block_the_milestone_evaluator(
+        self, db_path
+    ):
+        plugin = _load_fixture_plugin("_fake_constant.py")
+        milestone_calls = []
+
+        class ExplodingPublisher:
+            def on_poll_finished(self, *a, **k):
+                raise RuntimeError("broker on fire")
+
+        class RecordingEvaluator:
+            def on_poll_finished(
+                self,
+                plugin_name,
+                status,
+                returned_keys,
+                previous_values,
+                current_values,
+            ):
+                milestone_calls.append((plugin_name, status))
+
+        scheduler._run_scheduled_plugin(
+            _FakeSchedulerStub(),
+            "plugin:fake_constant",
+            {},
+            db_path,
+            plugin,
+            None,
+            86400,
+            publisher=ExplodingPublisher(),
+            milestone_evaluator=RecordingEvaluator(),
+        )
+
+        assert milestone_calls == [("fake_constant", "ok")]
+
+    def test_no_evaluator_defaults_to_a_noop(self, db_path):
+        plugin = _load_fixture_plugin("_fake_constant.py")
+
+        scheduler._run_scheduled_plugin(
+            _FakeSchedulerStub(),
+            "plugin:fake_constant",
+            {},
+            db_path,
+            plugin,
+            None,
+            86400,
+        )
+
+    def test_previous_value_reflects_state_before_this_poll_wrote(self, db_path):
+        plugin = _load_fixture_plugin("_fake_constant.py")
+        calls = []
+
+        class RecordingEvaluator:
+            def on_poll_finished(
+                self,
+                plugin_name,
+                status,
+                returned_keys,
+                previous_values,
+                current_values,
+            ):
+                calls.append((dict(previous_values), dict(current_values)))
+
+        # First run: brand new series, previous is None.
+        scheduler._run_scheduled_plugin(
+            _FakeSchedulerStub(),
+            "plugin:fake_constant",
+            {},
+            db_path,
+            plugin,
+            None,
+            86400,
+            milestone_evaluator=RecordingEvaluator(),
+        )
+        # Second run: the series now has a last_value of 42 from the first
+        # run, so "previous" for this run must be 42 -- not overwritten by
+        # this run's own (also 42) sample before the hook sees it.
+        scheduler._run_scheduled_plugin(
+            _FakeSchedulerStub(),
+            "plugin:fake_constant",
+            {},
+            db_path,
+            plugin,
+            None,
+            86400,
+            milestone_evaluator=RecordingEvaluator(),
+        )
+
+        assert calls[0] == (
+            {"fake_constant.demo.value": None},
+            {"fake_constant.demo.value": 42},
+        )
+        assert calls[1] == (
+            {"fake_constant.demo.value": 42},
+            {"fake_constant.demo.value": 42},
+        )
+
+    def test_build_scheduler_defaults_to_a_noop_evaluator(self, tmp_path):
+        config = _scheduler_config(
+            tmp_path, plugins_config={"valid": {"enabled": True}}
+        )
+
+        job_scheduler = scheduler.build_scheduler(config)
+
+        job = job_scheduler.get_job("plugin:valid")
+        assert job is not None
+        assert isinstance(job.args[-1], milestones.NoopEvaluator)

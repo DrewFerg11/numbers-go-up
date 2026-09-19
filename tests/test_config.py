@@ -148,6 +148,16 @@ def test_example_config_documents_the_mqtt_block_commented_out():
     assert "\nmqtt:" not in EXAMPLE_CONFIG
 
 
+def test_example_config_documents_the_milestones_block_commented_out():
+    assert "# milestones:" in EXAMPLE_CONFIG
+    assert "NGU_MILESTONE_WEBHOOK_URL" in EXAMPLE_CONFIG
+    assert "#     - metric: makerworld.profile.design_downloads" in EXAMPLE_CONFIG
+    assert "#       every: 500" in EXAMPLE_CONFIG
+    assert "#       at: [1000, 2500, 5000, 10000]" in EXAMPLE_CONFIG
+    # Commented out -- an example config alone must never turn milestones on.
+    assert "\nmilestones:" not in EXAMPLE_CONFIG
+
+
 def test_missing_mqtt_block_means_mqtt_is_off_by_default(tmp_path):
     config = load_config(env=_env(tmp_path))
 

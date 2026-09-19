@@ -28,9 +28,10 @@ import httpx
 from apscheduler.executors.pool import ThreadPoolExecutor
 from apscheduler.schedulers.background import BackgroundScheduler
 
-from numbers_go_up import mqtt, plugins, storage
+from numbers_go_up import milestones, mqtt, plugins, storage
 from numbers_go_up.config import ConfigError
 from numbers_go_up.http import Blocked, RateLimited
+from numbers_go_up.milestones import Evaluator as MilestoneEvaluator
 from numbers_go_up.mqtt import Publisher
 from numbers_go_up.plugins import LoadedPlugin, discover_plugins
 
@@ -66,6 +67,14 @@ class RunResult:
     # storage.py concern). The MQTT publisher hook uses this to know which
     # series to publish state for after a successful poll.
     returned_keys: frozenset[str] = dataclasses.field(default_factory=frozenset)
+    # metric_key -> its value immediately before this poll (None for a
+    # brand new series) and metric_key -> its value this poll validated,
+    # for every key in ``returned_keys``. Captured before any of this run's
+    # samples are written (see storage.last_values_for_plugin), so the
+    # milestone evaluator can tell "previous" from "current" even though
+    # record_sample() overwrites metric_series.last_value in place.
+    previous_values: dict[str, float | None] = dataclasses.field(default_factory=dict)
+    current_values: dict[str, float] = dataclasses.field(default_factory=dict)
 
 
 def run_plugin_once(
@@ -119,6 +128,14 @@ def run_plugin_once(
     samples_written = 0
     violations: list[str] = []
     returned_keys: set[str] = set()
+    previous_values: dict[str, float | None] = {}
+    current_values: dict[str, float] = {}
+
+    # Snapshot every existing series' last_value for this plugin *before*
+    # anything below writes a sample -- the milestone evaluator's
+    # "previous". A key with no row here is a brand new series (previous
+    # values default to None via .get() below).
+    last_values_before_run = storage.last_values_for_plugin(db_path, plugin.name)
 
     try:
         # Resolve every key exactly once (not once for the cardinality count
@@ -229,6 +246,8 @@ def run_plugin_once(
                 attrs=attrs,
             )
             returned_keys.add(key)
+            previous_values[key] = last_values_before_run.get(key)
+            current_values[key] = value
             if storage.record_sample(db_path, series_id, now, value, heartbeat_seconds):
                 samples_written += 1
     except Exception as exc:
@@ -254,6 +273,8 @@ def run_plugin_once(
             error=error,
             exception=exc,
             returned_keys=frozenset(returned_keys),
+            previous_values=previous_values,
+            current_values=current_values,
         )
 
     if violations:
@@ -275,6 +296,8 @@ def run_plugin_once(
             samples_written=samples_written,
             error=error,
             returned_keys=frozenset(returned_keys),
+            previous_values=previous_values,
+            current_values=current_values,
         )
 
     _reconcile_pattern_series(db_path, plugin, returned_keys)
@@ -288,6 +311,8 @@ def run_plugin_once(
         samples_written=samples_written,
         error=None,
         returned_keys=frozenset(returned_keys),
+        previous_values=previous_values,
+        current_values=current_values,
     )
 
 
@@ -473,6 +498,30 @@ def _notify_publisher(
         )
 
 
+def _notify_milestones(
+    milestone_evaluator: MilestoneEvaluator,
+    plugin_name: str,
+    status: str,
+    returned_keys: frozenset[str],
+    previous_values: dict[str, float | None],
+    current_values: dict[str, float],
+) -> None:
+    """Call the milestone evaluator hook, defensively: independent of the
+    MQTT publisher hook -- an exception in either must never fail the
+    plugin run, and must never block the other from running.
+    ``MilestoneEvaluator.on_poll_finished`` already catches everything
+    internally; this is belt-and-braces for any other ``Evaluator``
+    implementation (including a test double)."""
+    try:
+        milestone_evaluator.on_poll_finished(
+            plugin_name, status, returned_keys, previous_values, current_values
+        )
+    except Exception:
+        logger.exception(
+            "Milestone evaluator hook raised for plugin %s; ignoring", plugin_name
+        )
+
+
 def _run_scheduled_plugin(
     scheduler: BackgroundScheduler,
     job_id: str,
@@ -483,11 +532,14 @@ def _run_scheduled_plugin(
     heartbeat_seconds: int,
     failure_streaks: dict[str, _FailureStreak] | None = None,
     publisher: Publisher | None = None,
+    milestone_evaluator: MilestoneEvaluator | None = None,
 ) -> None:
     if failure_streaks is None:
         failure_streaks = {}
     if publisher is None:
         publisher = mqtt.NoopPublisher()
+    if milestone_evaluator is None:
+        milestone_evaluator = milestones.NoopEvaluator()
     try:
         result = run_plugin_once(
             db_path, plugin, http, int(time.time()), heartbeat_seconds
@@ -513,6 +565,9 @@ def _run_scheduled_plugin(
             job_id, next_run_time=datetime.now() + timedelta(seconds=delay)
         )
         _notify_publisher(publisher, plugin.name, "error", frozenset())
+        _notify_milestones(
+            milestone_evaluator, plugin.name, "error", frozenset(), {}, {}
+        )
     else:
         # Success or an ordinary error: no backoff (Failure Handling #4),
         # and any 429/403 streak is broken -- reset the counter.
@@ -533,6 +588,14 @@ def _run_scheduled_plugin(
                 None,
             )
         _notify_publisher(publisher, plugin.name, result.status, result.returned_keys)
+        _notify_milestones(
+            milestone_evaluator,
+            plugin.name,
+            result.status,
+            result.returned_keys,
+            result.previous_values,
+            result.current_values,
+        )
 
 
 def _validated_jitter_fraction(value: Any) -> float:
@@ -681,7 +744,10 @@ def _run_maintenance(db_path: str | Path, config: dict[str, Any]) -> None:
 
 
 def build_scheduler(
-    config: dict[str, Any], http: Any = None, publisher: Publisher | None = None
+    config: dict[str, Any],
+    http: Any = None,
+    publisher: Publisher | None = None,
+    milestone_evaluator: MilestoneEvaluator | None = None,
 ) -> BackgroundScheduler:
     """Build (but don't start) one interval job per enabled plugin.
 
@@ -718,6 +784,8 @@ def build_scheduler(
     )
     if publisher is None:
         publisher = mqtt.NoopPublisher()
+    if milestone_evaluator is None:
+        milestone_evaluator = milestones.NoopEvaluator()
 
     scheduler = BackgroundScheduler(executors={"default": ThreadPoolExecutor(10)})
     backoff_state: dict[str, int] = {}
@@ -746,6 +814,7 @@ def build_scheduler(
                 heartbeat_seconds,
                 failure_streaks,
                 publisher,
+                milestone_evaluator,
             ],
         )
         logger.info(
