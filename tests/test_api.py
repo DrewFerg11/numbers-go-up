@@ -511,7 +511,14 @@ def test_integrations_with_no_mqtt_publisher_reports_disabled(tmp_path):
             "broker": None,
             "last_publish": None,
             "last_error": None,
-        }
+        },
+        "milestones": {
+            "enabled": False,
+            "rules": [],
+            "pending": [],
+            "last_sent": None,
+            "last_error": None,
+        },
     }
 
 

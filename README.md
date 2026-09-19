@@ -385,6 +385,83 @@ Assistant (a plain `rest` sensor reading `/api/stats/latest` is a possible
 future addition — not implemented here); MQTT discovery is the only
 supported integration path today.
 
+## Milestone alerts
+
+Get a phone notification when a counter crosses a milestone — "Design
+Downloads passed 500" — instead of watching a dashboard for it. Independent
+of MQTT: this works whether or not the `mqtt` block above is configured.
+
+Add a `milestones` block to `config.yaml`:
+
+```yaml
+milestones:
+  webhook_url_env: NGU_MILESTONE_WEBHOOK_URL   # env var holding the full HA webhook URL
+  rules:
+    - metric: makerworld.profile.design_downloads
+      every: 500                               # fires at 500, 1000, 1500, ...
+    - metric: youtube.channel.main.subscribers
+      at: [1000, 2500, 5000, 10000]            # fires only at these thresholds
+    - metric: makerworld.model.{id}.downloads  # a plugin's METRICS pattern --
+      every: 100                               # applies to every matching series
+```
+
+Set the webhook URL via the `NGU_MILESTONE_WEBHOOK_URL` environment
+variable (or whatever name `webhook_url_env` points at) — never in
+`config.yaml`; it's a credential, exactly like `NGU_MQTT_PASSWORD`.
+
+**In Home Assistant:** Settings → Automations → create a new automation
+with a **Webhook** trigger, and copy the webhook URL it gives you into that
+environment variable. Add a **Notify → Mobile App** action reading the
+payload's `message` field, e.g.:
+
+```yaml
+trigger:
+  - platform: webhook
+    webhook_id: your-webhook-id
+    allowed_methods: [POST]
+    local_only: true
+action:
+  - service: notify.mobile_app_your_phone
+    data:
+      message: "{{ trigger.json.message }}"
+      title: "numbers-go-up"
+```
+
+HA webhooks are `local_only: true` by default — fine if the service and HA
+are on the same network; turn it off only if numbers-go-up reaches HA from
+outside it.
+
+**A rule** needs `metric` (an exact metric key, or one of a plugin's
+`METRICS` pattern templates, applying to every series that pattern
+matches — even ones that don't exist yet) plus `every` and/or `at`:
+`every: 500` fires at every multiple of 500; `at: [1000, 2500]` fires only
+at those exact thresholds; both together fire at the union of both, still
+once per threshold.
+
+**Fires once per threshold, ever:**
+
+- Never on startup, and never for a brand new series' first sample — there's
+  no "previous" value to have crossed anything yet.
+- Adding a rule to a series that's already past some of its thresholds
+  doesn't fire a backlog of "missed" milestones — it just quietly starts
+  tracking from the current value.
+- If a gauge crosses a threshold, dips back below it, and climbs past it
+  again, that's still just one notification, not two.
+- A burst that jumps past several thresholds at once (e.g. 480 → 1020 with
+  `every: 500`) still sends exactly one notification, for the highest one
+  (1000).
+
+**Delivery:** a failed POST (Home Assistant down, a network blip) is
+retried on the plugin's next successful poll, and survives a service
+restart. After 24 hours of failed retries it's dropped (logged once) rather
+than retried forever, and the milestone counts as delivered so a webhook
+that comes back later doesn't get flooded with a backlog.
+
+Check `GET /api/integrations` for `milestones.pending` (deliveries still
+retrying), `milestones.last_sent`, and `milestones.last_error` — the
+webhook URL itself is never included anywhere in that response, or in the
+logs.
+
 ## License
 
 MIT — see [LICENSE](LICENSE).

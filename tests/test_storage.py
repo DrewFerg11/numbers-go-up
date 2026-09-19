@@ -1002,3 +1002,85 @@ class TestGetAnySeriesByKey:
 
     def test_unknown_key_returns_none(self, db_path):
         assert storage.get_any_series_by_key(db_path, "nope") is None
+
+
+class TestLastValuesForPlugin:
+    def test_no_series_returns_empty(self, db_path):
+        assert storage.last_values_for_plugin(db_path, "acme") == {}
+
+    def test_returns_last_value_per_metric_key(self, db_path):
+        series_id = storage.get_or_create_series(
+            db_path, "acme.a", "acme", "gauge", "A", "", "", 1000
+        )
+        storage.record_sample(db_path, series_id, 1000, 5, heartbeat_seconds=86400)
+        storage.get_or_create_series(
+            db_path, "acme.b", "acme", "gauge", "B", "", "", 1000
+        )
+        storage.get_or_create_series(
+            db_path, "other.c", "other", "gauge", "C", "", "", 1000
+        )
+
+        result = storage.last_values_for_plugin(db_path, "acme")
+
+        assert result == {"acme.a": 5, "acme.b": None}
+
+    def test_reflects_state_before_a_later_record_sample_call(self, db_path):
+        series_id = storage.get_or_create_series(
+            db_path, "acme.a", "acme", "gauge", "A", "", "", 1000
+        )
+        storage.record_sample(db_path, series_id, 1000, 5, heartbeat_seconds=86400)
+
+        before = storage.last_values_for_plugin(db_path, "acme")
+        storage.record_sample(db_path, series_id, 2000, 9, heartbeat_seconds=86400)
+
+        assert before == {"acme.a": 5}
+
+
+class TestStateKeyValue:
+    def test_get_state_unknown_key_returns_none(self, db_path):
+        assert storage.get_state(db_path, "missing") is None
+
+    def test_set_then_get_round_trips(self, db_path):
+        storage.set_state(db_path, "milestone:acme.x", "500.0")
+        assert storage.get_state(db_path, "milestone:acme.x") == "500.0"
+
+    def test_set_state_upserts(self, db_path):
+        storage.set_state(db_path, "k", "1")
+        storage.set_state(db_path, "k", "2")
+        assert storage.get_state(db_path, "k") == "2"
+
+    def test_delete_state_removes_the_row(self, db_path):
+        storage.set_state(db_path, "k", "1")
+        storage.delete_state(db_path, "k")
+        assert storage.get_state(db_path, "k") is None
+
+    def test_delete_state_unknown_key_is_a_noop(self, db_path):
+        storage.delete_state(db_path, "missing")  # must not raise
+
+    def test_get_state_prefix_filters_by_prefix(self, db_path):
+        storage.set_state(db_path, "milestone:acme.a", "1")
+        storage.set_state(db_path, "milestone:acme.b", "2")
+        storage.set_state(db_path, "milestone_pending:acme.a", "3")
+
+        result = storage.get_state_prefix(db_path, "milestone:")
+
+        assert result == {"milestone:acme.a": "1", "milestone:acme.b": "2"}
+
+    def test_get_state_prefix_no_matches_returns_empty(self, db_path):
+        storage.set_state(db_path, "other:key", "1")
+        assert storage.get_state_prefix(db_path, "milestone:") == {}
+
+    def test_set_state_and_delete_applies_both_atomically(self, db_path):
+        storage.set_state(db_path, "milestone_pending:acme.x", "queued")
+
+        storage.set_state_and_delete(
+            db_path,
+            sets={"milestone:acme.x": "500.0"},
+            delete_keys=["milestone_pending:acme.x"],
+        )
+
+        assert storage.get_state(db_path, "milestone:acme.x") == "500.0"
+        assert storage.get_state(db_path, "milestone_pending:acme.x") is None
+
+    def test_set_state_and_delete_with_nothing_to_do_is_a_noop(self, db_path):
+        storage.set_state_and_delete(db_path, sets={}, delete_keys=[])  # must not raise

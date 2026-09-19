@@ -59,3 +59,16 @@
 #   include: []                  # glob patterns on metric_key; empty = everything
 #   exclude: []                  # glob patterns on metric_key; checked after include
 #   # Password: set the NGU_MQTT_PASSWORD env var, never here.
+
+# milestones:                    # omit this whole block to keep milestones off
+#   webhook_url_env: NGU_MILESTONE_WEBHOOK_URL   # env var holding the HA webhook URL
+#   rules:
+#     - metric: makerworld.profile.design_downloads
+#       every: 500                                # fires at 500, 1000, 1500, ...
+#     - metric: youtube.channel.main.subscribers
+#       at: [1000, 2500, 5000, 10000]              # fires only at these thresholds
+#     - metric: makerworld.model.{id}.downloads    # a plugin's METRICS pattern --
+#       every: 100                                 # applies to every matching series
+#   # Webhook URL: set the env var named above, never here -- it's a credential.
+#   # Each threshold fires at most once per series, ever: never on startup,
+#   # never again if the value dips and recovers.

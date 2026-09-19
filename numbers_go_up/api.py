@@ -425,10 +425,11 @@ def list_metrics(request: Request) -> dict[str, Any]:
 
 @router.get("/integrations")
 def integrations(request: Request) -> dict[str, Any]:
-    """Status of external integrations -- today, just MQTT. Never includes
-    a password or anything broker-credential-shaped, only connectivity."""
+    """Status of external integrations -- MQTT and milestone webhooks.
+    Never includes a password, broker credential, or webhook URL -- only
+    connectivity/delivery status."""
     publisher = getattr(request.app.state, "mqtt_publisher", None)
-    status = (
+    mqtt_status = (
         publisher.status
         if publisher is not None
         else {
@@ -439,16 +440,45 @@ def integrations(request: Request) -> dict[str, Any]:
             "last_error": None,
         }
     )
-    last_publish = status.get("last_publish")
+    last_publish = mqtt_status.get("last_publish")
+
+    milestone_evaluator = getattr(request.app.state, "milestone_evaluator", None)
+    milestone_status = (
+        milestone_evaluator.status
+        if milestone_evaluator is not None
+        else {
+            "enabled": False,
+            "rules": [],
+            "pending": [],
+            "last_sent": None,
+            "last_error": None,
+        }
+    )
+    last_sent = milestone_status.get("last_sent")
+    pending = [
+        {
+            "metric": item["metric"],
+            "threshold": item["threshold"],
+            "since": _iso(int(item["since"])) if item.get("since") else None,
+        }
+        for item in milestone_status.get("pending", [])
+    ]
 
     return {
         "mqtt": {
-            "enabled": status["enabled"],
-            "connected": status["connected"],
-            "broker": status["broker"],
+            "enabled": mqtt_status["enabled"],
+            "connected": mqtt_status["connected"],
+            "broker": mqtt_status["broker"],
             "last_publish": _iso(int(last_publish)) if last_publish else None,
-            "last_error": status["last_error"],
-        }
+            "last_error": mqtt_status["last_error"],
+        },
+        "milestones": {
+            "enabled": milestone_status["enabled"],
+            "rules": milestone_status["rules"],
+            "pending": pending,
+            "last_sent": _iso(int(last_sent)) if last_sent else None,
+            "last_error": milestone_status["last_error"],
+        },
     }
 
 

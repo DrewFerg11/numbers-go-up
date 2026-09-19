@@ -438,12 +438,16 @@ def get_series_by_key(db_path: str | Path, metric_key: str) -> sqlite3.Row | Non
     """The active metric_series row for ``metric_key`` -- None if it's
     unknown or deactivated (``active = 0``), so history/delta on a
     deactivated key 404s instead of serving its history.
+
+    Includes ``attrs`` (unlike this function's earlier shape) so callers
+    that need a series' ``attrs.url`` -- the milestone webhook payload --
+    don't need a second query.
     """
     with contextlib.closing(connect(db_path)) as conn:
         conn.row_factory = sqlite3.Row
         return conn.execute(
             "SELECT id, metric_key, plugin_name, kind, label, unit, icon, "
-            "last_value, last_seen FROM metric_series "
+            "last_value, last_seen, attrs FROM metric_series "
             "WHERE active = 1 AND metric_key = ?",
             (metric_key,),
         ).fetchone()
@@ -812,6 +816,93 @@ def recent_changes(db_path: str | Path, limit: int) -> list[sqlite3.Row]:
             """,
             (limit,),
         ).fetchall()
+
+
+def last_values_for_plugin(
+    db_path: str | Path, plugin_name: str
+) -> dict[str, float | None]:
+    """``metric_key -> last_value`` for every existing series of
+    ``plugin_name``, read right now -- i.e. called at the very start of a
+    plugin run, before that run's ``record_sample`` calls overwrite
+    ``last_value``, this is each series' value from *before* this poll: the
+    milestone evaluator's "previous". A key with no row yet (a brand new
+    series) is simply absent, which callers read as "no previous sample".
+    """
+    with contextlib.closing(connect(db_path)) as conn:
+        rows = conn.execute(
+            "SELECT metric_key, last_value FROM metric_series WHERE plugin_name = ?",
+            (plugin_name,),
+        ).fetchall()
+    return {row[0]: row[1] for row in rows}
+
+
+def get_state(db_path: str | Path, key: str) -> str | None:
+    """The stored value for ``key`` in the small ``state`` key/value table,
+    or ``None`` if it's never been set. Values are stored and returned as
+    plain text -- JSON-encoding a structured value is the caller's job."""
+    with contextlib.closing(connect(db_path)) as conn:
+        row = conn.execute("SELECT value FROM state WHERE key = ?", (key,)).fetchone()
+    return row[0] if row is not None else None
+
+
+def get_state_prefix(db_path: str | Path, prefix: str) -> dict[str, str]:
+    """Every ``state`` row whose key starts with ``prefix``, as a dict.
+
+    Filtered in Python rather than with a SQL ``LIKE``: ``prefix`` can
+    contain a caller-supplied plugin or metric name, and ``LIKE``'s ``_``/``%``
+    wildcards would otherwise need escaping for an exact-prefix match. The
+    ``state`` table is small (one row per fire-once marker and per pending
+    milestone delivery), so a full scan here is cheap.
+    """
+    with contextlib.closing(connect(db_path)) as conn:
+        rows = conn.execute("SELECT key, value FROM state").fetchall()
+    return {key: value for key, value in rows if key.startswith(prefix)}
+
+
+def set_state(db_path: str | Path, key: str, value: str) -> None:
+    """Upsert one ``state`` row."""
+    with contextlib.closing(connect(db_path)) as conn:
+        conn.execute(
+            "INSERT INTO state (key, value) VALUES (?, ?) "
+            "ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+            (key, value),
+        )
+        conn.commit()
+
+
+def delete_state(db_path: str | Path, key: str) -> None:
+    """Delete one ``state`` row. A no-op if it doesn't exist."""
+    with contextlib.closing(connect(db_path)) as conn:
+        conn.execute("DELETE FROM state WHERE key = ?", (key,))
+        conn.commit()
+
+
+def set_state_and_delete(
+    db_path: str | Path, sets: dict[str, str], delete_keys: Iterable[str]
+) -> None:
+    """Upsert several ``state`` rows and delete several others, atomically.
+
+    The milestone evaluator's "advance the marker and clear the pending
+    delivery" (on a successful webhook POST) needs both to happen together
+    -- a crash between the two must never leave a cleared pending with a
+    stale marker, or vice versa.
+    """
+    sets = dict(sets)
+    delete_keys = list(delete_keys)
+    if not sets and not delete_keys:
+        return
+
+    with contextlib.closing(connect(db_path)) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        for key, value in sets.items():
+            conn.execute(
+                "INSERT INTO state (key, value) VALUES (?, ?) "
+                "ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+                (key, value),
+            )
+        for key in delete_keys:
+            conn.execute("DELETE FROM state WHERE key = ?", (key,))
+        conn.commit()
 
 
 def history(
