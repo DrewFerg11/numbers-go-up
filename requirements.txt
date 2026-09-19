@@ -13,3 +13,4 @@ pyyaml
 apscheduler>=3.11,<4
 httpx
 jinja2
+paho-mqtt>=2,<3

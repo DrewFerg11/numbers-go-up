@@ -409,6 +409,35 @@ def list_metrics(request: Request) -> dict[str, Any]:
     return {"metrics": metrics}
 
 
+@router.get("/integrations")
+def integrations(request: Request) -> dict[str, Any]:
+    """Status of external integrations -- today, just MQTT. Never includes
+    a password or anything broker-credential-shaped, only connectivity."""
+    publisher = getattr(request.app.state, "mqtt_publisher", None)
+    status = (
+        publisher.status
+        if publisher is not None
+        else {
+            "enabled": False,
+            "connected": False,
+            "broker": None,
+            "last_publish": None,
+            "last_error": None,
+        }
+    )
+    last_publish = status.get("last_publish")
+
+    return {
+        "mqtt": {
+            "enabled": status["enabled"],
+            "connected": status["connected"],
+            "broker": status["broker"],
+            "last_publish": _iso(int(last_publish)) if last_publish else None,
+            "last_error": status["last_error"],
+        }
+    }
+
+
 def _plugin_statuses(request: Request) -> list[dict[str, Any]]:
     """One status report per discovered plugin, shared by /api/plugins and
     /health/plugins so the two can never disagree."""

@@ -81,6 +81,17 @@ EXAMPLE_CONFIG = """\
 # dashboard:
 #   pinned: []        # up to 6 metric keys for the index strip
 #                      # empty = first 4 cumulative metrics
+
+# mqtt:                          # omit this whole block to keep MQTT off
+#   host: "192.168.1.x"          # required; no default -- no block, no connection
+#   port: 1883
+#   username: "ngu"              # optional
+#   tls: false                   # true = TLS with system CAs (usually port 8883)
+#   discovery_prefix: "homeassistant"
+#   topic_prefix: "numbers-go-up"
+#   include: []                  # glob patterns on metric_key; empty = everything
+#   exclude: []                  # glob patterns on metric_key; checked after include
+#   # Password: set the NGU_MQTT_PASSWORD env var, never here.
 """
 
 

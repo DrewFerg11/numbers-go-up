@@ -1,8 +1,10 @@
 import logging
 
+import pytest
 from fastapi.testclient import TestClient
 
 from numbers_go_up import __version__, main
+from numbers_go_up.config import ConfigError
 from numbers_go_up.main import app
 
 client = TestClient(app)
@@ -112,6 +114,40 @@ def test_lifespan_runs_migrations_before_serving(tmp_path, monkeypatch):
         conn.close()
 
     assert "metric_series" in tables
+
+
+def test_service_starts_with_an_mqtt_broker_that_is_unreachable(tmp_path, monkeypatch):
+    # No network access in tests: 127.0.0.1 on a port nothing listens on is
+    # about as close to "unreachable broker" as this suite can get without
+    # touching a real socket in a blocking way -- the point here is only
+    # that startup and polling never depend on the connect succeeding.
+    monkeypatch.setenv("NGU_DATA_DIR", str(tmp_path / "data"))
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    (config_dir / "config.yaml").write_text("mqtt:\n  host: 127.0.0.1\n  port: 1\n")
+    monkeypatch.setenv("NGU_CONFIG_FILE", str(config_dir / "config.yaml"))
+    monkeypatch.setenv("NGU_PLUGIN_DIR", str(tmp_path / "plugins"))
+
+    with TestClient(app) as scoped_client:
+        health_response = scoped_client.get("/health")
+        integrations_response = scoped_client.get("/api/integrations")
+
+    assert health_response.status_code == 200
+    body = integrations_response.json()
+    assert body["mqtt"]["enabled"] is True
+    assert "password" not in integrations_response.text.lower()
+
+
+def test_missing_mqtt_host_fails_startup_with_config_error(tmp_path, monkeypatch):
+    monkeypatch.setenv("NGU_DATA_DIR", str(tmp_path / "data"))
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    (config_dir / "config.yaml").write_text("mqtt:\n  port: 1883\n")
+    monkeypatch.setenv("NGU_CONFIG_FILE", str(config_dir / "config.yaml"))
+    monkeypatch.setenv("NGU_PLUGIN_DIR", str(tmp_path / "plugins"))
+
+    with pytest.raises(ConfigError), TestClient(app):
+        pass
 
 
 def test_service_starts_with_every_plugin_broken(tmp_path, monkeypatch):

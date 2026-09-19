@@ -312,6 +312,79 @@ above on why the unofficial `livecounts` path was dropped before it shipped).
   on its next poll — the same trade-off the GitHub plugin makes with
   `full_name`.
 
+## Home Assistant
+
+MQTT discovery is the supported way in: add an `mqtt` block to
+`config.yaml` and every active series shows up as a Home Assistant sensor
+automatically, with no YAML on the HA side, and stays in HA's long-term
+statistics with the right `state_class`.
+
+**Prerequisite:** an MQTT broker HA can also reach. If you run HA OS or
+Supervised, the Mosquitto add-on is the easy path; any broker works
+otherwise.
+
+```yaml
+mqtt:
+  host: "192.168.1.x"
+  port: 1883
+  username: "ngu"                 # optional
+  tls: false                      # true = TLS with system CAs (usually port 8883)
+  discovery_prefix: "homeassistant"
+  topic_prefix: "numbers-go-up"
+  include: []                     # glob patterns on metric_key; empty = everything
+  exclude: []                     # glob patterns on metric_key; checked after include
+```
+
+Set the broker password via the `NGU_MQTT_PASSWORD` environment variable —
+never in `config.yaml`. Omit the whole `mqtt` block to keep MQTT off; that's
+zero connections, exactly like a plugin that's never configured.
+
+**Choosing which series get published:** by default every active series is
+published. `include`/`exclude` are lists of glob patterns
+([`fnmatch`](https://docs.python.org/3/library/fnmatch.html) syntax) matched
+against the series' `metric_key`, which already encodes plugin and entity
+(`github.repo.12345.stars`, `makerworld.model.987.downloads`,
+`youtube.channel.main.views`) — so one mechanism covers filtering by whole
+plugin (`youtube.*`), by one entity within a plugin
+(`makerworld.model.987.*`), or by metric across everything
+(`*.comments`). If `include` is non-empty, only series matching at least one
+of its patterns are eligible; `exclude` is then applied on top and always
+wins. Leave both empty for the previous all-active-series behavior.
+Changing `include`/`exclude` doesn't retract a series HA already learned
+about — a series that becomes excluded stops getting new state, and goes
+"unavailable" once its `expire_after` elapses, but its discovery config and
+last retained state stay in HA until you remove it manually (delete the
+entity in HA, or temporarily deactivate the series) — filtering is a
+publish-time decision, not the same as the deactivation lifecycle.
+
+Every series becomes one sensor entity, all grouped under a single
+**numbers-go-up** device (manufacturer "numbers-go-up", model "stats
+poller") so they show up together in HA's device list instead of scattered
+across "MQTT" entities. `cumulative` metrics get `state_class:
+total_increasing`; `gauge` metrics get `state_class: measurement`.
+
+- **`expire_after`** is set to 3x that plugin's poll interval — the same
+  staleness rule `/api/plugins` and `/api/stats/latest` already use. If a
+  plugin stops polling, its entities go "unavailable" in HA instead of
+  silently freezing on the last value.
+- **Entity IDs are permanent.** An entity's `object_id`/`unique_id` is
+  derived once from its metric key (`makerworld.profile.design_downloads` →
+  `ngu_makerworld_profile_design_downloads`) and never changes, even if the
+  series' label changes later. Two different metric keys that would collide
+  on the same object_id (a `.`/`_` clash) are detected: the second one is
+  skipped with a logged error rather than silently overwriting the first.
+- **To remove everything:** disable the plugins (or delete the `mqtt` block
+  and restart), then in Home Assistant go to Settings → Devices & Services →
+  MQTT and delete the "numbers-go-up" device. Deactivating one series (e.g. a
+  MakerWorld model that's no longer published) removes just that entity —
+  its discovery config and retained state are cleared automatically — while
+  the rest of the device stays intact.
+
+**Without MQTT:** there's currently no REST-polling fallback for Home
+Assistant (a plain `rest` sensor reading `/api/stats/latest` is a possible
+future addition — not implemented here); MQTT discovery is the only
+supported integration path today.
+
 ## License
 
 MIT — see [LICENSE](LICENSE).

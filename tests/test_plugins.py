@@ -94,6 +94,27 @@ class TestValidatePluginContract:
         metrics = plugins.validate_plugin_contract("mw", module)
         assert metrics == module.METRICS
 
+    def test_exact_key_with_invalid_character_is_rejected(self, caplog):
+        # Only the "<name>." prefix was ever charset-checked on an exact
+        # key; a stray space (or "/", "+", "#") would otherwise reach
+        # storage and, downstream, get embedded raw into an MQTT topic and
+        # a Home Assistant object_id.
+        module = ModuleType("mw")
+        module.collect = lambda config, http: {}
+        module.METRICS = {"mw.a b": {"kind": "gauge", "label": "X", "unit": ""}}
+        with caplog.at_level(logging.WARNING):
+            metrics = plugins.validate_plugin_contract("mw", module)
+        assert metrics is None
+
+    def test_exact_key_matching_the_charset_is_accepted(self):
+        module = ModuleType("mw")
+        module.collect = lambda config, http: {}
+        module.METRICS = {
+            "mw.design-downloads_2": {"kind": "gauge", "label": "X", "unit": ""}
+        }
+        metrics = plugins.validate_plugin_contract("mw", module)
+        assert metrics == module.METRICS
+
     def test_pattern_with_two_placeholders_is_rejected(self, caplog):
         module = ModuleType("mw")
         module.collect = lambda config, http: {}

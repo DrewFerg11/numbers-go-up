@@ -138,6 +138,22 @@ def test_non_mapping_yaml_raises_config_error(tmp_path):
     assert str(config_file) in str(exc_info.value)
 
 
+def test_example_config_documents_the_mqtt_block_commented_out():
+    assert "# mqtt:" in EXAMPLE_CONFIG
+    assert '#   host: "192.168.1.x"' in EXAMPLE_CONFIG
+    assert "NGU_MQTT_PASSWORD" in EXAMPLE_CONFIG
+    assert "#   include: []" in EXAMPLE_CONFIG
+    assert "#   exclude: []" in EXAMPLE_CONFIG
+    # Commented out -- an example config alone must never turn MQTT on.
+    assert "\nmqtt:" not in EXAMPLE_CONFIG
+
+
+def test_missing_mqtt_block_means_mqtt_is_off_by_default(tmp_path):
+    config = load_config(env=_env(tmp_path))
+
+    assert config.get("mqtt") is None
+
+
 def test_scalar_section_raises_config_error_naming_key(tmp_path):
     config_dir = tmp_path / "config"
     config_dir.mkdir(parents=True)
