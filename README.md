@@ -455,7 +455,11 @@ once per threshold.
 retried on the plugin's next successful poll, and survives a service
 restart. After 24 hours of failed retries it's dropped (logged once) rather
 than retried forever, and the milestone counts as delivered so a webhook
-that comes back later doesn't get flooded with a backlog.
+that comes back later doesn't get flooded with a backlog. One exception: if
+a still-failing delivery is superseded by a newer, higher crossing on the
+same series before it succeeds, it's not retried at all -- the higher
+threshold's notification covers it, since fire-once lives in the marker,
+not in whichever pending delivery happens to survive.
 
 Check `GET /api/integrations` for `milestones.pending` (deliveries still
 retrying), `milestones.last_sent`, and `milestones.last_error` — the
