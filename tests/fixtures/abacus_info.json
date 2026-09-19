@@ -1,0 +1,7 @@
+{
+  "exists": true,
+  "expires_in": 14514616,
+  "full_key": "K:scrubbed.example.com:scrubbed-counter",
+  "is_genuine": true,
+  "value": 6
+}
