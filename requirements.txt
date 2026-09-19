@@ -1,4 +1,8 @@
 fastapi
+# Serves /docs and /redoc from its own bundled Swagger UI/ReDoc assets
+# instead of a CDN, so both render with the container's network fully
+# blocked (#92) -- see NOTICE.md.
+fastapi-offline
 # Plain uvicorn, not uvicorn[standard]: the [standard] extra pulls in uvloop
 # and httptools, which have no prebuilt linux/arm/v7 wheel and would compile
 # from source under QEMU on that platform's release/publish build. Neither

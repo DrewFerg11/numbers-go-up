@@ -12,9 +12,10 @@ from __future__ import annotations
 import json
 import time
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException, Query, Request, Response
+from pydantic import BaseModel
 
 from numbers_go_up import storage
 from numbers_go_up.http import BLOCKED_ERROR_PREFIX
@@ -23,6 +24,112 @@ router = APIRouter(prefix="/api")
 # Mounted at the root next to /health, not under /api: it's for uptime
 # monitors, not dashboard clients.
 health_router = APIRouter()
+
+
+# --- Response models (#92) ----------------------------------------------
+#
+# These describe exactly what the handlers below already return -- adding
+# them gives /docs a populated schema and example instead of a bare
+# `dict[str, Any]`, without changing any payload. A handler still returns a
+# plain dict; FastAPI validates/serializes it against the model named in
+# response_model.
+
+
+class MetricLatest(BaseModel):
+    value: float
+    label: str | None
+    kind: Literal["gauge", "cumulative"]
+    unit: str | None
+    icon: str | None
+    updated: str | None
+    stale: bool
+    delta_1h: float | None
+    delta_24h: float | None
+
+
+class StatsLatestResponse(BaseModel):
+    timestamp: str | None
+    metrics: dict[str, MetricLatest]
+
+
+class HistoryPoint(BaseModel):
+    ts: int
+    value: float
+
+
+class ChangeBar(BaseModel):
+    ts: int
+    change: float
+
+
+class StatsHistoryResponse(BaseModel):
+    metric: str
+    points: list[HistoryPoint]
+    bars: list[ChangeBar]
+
+
+class StatsDeltaResponse(BaseModel):
+    metric: str
+    window_hours: int
+    delta: float | None
+    rate_per_hour: float | None
+    current: float | None
+    previous: float | None
+
+
+class MetricCatalogueEntry(BaseModel):
+    key: str
+    plugin: str
+    kind: Literal["gauge", "cumulative"]
+    label: str | None
+    unit: str | None
+    icon: str | None
+    last_value: float | None
+    last_seen: str | None
+    active: bool
+    attrs: dict[str, Any]
+
+
+class ListMetricsResponse(BaseModel):
+    metrics: list[MetricCatalogueEntry]
+
+
+PluginStatusName = Literal["disabled", "pending", "ok", "error", "blocked", "polling"]
+
+
+class PluginStatus(BaseModel):
+    name: str
+    status: PluginStatusName
+    enabled: bool
+    last_poll: str | None
+    next_poll: str | None
+    consecutive_failures: int
+    last_error: str | None
+    metrics: list[str]
+
+
+class ListPluginsResponse(BaseModel):
+    plugins: list[PluginStatus]
+
+
+class HealthResponse(BaseModel):
+    status: Literal["ok"]
+    version: str
+
+
+class UnhealthyPlugin(BaseModel):
+    name: str
+    reason: str
+    consecutive_failures: int
+    last_poll: str | None
+    last_error: str | None
+
+
+class PluginsHealthResponse(BaseModel):
+    status: Literal["ok", "unhealthy"]
+    failure_threshold: int
+    unhealthy: list[UnhealthyPlugin]
+
 
 # Matches the dashboard footer's "red" (Failure Handling #2).
 DEFAULT_UNHEALTHY_FAILURES = 3
@@ -132,7 +239,12 @@ def _is_stale(
     return finished is not None and finished["status"] != "ok"
 
 
-@router.get("/stats/latest")
+@router.get(
+    "/stats/latest",
+    tags=["stats"],
+    summary="Latest value and staleness for every active metric",
+    response_model=StatsLatestResponse,
+)
 def stats_latest(request: Request) -> dict[str, Any]:
     config = request.app.state.config
     db_path = config["storage"]["path"]
@@ -166,7 +278,12 @@ def stats_latest(request: Request) -> dict[str, Any]:
     return {"timestamp": _iso(now), "metrics": metrics}
 
 
-@router.get("/stats/history")
+@router.get(
+    "/stats/history",
+    tags=["stats"],
+    summary="Time series and bucketed change bars for one metric",
+    response_model=StatsHistoryResponse,
+)
 def stats_history(
     request: Request,
     metric: str,
@@ -210,7 +327,12 @@ def stats_history(
     }
 
 
-@router.get("/stats/delta")
+@router.get(
+    "/stats/delta",
+    tags=["stats"],
+    summary="Change and rate over a trailing window for one metric",
+    response_model=StatsDeltaResponse,
+)
 def stats_delta(
     request: Request, metric: str, hours: int = Query(..., gt=0, le=MAX_HOURS)
 ) -> dict[str, Any]:
@@ -246,17 +368,26 @@ def _parse_attrs(attrs_json: str | None) -> dict[str, Any]:
     reports on every series that ever existed, including ones no plugin
     will ever rewrite, so a corrupt row (a hand-edited DB, a bug in some
     future writer) degrades to an empty dict rather than 500ing the whole
-    catalogue.
+    catalogue. That includes valid JSON that isn't an object ("5", "[]") --
+    ``json.loads`` accepts those without complaint, and MetricCatalogueEntry
+    (#92) requires a dict, so passing one through would 500 every row in
+    the response, not just the corrupt one.
     """
     if not attrs_json:
         return {}
     try:
-        return json.loads(attrs_json)
+        parsed = json.loads(attrs_json)
     except json.JSONDecodeError:
         return {}
+    return parsed if isinstance(parsed, dict) else {}
 
 
-@router.get("/metrics")
+@router.get(
+    "/metrics",
+    tags=["metrics"],
+    summary="Catalogue of every metric series that has ever existed",
+    response_model=ListMetricsResponse,
+)
 def list_metrics(request: Request) -> dict[str, Any]:
     db_path = request.app.state.config["storage"]["path"]
 
@@ -382,7 +513,12 @@ def _plugin_statuses(request: Request) -> list[dict[str, Any]]:
     return plugins
 
 
-@router.get("/plugins")
+@router.get(
+    "/plugins",
+    tags=["plugins"],
+    summary="Poll status for every discovered plugin",
+    response_model=ListPluginsResponse,
+)
 def list_plugins(request: Request) -> dict[str, Any]:
     return {"plugins": _plugin_statuses(request)}
 
@@ -408,7 +544,12 @@ def _unhealthy_reason(plugin: dict[str, Any], failure_threshold: int) -> str | N
     return None
 
 
-@health_router.get("/health/plugins")
+@health_router.get(
+    "/health/plugins",
+    tags=["health"],
+    summary="Plugin health for uptime monitors",
+    response_model=PluginsHealthResponse,
+)
 def plugins_health(
     request: Request,
     response: Response,
