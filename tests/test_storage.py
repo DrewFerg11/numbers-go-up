@@ -1,6 +1,7 @@
 import json
 import sqlite3
 import time
+from pathlib import Path
 
 import pytest
 
@@ -451,6 +452,64 @@ class TestPrunePluginRuns:
 
         assert deleted == 3
 
+    def test_keeps_the_newest_finished_run_per_plugin_regardless_of_age(self, db_path):
+        now = 90 * 86400
+        # "demo" hasn't run in 40 days (disabled), but its last finished run
+        # must survive pruning so /api/plugins can still report its status.
+        old_finished = storage.start_run(db_path, "demo", now - 40 * 86400)
+        storage.finish_run(
+            db_path,
+            old_finished,
+            "ok",
+            None,
+            samples_written=1,
+            finished_at=now - 40 * 86400,
+        )
+        even_older_finished = storage.start_run(db_path, "demo", now - 50 * 86400)
+        storage.finish_run(
+            db_path,
+            even_older_finished,
+            "ok",
+            None,
+            samples_written=1,
+            finished_at=now - 50 * 86400,
+        )
+
+        deleted = storage.prune_plugin_runs(db_path, days=30, now=now)
+
+        assert deleted == 1
+        assert _run_row(db_path, old_finished) is not None
+        assert _run_row(db_path, even_older_finished) is None
+
+    def test_a_started_at_tie_between_two_finished_runs_keeps_exactly_one(
+        self, db_path
+    ):
+        # Two finished runs for the same plugin sharing a started_at (real
+        # under second-resolution timestamps): MAX(started_at) alone would
+        # match both rows and keep both, rather than picking the actual
+        # newest deterministically via the id tiebreak.
+        now = 90 * 86400
+        tied_started_at = now - 40 * 86400
+        older = storage.start_run(db_path, "demo", tied_started_at)
+        storage.finish_run(
+            db_path, older, "ok", None, samples_written=1, finished_at=tied_started_at
+        )
+        newer = storage.start_run(db_path, "demo", tied_started_at)
+        storage.finish_run(
+            db_path,
+            newer,
+            "ok",
+            None,
+            samples_written=1,
+            finished_at=tied_started_at + 1,
+        )
+
+        deleted = storage.prune_plugin_runs(db_path, days=30, now=now)
+
+        assert deleted == 1
+        assert _run_row(db_path, newer) is not None
+        assert _run_row(db_path, older) is None
+
     def test_never_touches_samples_series_or_state(self, db_path):
         series_id = storage.get_or_create_series(
             db_path, "demo.thing.count", "demo", "cumulative", "Count", "", "", 1000
@@ -685,6 +744,229 @@ class TestHistory:
         points = storage.history(db_path, series_id, 0, 1000)
 
         assert points == []
+
+
+class TestState:
+    def test_unknown_key_returns_none(self, db_path):
+        assert storage.get_state(db_path, "nope") is None
+
+    def test_set_then_get_round_trips(self, db_path):
+        storage.set_state(db_path, "k", "v1")
+        assert storage.get_state(db_path, "k") == "v1"
+
+    def test_set_overwrites_the_existing_value(self, db_path):
+        storage.set_state(db_path, "k", "v1")
+        storage.set_state(db_path, "k", "v2")
+        assert storage.get_state(db_path, "k") == "v2"
+
+
+class TestBackupDatabase:
+    def test_creates_a_verified_backup_file(self, db_path, tmp_path):
+        series_id = storage.get_or_create_series(
+            db_path, "demo.thing.count", "demo", "cumulative", "Count", "", "", 1000
+        )
+        storage.record_sample(db_path, series_id, 1000, 5, heartbeat_seconds=86400)
+        backup_dir = tmp_path / "backups"
+
+        result = storage.backup_database(
+            db_path, backup_dir, keep_daily=7, today="20260101"
+        )
+
+        backup_path = backup_dir / "stats-daily-20260101.db"
+        assert result["backup_file"] == str(backup_path)
+        assert result["backup_bytes"] == backup_path.stat().st_size
+        conn = sqlite3.connect(str(backup_path))
+        try:
+            assert (
+                conn.execute(
+                    "SELECT value FROM samples WHERE series_id = ?", (series_id,)
+                ).fetchone()[0]
+                == 5
+            )
+        finally:
+            conn.close()
+
+    def test_keep_daily_zero_creates_nothing(self, db_path, tmp_path):
+        backup_dir = tmp_path / "backups"
+
+        result = storage.backup_database(
+            db_path, backup_dir, keep_daily=0, today="20260101"
+        )
+
+        assert result == {"backup_file": None, "backup_bytes": None}
+        assert not backup_dir.exists()
+
+    def test_retention_keeps_exactly_keep_daily_newest_files(self, db_path, tmp_path):
+        backup_dir = tmp_path / "backups"
+        for day in ["20260101", "20260102", "20260103", "20260104"]:
+            storage.backup_database(db_path, backup_dir, keep_daily=2, today=day)
+
+        remaining = sorted(p.name for p in backup_dir.glob("stats-daily-*.db"))
+        assert remaining == ["stats-daily-20260103.db", "stats-daily-20260104.db"]
+
+    def test_retention_does_not_count_or_delete_a_foreign_daily_prefixed_file(
+        self, db_path, tmp_path
+    ):
+        # backup_dir is a plain bind mount -- a user-placed file that
+        # happens to share the "stats-daily-" prefix (not this function's
+        # own <8-digit-date>.db shape) must survive retention untouched
+        # and must not count toward keep_daily.
+        backup_dir = tmp_path / "backups"
+        backup_dir.mkdir()
+        foreign = backup_dir / "stats-daily-junk.db"
+        foreign.write_bytes(b"not one of ours")
+
+        for day in ["20260101", "20260102"]:
+            storage.backup_database(db_path, backup_dir, keep_daily=1, today=day)
+
+        assert foreign.exists()
+        remaining = sorted(
+            p.name for p in backup_dir.glob("stats-daily-*.db") if p != foreign
+        )
+        assert remaining == ["stats-daily-20260102.db"]
+
+    def test_retention_tolerates_a_file_already_removed_by_something_else(
+        self, db_path, tmp_path, monkeypatch
+    ):
+        backup_dir = tmp_path / "backups"
+        for day in ["20260101", "20260102"]:
+            storage.backup_database(db_path, backup_dir, keep_daily=2, today=day)
+        stale_path = backup_dir / "stats-daily-20260101.db"
+        original_unlink = Path.unlink
+
+        def fake_unlink(self, *args, **kwargs):
+            # Simulate another process winning the race between the glob
+            # and this unlink: the file is already gone by the time
+            # backup_database's own unlink(missing_ok=True) runs.
+            if self == stale_path:
+                original_unlink(self, missing_ok=True)
+            return original_unlink(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "unlink", fake_unlink)
+
+        # keep_daily=1 makes the 01-01 file the one retention wants gone.
+        result = storage.backup_database(
+            db_path, backup_dir, keep_daily=1, today="20260103"
+        )
+
+        assert result["backup_file"] == str(backup_dir / "stats-daily-20260103.db")
+        assert not stale_path.exists()
+
+    def test_does_not_touch_pre_migration_backups(self, db_path, tmp_path):
+        backup_dir = tmp_path / "backups"
+        backup_dir.mkdir()
+        pre_migration = backup_dir / "stats-pre-v1-20260101T000000.db"
+        pre_migration.write_bytes(b"not a real db, just a marker")
+
+        for day in ["20260101", "20260102", "20260103"]:
+            storage.backup_database(db_path, backup_dir, keep_daily=1, today=day)
+
+        assert pre_migration.exists()
+
+    def test_failing_quick_check_deletes_the_file_and_raises(
+        self, db_path, tmp_path, monkeypatch
+    ):
+        # The second sqlite3.connect() against the backup file is the
+        # verification step (the first is the backup() destination) --
+        # fake just that one's quick_check result to force the failure path.
+        backup_dir = tmp_path / "backups"
+        backup_path = backup_dir / "stats-daily-20260101.db"
+        original_connect = sqlite3.connect
+        seen = {"count": 0}
+
+        class FakeCorruptConnection:
+            def execute(self, sql, *a):
+                return type("Cursor", (), {"fetchone": lambda self: ("corrupt",)})()
+
+            def close(self):
+                pass
+
+        def fake_connect(path, *args, **kwargs):
+            if str(path) == str(backup_path):
+                seen["count"] += 1
+                if seen["count"] == 2:
+                    return FakeCorruptConnection()
+            return original_connect(path, *args, **kwargs)
+
+        monkeypatch.setattr(sqlite3, "connect", fake_connect)
+
+        with pytest.raises(ValueError, match="quick_check"):
+            storage.backup_database(db_path, backup_dir, keep_daily=7, today="20260101")
+
+        assert not backup_path.exists()
+
+
+class TestOptimizeAndCheckpoint:
+    def test_optimize_does_not_raise(self, db_path):
+        storage.optimize(db_path)
+
+    def test_wal_checkpoint_truncate_leaves_an_empty_or_absent_wal_file(self, db_path):
+        import os
+
+        series_id = storage.get_or_create_series(
+            db_path, "demo.thing.count", "demo", "cumulative", "Count", "", "", 1000
+        )
+        # A held-open connection keeps the WAL file from being auto-checkpointed
+        # away between writes, so the truncate below has something to do.
+        held_open = sqlite3.connect(str(db_path))
+        try:
+            for ts in range(1000, 1000 + 200):
+                storage.record_sample(db_path, series_id, ts, ts, heartbeat_seconds=1)
+
+            storage.wal_checkpoint_truncate(db_path)
+
+            wal_path = str(db_path) + "-wal"
+            assert not os.path.exists(wal_path) or os.path.getsize(wal_path) == 0
+        finally:
+            held_open.close()
+
+
+class TestRestoreDrill:
+    def test_restoring_a_daily_backup_recovers_series_samples_and_state(
+        self, db_path, tmp_path
+    ):
+        """Backups nobody has restored from aren't backups: seed data, back
+        it up, copy the backup to a fresh path, run migrations against it,
+        and confirm every read gives back what was seeded."""
+        series_id = storage.get_or_create_series(
+            db_path,
+            "demo.thing.count",
+            "demo",
+            "cumulative",
+            "Count",
+            "things",
+            "",
+            1000,
+        )
+        storage.record_sample(db_path, series_id, 1000, 5, heartbeat_seconds=86400)
+        storage.record_sample(db_path, series_id, 2000, 9, heartbeat_seconds=86400)
+        run_id = storage.start_run(db_path, "demo", 1000)
+        storage.finish_run(
+            db_path, run_id, "ok", None, samples_written=2, finished_at=1000
+        )
+        storage.set_state(db_path, "k", "v")
+
+        backup_dir = tmp_path / "backups"
+        result = storage.backup_database(
+            db_path, backup_dir, keep_daily=7, today="20260101"
+        )
+
+        restored_path = tmp_path / "restored" / "stats.db"
+        restored_path.parent.mkdir(parents=True)
+        restored_path.write_bytes(Path(result["backup_file"]).read_bytes())
+        # No -wal/-shm should carry over from a live backup; write_bytes of
+        # the single .db file already guarantees that here.
+        assert not (restored_path.parent / "stats.db-wal").exists()
+
+        migrate.run_migrations(restored_path)
+
+        assert storage.list_series(restored_path)[0]["metric_key"] == "demo.thing.count"
+        assert storage.history(restored_path, series_id, 0, 3000) == [
+            (1000, 5),
+            (2000, 9),
+        ]
+        assert storage.latest_run(restored_path, "demo")["status"] == "ok"
+        assert storage.get_state(restored_path, "k") == "v"
 
 
 class TestRangeStatsConn:
