@@ -11,6 +11,9 @@ license = "MIT"
 requires-python = ">=3.12"
 dependencies = [
     "fastapi",
+    # Offline /docs and /redoc -- see the comment in requirements.txt. Keep
+    # both declarations in sync.
+    "fastapi-offline",
     # Plain uvicorn, not uvicorn[standard] -- see the comment in
     # requirements.txt. Keep both declarations in sync.
     "uvicorn",

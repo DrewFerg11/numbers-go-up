@@ -27,3 +27,9 @@ meet before it's accepted.
   Copyright (c) 2022 Leon Sorokin. Vendored at
   `numbers_go_up/static/vendor/uplot/` (license file alongside) for the
   dashboard's big chart. Not loaded from a CDN; served from this repo.
+
+`/docs` and `/redoc` are served offline via
+[fastapi-offline](https://github.com/turettn/fastapi_offline) (MIT License),
+a regular pip dependency (see `requirements.txt`) that bundles Swagger UI
+(Apache License 2.0, Copyright (c) 2016 SmartBear Software) and ReDoc (MIT
+License) instead of loading either from a CDN.
