@@ -1,5 +1,6 @@
 import json
 import sqlite3
+import time
 
 import pytest
 
@@ -11,6 +12,12 @@ def db_path(tmp_path):
     path = tmp_path / "stats.db"
     migrate.run_migrations(path)
     return path
+
+
+def _time_it(fn):
+    start = time.perf_counter()
+    fn()
+    return time.perf_counter() - start
 
 
 def _series_row(db_path, series_id):
@@ -727,6 +734,166 @@ class TestRangeStatsConn:
 
         assert first["open"] == 1
         assert second["open"] == 2
+
+
+class TestRangeStatsBulkConn:
+    def _series(self, db_path, key):
+        return storage.get_or_create_series(
+            db_path, key, "demo", "cumulative", "Label", "", "", 1000
+        )
+
+    def test_matches_range_stats_conn_for_every_series_shape(self, db_path):
+        # One series of each shape range_stats_conn has to special-case:
+        # anchored with points after start, anchored and flat (no points
+        # after start), no anchor (younger than the range, falls back to
+        # its own first sample), a single-sample series, and one with no
+        # samples at all.
+        anchored = self._series(db_path, "demo.anchored")
+        flat = self._series(db_path, "demo.flat")
+        younger = self._series(db_path, "demo.younger")
+        single = self._series(db_path, "demo.single")
+        empty = self._series(db_path, "demo.empty")
+
+        storage.record_sample(db_path, anchored, 0, 10, heartbeat_seconds=1)
+        storage.record_sample(db_path, anchored, 150, 30, heartbeat_seconds=1)
+        storage.record_sample(db_path, anchored, 250, 40, heartbeat_seconds=1)
+
+        storage.record_sample(db_path, flat, 0, 100, heartbeat_seconds=100000)
+
+        storage.record_sample(db_path, younger, 120, 5, heartbeat_seconds=1)
+        storage.record_sample(db_path, younger, 300, 25, heartbeat_seconds=1)
+
+        storage.record_sample(db_path, single, 130, 7, heartbeat_seconds=100000)
+
+        start, end = 100, 400
+        series_ids = [anchored, flat, younger, single, empty]
+
+        conn = storage.connect(db_path)
+        try:
+            expected = {
+                sid: storage.range_stats_conn(conn, sid, start, end)
+                for sid in series_ids
+            }
+            actual = storage.range_stats_bulk_conn(
+                conn, dict.fromkeys(series_ids, start), end
+            )
+        finally:
+            conn.close()
+
+        assert actual == expected
+
+    def test_groups_by_distinct_start(self, db_path):
+        # The ALL range gives each series its own start (its first_seen) --
+        # distinct starts must still match range_stats_conn per series,
+        # not just when every series shares one start.
+        first = self._series(db_path, "demo.first")
+        second = self._series(db_path, "demo.second")
+        storage.record_sample(db_path, first, 0, 10, heartbeat_seconds=1)
+        storage.record_sample(db_path, first, 150, 30, heartbeat_seconds=1)
+        storage.record_sample(db_path, second, 400, 100, heartbeat_seconds=1)
+        storage.record_sample(db_path, second, 450, 110, heartbeat_seconds=1)
+
+        starts = {first: 0, second: 400}
+        end = 500
+
+        conn = storage.connect(db_path)
+        try:
+            expected = {
+                sid: storage.range_stats_conn(conn, sid, starts[sid], end)
+                for sid in starts
+            }
+            actual = storage.range_stats_bulk_conn(conn, starts, end)
+        finally:
+            conn.close()
+
+        assert actual == expected
+
+    def test_empty_input_returns_empty(self, db_path):
+        conn = storage.connect(db_path)
+        try:
+            assert storage.range_stats_bulk_conn(conn, {}, 1000) == {}
+        finally:
+            conn.close()
+
+    def test_anchor_seek_is_an_index_search_not_a_scan(self, db_path):
+        # Regression pin for a real perf bug caught in review, twice: a
+        # ROW_NUMBER()/PARTITION BY translation of "newest sample per
+        # series" reads naturally but forces a temp-B-tree materialization
+        # of every matching row before it can pick rn=1, and a seemingly
+        # index-friendly MAX(ts) GROUP BY loses MIN/MAX's own index
+        # short-circuit the moment a second bare column is selected
+        # alongside it -- both measured *slower* than the plain per-series
+        # "ORDER BY ts DESC LIMIT 1" seek this function actually uses.
+        # "the plan says SEARCH" turned out not to be sufficient either
+        # time (both replaced queries also said SEARCH), so this pins the
+        # query text itself, not just its plan.
+        anchored = self._series(db_path, "demo.anchored")
+        storage.record_sample(db_path, anchored, 0, 10, heartbeat_seconds=1)
+
+        plan = "\n".join(
+            " ".join(str(cell) for cell in row)
+            for row in storage.connect(db_path).execute(
+                "EXPLAIN QUERY PLAN "
+                "SELECT value FROM samples WHERE series_id = ? AND ts <= ? "
+                "ORDER BY ts DESC LIMIT 1",
+                (anchored, 100),
+            )
+        )
+
+        assert "SEARCH" in plan
+        assert "SCAN" not in plan
+        assert "GROUP BY" not in plan.upper()
+
+    def test_bulk_is_not_grossly_slower_than_a_per_series_loop(self, db_path):
+        # The actual, easy-to-lose property a plan-shape assertion alone
+        # doesn't pin (per review): whatever range_stats_bulk_conn does
+        # internally, it must not regress on the very thing it exists to
+        # speed up. A generous ratio bound keeps this from flaking on a
+        # loaded CI runner while still catching the kind of regression
+        # review caught repeatedly (up to ~28x slower).
+        anchored_ids = [self._series(db_path, f"demo.anchored{i}") for i in range(20)]
+        for series_id in anchored_ids:
+            for t in range(0, 2000, 20):
+                storage.record_sample(db_path, series_id, t, t, heartbeat_seconds=1)
+
+        # Younger-than-range series: no sample at or before `start`, so
+        # every one of these genuinely exercises the firsts/VALUES-join
+        # path -- a previous version of this fixture picked a `start`
+        # that coincided with an existing sample, so every series came
+        # back anchored and the join path went untested even though the
+        # test passed.
+        younger_ids = [self._series(db_path, f"demo.younger{i}") for i in range(20)]
+        for series_id in younger_ids:
+            for t in range(1600, 2000, 20):
+                storage.record_sample(db_path, series_id, t, t, heartbeat_seconds=1)
+
+        series_ids = anchored_ids + younger_ids
+        starts = {series_id: 1000 for series_id in anchored_ids} | {
+            series_id: 1500 for series_id in younger_ids
+        }
+        end = 2000
+
+        conn = storage.connect(db_path)
+        try:
+
+            def loop_stats():
+                return {
+                    series_id: storage.range_stats_conn(
+                        conn, series_id, starts[series_id], end
+                    )
+                    for series_id in series_ids
+                }
+
+            def bulk_stats():
+                return storage.range_stats_bulk_conn(conn, starts, end)
+
+            # Best-of-3 for both, to smooth over one-off scheduling noise.
+            loop_time = min(_time_it(loop_stats) for _ in range(3))
+            bulk_time = min(_time_it(bulk_stats) for _ in range(3))
+        finally:
+            conn.close()
+
+        assert bulk_time < loop_time * 3
 
 
 class TestRecentChanges:

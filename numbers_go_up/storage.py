@@ -568,6 +568,163 @@ def range_stats_conn(
     }
 
 
+def range_stats_bulk_conn(
+    conn: sqlite3.Connection, starts: dict[int, int], end: int
+) -> dict[int, dict[str, Any]]:
+    """Same per-series contract as :func:`range_stats_conn` (keyed by
+    ``series_id``, one entry per key in ``starts``), grouped by distinct
+    ``start`` value so every series sharing one shares its *points*
+    queries too -- the part of :func:`range_stats_conn` that genuinely
+    batches well. See :func:`_range_stats_group` for what does and
+    doesn't batch, and why.
+
+    Every named range but ``ALL`` shares one ``start`` across every series
+    in a dashboard overview request, so this is the common case; for
+    ``ALL`` (each series' own ``first_seen``), starts rarely coincide and
+    this falls back to one group per series -- not the O(series)
+    *connections* the shared connection in :func:`build_overview
+    <numbers_go_up.dashboard.build_overview>` already eliminates, just one
+    ungrouped call to :func:`_range_stats_group` per series.
+    """
+    by_start: dict[int, list[int]] = {}
+    for series_id, start in starts.items():
+        by_start.setdefault(start, []).append(series_id)
+
+    result: dict[int, dict[str, Any]] = {}
+    for start, series_ids in by_start.items():
+        result.update(_range_stats_group(conn, series_ids, start, end))
+    return result
+
+
+def _range_stats_group(
+    conn: sqlite3.Connection, series_ids: list[int], start: int, end: int
+) -> dict[int, dict[str, Any]]:
+    """One ``start``/``end`` window's worth of :func:`range_stats_conn`
+    for every series in ``series_ids``. The anchor/opening-value lookups
+    stay one indexed seek per series (see the comment below for why a
+    batched version of those was measured slower); the points lookups --
+    the actual per-series row data, not just one value -- are batched
+    into two queries total for the whole group instead of one per
+    series. See :func:`range_stats_bulk_conn`.
+    """
+    # Anchor / firsts: the newest sample at or before `start` (or, for a
+    # series younger than the range, its own first sample), per series.
+    # These stay per-series "ORDER BY ts DESC/ASC LIMIT 1" seeks rather
+    # than a single batched query across series -- both a ROW_NUMBER/
+    # PARTITION BY window and a MAX(ts)/MIN(ts) GROUP BY were tried and
+    # measured *slower* than the seeks they'd replace (confirmed in
+    # review): the window forces SQLite to materialize every matching row
+    # per group into a temp B-tree before it can pick rn=1, and GROUP BY
+    # loses the MIN/MAX aggregate's own index short-circuit the moment a
+    # second bare column (``value``) is selected alongside it, so it still
+    # visits every row in each group. A LIMIT-1 seek has neither problem,
+    # and it's cheap: no PRAGMA/connect() cost since every series here
+    # shares the one already-open connection -- that per-*connection* cost
+    # is what batching this function exists to remove, not the seeks
+    # themselves. The points queries below are where batching genuinely
+    # wins (one query across every series in the group, not one per
+    # series), so those stay batched.
+    anchors: dict[int, float] = {}
+    unanchored_ids: list[int] = []
+    for series_id in series_ids:
+        row = conn.execute(
+            "SELECT value FROM samples WHERE series_id = ? AND ts <= ? "
+            "ORDER BY ts DESC LIMIT 1",
+            (series_id, start),
+        ).fetchone()
+        if row is not None:
+            anchors[series_id] = row[0]
+        else:
+            unanchored_ids.append(series_id)
+
+    firsts: dict[int, tuple[int, float]] = {}
+    for series_id in unanchored_ids:
+        row = conn.execute(
+            "SELECT ts, value FROM samples WHERE series_id = ? ORDER BY ts ASC LIMIT 1",
+            (series_id,),
+        ).fetchone()
+        if row is not None:
+            firsts[series_id] = row
+
+    points_by_series: dict[int, list[tuple[int, float]]] = {
+        sid: [] for sid in series_ids
+    }
+
+    anchored_ids = list(anchors)
+    if anchored_ids:
+        placeholders_a = ",".join("?" for _ in anchored_ids)
+        for series_id, ts, value in conn.execute(
+            f"SELECT series_id, ts, value FROM samples "
+            f"WHERE series_id IN ({placeholders_a}) AND ts > ? AND ts <= ? "
+            f"ORDER BY series_id, ts",
+            (*anchored_ids, start, end),
+        ):
+            points_by_series[series_id].append((ts, value))
+
+    if firsts:
+        # Every sample after the series' own first, same "strictly after
+        # the opening sample" rule range_stats_conn applies via
+        # `after_ts = first[0]`. A per-series ``first_ts`` threshold
+        # can't share one `ts > ?` bound the way the anchored group
+        # above shares `start`, so this joins each series to its own
+        # threshold via a VALUES row instead of a ROW_NUMBER window --
+        # same "index seek per series, not a materialized sort" reasoning
+        # as the anchor/firsts lookups above. No ORDER BY here: the join
+        # visits rows in VALUES order, not index order, so asking SQLite
+        # to sort the joined result forces the same temp-B-tree
+        # materialization the seeks above exist to avoid. Each series'
+        # own points list is sorted in Python below instead -- cheap
+        # relative to the row volume it carries, and every other
+        # collection into `points_by_series` already relies on arriving
+        # in ts order from an index-ordered query, so this is the one
+        # spot that needs it explicitly.
+        values_clause = ",".join("(?,?)" for _ in firsts)
+        params: list[int] = []
+        for series_id, (first_ts, _) in firsts.items():
+            params.extend((series_id, first_ts))
+        params.append(end)
+        for series_id, ts, value in conn.execute(
+            f"""
+            SELECT s.series_id, s.ts, s.value
+            FROM samples s
+            JOIN (
+                SELECT column1 AS series_id, column2 AS first_ts
+                FROM (VALUES {values_clause})
+            ) AS f ON f.series_id = s.series_id
+            WHERE s.ts > f.first_ts AND s.ts <= ?
+            """,
+            params,
+        ):
+            points_by_series[series_id].append((ts, value))
+        for series_id in firsts:
+            points_by_series[series_id].sort()
+
+    result: dict[int, dict[str, Any]] = {}
+    for series_id in series_ids:
+        if series_id in anchors:
+            open_value: float | None = anchors[series_id]
+            points: list[tuple[int, float]] = [(start, open_value)]
+        elif series_id in firsts:
+            first_ts, open_value = firsts[series_id]
+            points = [(first_ts, open_value)]
+        else:
+            open_value = None
+            points = []
+
+        extra = points_by_series[series_id]
+        points.extend(extra)
+
+        values = [value for _, value in points]
+        result[series_id] = {
+            "open": open_value,
+            "high": max(values) if values else None,
+            "low": min(values) if values else None,
+            "changes": len(extra),
+            "points": points,
+        }
+    return result
+
+
 def range_stats(
     db_path: str | Path, series_id: int, start: int, end: int
 ) -> dict[str, Any]:

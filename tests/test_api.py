@@ -437,6 +437,64 @@ def test_delta_no_starting_point_is_null_not_zero(tmp_path):
     assert body["current"] == 5
 
 
+# --- _is_stale's optional per-plugin cache (#80) ------------------------
+
+
+def test_is_stale_cache_memoizes_latest_finished_run_per_plugin(tmp_path, monkeypatch):
+    db_path = db(tmp_path)
+    now = int(time.time())
+
+    calls = []
+    real_latest_finished_run = storage.latest_finished_run
+
+    def counting_latest_finished_run(db_path, plugin_name):
+        calls.append(plugin_name)
+        return real_latest_finished_run(db_path, plugin_name)
+
+    monkeypatch.setattr(storage, "latest_finished_run", counting_latest_finished_run)
+
+    run_id = storage.start_run(db_path, "acme", now)
+    storage.finish_run(db_path, run_id, "ok", None, samples_written=0, finished_at=now)
+
+    old_ts = now - 4 * 1800 - 10
+    cache: dict = {}
+
+    # Three series on the same plugin, sharing one request-scoped cache:
+    # only the first call should hit storage.latest_finished_run.
+    for _ in range(3):
+        stale = api._is_stale(db_path, "acme", old_ts, 1800, now, cache)
+        assert stale is False
+
+    assert calls == ["acme"]
+    assert cache == {"acme": real_latest_finished_run(db_path, "acme")}
+
+
+def test_is_stale_without_cache_looks_up_every_call(tmp_path, monkeypatch):
+    db_path = db(tmp_path)
+    now = int(time.time())
+
+    calls = []
+    real_latest_finished_run = storage.latest_finished_run
+
+    def counting_latest_finished_run(db_path, plugin_name):
+        calls.append(plugin_name)
+        return real_latest_finished_run(db_path, plugin_name)
+
+    monkeypatch.setattr(storage, "latest_finished_run", counting_latest_finished_run)
+
+    run_id = storage.start_run(db_path, "acme", now)
+    storage.finish_run(db_path, run_id, "ok", None, samples_written=0, finished_at=now)
+
+    old_ts = now - 4 * 1800 - 10
+
+    # No cache given (the default): unchanged from before this parameter
+    # existed, so every call still looks it up.
+    for _ in range(3):
+        api._is_stale(db_path, "acme", old_ts, 1800, now)
+
+    assert calls == ["acme", "acme", "acme"]
+
+
 # --- /api/integrations ---------------------------------------------------
 
 

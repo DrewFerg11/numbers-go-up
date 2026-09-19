@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import contextlib
 import logging
-import sqlite3
 import time
 from pathlib import Path
 from typing import Any
@@ -121,12 +120,13 @@ def _plugin_metrics_for(
 
 def _build_metric(
     request: Request,
-    conn: sqlite3.Connection,
     row,
+    stats: dict[str, Any],
     range_key: str,
     now: int,
     default_interval: int,
     intervals: dict[str, int],
+    finished_run_cache: dict[str, Any],
 ) -> dict[str, Any] | None:
     db_path = request.app.state.config["storage"]["path"]
     if row["last_value"] is None:
@@ -136,7 +136,6 @@ def _build_metric(
         start = row["first_seen"]
     else:
         start = now - RANGE_HOURS[range_key] * 3600
-    stats = storage.range_stats_conn(conn, row["id"], start, now)
 
     open_value = stats["open"]
     value = row["last_value"]
@@ -156,7 +155,14 @@ def _build_metric(
     avg_per_day = round(change / span_days, 2)
 
     interval = intervals.get(row["plugin_name"], default_interval)
-    stale = _is_stale(db_path, row["plugin_name"], row["last_seen"], interval, now)
+    stale = _is_stale(
+        db_path,
+        row["plugin_name"],
+        row["last_seen"],
+        interval,
+        now,
+        finished_run_cache,
+    )
 
     metrics_for_plugin = _plugin_metrics_for(request, row["plugin_name"])
     resolved = resolve_metric(row["metric_key"], metrics_for_plugin)
@@ -233,15 +239,32 @@ def build_overview(request: Request, range_key: str) -> dict[str, Any]:
     )
     start = _range_bounds(range_key, now, earliest)
 
-    # One shared connection for every series' range_stats, rather than one
-    # connection (and its five PRAGMA statements) per series -- with up to
-    # 500 pattern-matched series per plugin and a 60s auto-refresh per open
-    # tab, that per-series connection cost was the dominant one here.
+    active_rows = [row for row in rows if row["last_value"] is not None]
+    starts_by_id = {
+        row["id"]: row["first_seen"] if range_key == "ALL" else start
+        for row in active_rows
+    }
+
+    # One shared connection, and one batch of range_stats queries grouped by
+    # distinct `start` (a single group for every named range but ALL, whose
+    # per-series first_seen start can't be batched the same way) rather than
+    # a connection *and* 2-3 queries per series -- with up to 500
+    # pattern-matched series per plugin and a 60s auto-refresh per open tab,
+    # that per-series cost was the dominant one here.
+    finished_run_cache: dict[str, Any] = {}
     metrics: list[dict[str, Any]] = []
     with contextlib.closing(storage.connect(db_path)) as conn:
-        for row in rows:
+        stats_by_id = storage.range_stats_bulk_conn(conn, starts_by_id, now)
+        for row in active_rows:
             metric = _build_metric(
-                request, conn, row, range_key, now, default_interval, intervals
+                request,
+                row,
+                stats_by_id[row["id"]],
+                range_key,
+                now,
+                default_interval,
+                intervals,
+                finished_run_cache,
             )
             if metric is not None:
                 metrics.append(metric)
