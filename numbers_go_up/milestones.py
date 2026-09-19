@@ -341,6 +341,24 @@ class MilestoneEvaluator:
         )
         return False
 
+    def _marker_at_least(self, metric_key: str, candidate: float) -> str:
+        """The encoded marker value for a marker-advancing write: never
+        lower than the currently stored marker.
+
+        A pending record can be displaced by a newer, higher crossing
+        while its own delivery is still failing (see the overwrite in
+        ``_evaluate_key``); when that displaced record is later retried
+        (from ``_retry_pending_for_plugin``) and finally succeeds, or ages
+        out after 24h, its own ``_attempt_delivery`` call must not stamp
+        the marker down to its own, now-stale threshold -- a later poll
+        may have already advanced the marker past it. Every marker write
+        in this class goes through this method so the marker can only
+        ever move forward.
+        """
+        current_raw = storage.get_state(self._db_path, f"{MARKER_PREFIX}{metric_key}")
+        current = _decode_threshold(current_raw) if current_raw is not None else 0.0
+        return _encode_threshold(max(current, candidate))
+
     def _attempt_delivery(self, metric_key: str, record: dict[str, Any]) -> None:
         """Send one pending record; on success advance the marker and clear
         it (one transaction); on failure, drop it after 24h with one
@@ -350,7 +368,11 @@ class MilestoneEvaluator:
         if self._send(record["payload"]):
             storage.set_state_and_delete(
                 self._db_path,
-                sets={f"{MARKER_PREFIX}{metric_key}": _encode_threshold(threshold)},
+                sets={
+                    f"{MARKER_PREFIX}{metric_key}": self._marker_at_least(
+                        metric_key, threshold
+                    )
+                },
                 delete_keys=[f"{PENDING_PREFIX}{metric_key}"],
             )
             return
@@ -366,7 +388,11 @@ class MilestoneEvaluator:
             )
             storage.set_state_and_delete(
                 self._db_path,
-                sets={f"{MARKER_PREFIX}{metric_key}": _encode_threshold(threshold)},
+                sets={
+                    f"{MARKER_PREFIX}{metric_key}": self._marker_at_least(
+                        metric_key, threshold
+                    )
+                },
                 delete_keys=[f"{PENDING_PREFIX}{metric_key}"],
             )
 
@@ -432,11 +458,16 @@ class MilestoneEvaluator:
         # any older, still-undelivered pending record for the same series
         # -- the highest threshold always wins, and the retry timer
         # restarts for it (it's a different notification, not a retry of
-        # the old one). "Wins" only holds fire-once if the discarded
-        # threshold is also marked fired here, in the same transaction as
-        # the overwrite -- not just silently dropped: otherwise a later
-        # dip-and-recross of that lower threshold would fire a second,
-        # stale notification for a milestone this series already passed.
+        # the old one). The fire-once invariant lives in the marker, not
+        # in whichever pending record happens to survive longest: the
+        # marker is stamped to at least the higher of the two thresholds
+        # right now, in the same transaction as the overwrite -- covering
+        # both the discarded record (so a later dip-and-recross of it
+        # stays silent) and this new one (so a later regression at
+        # delivery time, via ``_marker_at_least``, can't uncover it
+        # either, even if this record itself is later displaced again and
+        # its eventual delivery/24h-drop would otherwise stamp a stale,
+        # lower threshold).
         sets = {f"{PENDING_PREFIX}{metric_key}": json.dumps(record)}
         existing_raw = storage.get_state(self._db_path, f"{PENDING_PREFIX}{metric_key}")
         if existing_raw is not None:
@@ -444,12 +475,9 @@ class MilestoneEvaluator:
                 existing_threshold = json.loads(existing_raw).get("threshold")
             except json.JSONDecodeError:
                 existing_threshold = None
-            if (
-                isinstance(existing_threshold, int | float)
-                and existing_threshold > marker
-            ):
-                sets[f"{MARKER_PREFIX}{metric_key}"] = _encode_threshold(
-                    existing_threshold
+            if isinstance(existing_threshold, int | float):
+                sets[f"{MARKER_PREFIX}{metric_key}"] = self._marker_at_least(
+                    metric_key, max(existing_threshold, threshold)
                 )
         storage.set_state_and_delete(self._db_path, sets=sets, delete_keys=[])
         self._attempt_delivery(metric_key, record)

@@ -533,11 +533,14 @@ class TestDelivery:
             storage.get_state(db_path, "milestone_pending:acme.x")
         )
         assert second_pending["threshold"] == 1000
-        # The discarded, never-delivered 500 crossing must not be left
-        # refireable: the marker advances to cover it too, in the same
-        # transaction as the overwrite -- not just when (or if) 1000 is
+        # The marker advances to cover *both* the discarded 500 crossing
+        # (so a later dip-and-recross of it stays silent) and the new
+        # 1000 one (so a later regression at delivery time -- e.g. this
+        # 1000 record itself later displaced and its stale delivery
+        # succeeding -- can't uncover it either) -- all in the same
+        # transaction as the overwrite, not only when/if 1000 is
         # eventually delivered.
-        assert float(storage.get_state(db_path, "milestone:acme.x")) == 500
+        assert float(storage.get_state(db_path, "milestone:acme.x")) == 1000
 
     def test_discarded_pending_threshold_never_refires_after_a_dip(self, db_path):
         # Same setup as the replace-on-overwrite test above, but goes one
@@ -563,6 +566,53 @@ class TestDelivery:
         _poll(evaluator, "acme", "acme.x", previous=480, current=560)
 
         assert transport.sent == []
+
+    def test_marker_never_regresses_when_a_stale_pending_delivery_succeeds(
+        self, db_path
+    ):
+        # A displaced pending record (queued while the marker was lower,
+        # then overtaken by a higher crossing that advanced the marker)
+        # must not be able to stamp the marker back down to its own,
+        # now-stale threshold when it's finally retried successfully.
+        _seed_series(db_path, "acme.x", value=100)
+        storage.set_state(db_path, "milestone:acme.x", "2500.0")
+        stale_record = {
+            "threshold": 1000,
+            "payload": {"metric": "acme.x", "threshold": 1000},
+            "queued_at": time.time(),
+        }
+        storage.set_state(db_path, "milestone_pending:acme.x", json.dumps(stale_record))
+        transport = _QueueTransport(responses=[200])
+        evaluator, _ = _evaluator(
+            db_path, [_rule("acme.x", every=500)], transport=transport
+        )
+
+        _poll(evaluator, "acme", "acme.x", previous=2500, current=2501)
+
+        assert float(storage.get_state(db_path, "milestone:acme.x")) == 2500
+        assert storage.get_state(db_path, "milestone_pending:acme.x") is None
+
+    def test_marker_never_regresses_when_a_stale_pending_delivery_ages_out(
+        self, db_path
+    ):
+        # Same hazard as above, via the 24h-drop path instead of a 2xx.
+        _seed_series(db_path, "acme.x", value=100)
+        storage.set_state(db_path, "milestone:acme.x", "2500.0")
+        stale_record = {
+            "threshold": 1000,
+            "payload": {"metric": "acme.x", "threshold": 1000},
+            "queued_at": time.time() - (25 * 3600),
+        }
+        storage.set_state(db_path, "milestone_pending:acme.x", json.dumps(stale_record))
+        transport = _QueueTransport(responses=[500])
+        evaluator, _ = _evaluator(
+            db_path, [_rule("acme.x", every=500)], transport=transport
+        )
+
+        _poll(evaluator, "acme", "acme.x", previous=2500, current=2501)
+
+        assert float(storage.get_state(db_path, "milestone:acme.x")) == 2500
+        assert storage.get_state(db_path, "milestone_pending:acme.x") is None
 
     def test_isolation_one_series_error_does_not_block_another(self, db_path):
         _seed_series(db_path, "acme.a", value=100)
