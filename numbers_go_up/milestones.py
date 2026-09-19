@@ -310,7 +310,11 @@ class MilestoneEvaluator:
         try:
             response = self._http.post(self._webhook_url, json=payload)
         except Exception as exc:
-            detail = f"{type(exc).__name__}: {exc}"
+            # Never interpolate str(exc): httpx.HTTPStatusError subclasses
+            # (e.g. http.Blocked from a 403) embed the full request URL --
+            # the webhook URL is a credential -- in their message. Only the
+            # exception's type name is ever logged or stored.
+            detail = type(exc).__name__
             with self._lock:
                 self._last_error = f"delivery to {self._webhook_host} failed: {detail}"
             logger.warning(
@@ -424,13 +428,30 @@ class MilestoneEvaluator:
             "timestamp": _iso(now),
         }
         record = {"threshold": threshold, "payload": payload, "queued_at": now}
-        # Recorded before sending, and a newer (higher) crossing simply
-        # overwrites any older pending record for the same series -- the
-        # highest threshold always wins, and the retry timer restarts for
-        # it (it's a different notification, not a retry of the old one).
-        storage.set_state(
-            self._db_path, f"{PENDING_PREFIX}{metric_key}", json.dumps(record)
-        )
+        # Recorded before sending, and a newer (higher) crossing overwrites
+        # any older, still-undelivered pending record for the same series
+        # -- the highest threshold always wins, and the retry timer
+        # restarts for it (it's a different notification, not a retry of
+        # the old one). "Wins" only holds fire-once if the discarded
+        # threshold is also marked fired here, in the same transaction as
+        # the overwrite -- not just silently dropped: otherwise a later
+        # dip-and-recross of that lower threshold would fire a second,
+        # stale notification for a milestone this series already passed.
+        sets = {f"{PENDING_PREFIX}{metric_key}": json.dumps(record)}
+        existing_raw = storage.get_state(self._db_path, f"{PENDING_PREFIX}{metric_key}")
+        if existing_raw is not None:
+            try:
+                existing_threshold = json.loads(existing_raw).get("threshold")
+            except json.JSONDecodeError:
+                existing_threshold = None
+            if (
+                isinstance(existing_threshold, int | float)
+                and existing_threshold > marker
+            ):
+                sets[f"{MARKER_PREFIX}{metric_key}"] = _encode_threshold(
+                    existing_threshold
+                )
+        storage.set_state_and_delete(self._db_path, sets=sets, delete_keys=[])
         self._attempt_delivery(metric_key, record)
         attempted.add(metric_key)
 

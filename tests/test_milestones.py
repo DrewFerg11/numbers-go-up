@@ -533,6 +533,36 @@ class TestDelivery:
             storage.get_state(db_path, "milestone_pending:acme.x")
         )
         assert second_pending["threshold"] == 1000
+        # The discarded, never-delivered 500 crossing must not be left
+        # refireable: the marker advances to cover it too, in the same
+        # transaction as the overwrite -- not just when (or if) 1000 is
+        # eventually delivered.
+        assert float(storage.get_state(db_path, "milestone:acme.x")) == 500
+
+    def test_discarded_pending_threshold_never_refires_after_a_dip(self, db_path):
+        # Same setup as the replace-on-overwrite test above, but goes one
+        # step further: once 500's pending record is superseded by 1000
+        # (which then delivers cleanly, clearing all pending state), a
+        # later dip back below 500 and re-cross must stay silent -- the
+        # discarded milestone was already "won" by the higher one.
+        transport = _QueueTransport(responses=[500, 500, 200])
+        _seed_series(db_path, "acme.x", value=100)
+        evaluator, _ = _evaluator(
+            db_path, [_rule("acme.x", every=500)], transport=transport
+        )
+        _poll(evaluator, "acme", "acme.x", previous=None, current=100)
+        _poll(evaluator, "acme", "acme.x", previous=100, current=550)
+        _poll(evaluator, "acme", "acme.x", previous=550, current=1200)
+        # 1000 is still pending (failed); retry it to a clean slate so the
+        # dip/re-cross below is the only thing that could send anything.
+        _poll(evaluator, "acme", "acme.x", previous=1200, current=1201)
+        assert storage.get_state(db_path, "milestone_pending:acme.x") is None
+        transport.sent.clear()
+
+        _poll(evaluator, "acme", "acme.x", previous=1201, current=480)
+        _poll(evaluator, "acme", "acme.x", previous=480, current=560)
+
+        assert transport.sent == []
 
     def test_isolation_one_series_error_does_not_block_another(self, db_path):
         _seed_series(db_path, "acme.a", value=100)
@@ -626,6 +656,27 @@ class TestWebhookUrlNeverLeaks:
         _poll(evaluator, "acme", "acme.x", 100, 550)
 
         assert SENTINEL_URL not in json.dumps(evaluator.status)
+
+    def test_url_never_leaks_on_a_403_through_the_shared_client(self, db_path, caplog):
+        # A 403 through the real shared client (http.build_client, not a
+        # bare MockTransport response) is turned into http.Blocked, whose
+        # own message embeds the full request URL -- the one failure mode
+        # the ConnectError/non-2xx-status tests above don't exercise.
+        transport = _QueueTransport(responses=[403])
+        _seed_series(db_path, "acme.x", value=100)
+        evaluator, _ = _evaluator(
+            db_path, [_rule("acme.x", every=500)], transport=transport
+        )
+        _poll(evaluator, "acme", "acme.x", None, 100)
+
+        with caplog.at_level(logging.WARNING, logger="numbers_go_up.milestones"):
+            _poll(evaluator, "acme", "acme.x", 100, 550)
+
+        assert SENTINEL_URL not in json.dumps(evaluator.status)
+        last_error = evaluator.status["last_error"] or ""
+        assert "sentinel-secret-do-not-leak-xyz" not in last_error
+        for record in caplog.records:
+            assert "sentinel-secret-do-not-leak-xyz" not in record.getMessage()
 
     def test_url_never_in_logs_on_delivery_failure(self, db_path, caplog):
         transport = _QueueTransport(responses=["raise"])
