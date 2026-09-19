@@ -497,6 +497,98 @@ def test_is_stale_without_cache_looks_up_every_call(tmp_path, monkeypatch):
 
 # --- /api/integrations ---------------------------------------------------
 
+_DISABLED_MQTT_STATUS = {
+    "enabled": False,
+    "connected": False,
+    "broker": None,
+    "last_publish": None,
+    "last_error": None,
+}
+
+_DISABLED_MILESTONE_STATUS = {
+    "enabled": False,
+    "rules": [],
+    "pending": [],
+    "last_sent": None,
+    "last_error": None,
+}
+
+
+def test_integrations_with_no_maintenance_run_yet(tmp_path):
+    client, db_path = client_for(tmp_path)
+
+    response = client.get("/api/integrations")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "maintenance": {"last_run": None, "next_run": None},
+        "mqtt": _DISABLED_MQTT_STATUS,
+        "milestones": _DISABLED_MILESTONE_STATUS,
+    }
+
+
+def test_integrations_reports_the_last_maintenance_run(tmp_path):
+    import json
+
+    from numbers_go_up import scheduler
+
+    client, db_path = client_for(tmp_path)
+    record = {
+        "ts": 1000,
+        "pruned_rows": 3,
+        "backup_file": "/data/backups/stats-daily-20260101.db",
+        "backup_bytes": 4096,
+        "errors": [],
+    }
+    storage.set_state(db_path, scheduler.MAINTENANCE_STATE_KEY, json.dumps(record))
+
+    response = client.get("/api/integrations")
+
+    assert response.json() == {
+        "maintenance": {"last_run": record, "next_run": None},
+        "mqtt": _DISABLED_MQTT_STATUS,
+        "milestones": _DISABLED_MILESTONE_STATUS,
+    }
+
+
+def test_integrations_degrades_to_none_on_unparseable_state(tmp_path):
+    from numbers_go_up import scheduler
+
+    client, db_path = client_for(tmp_path)
+    storage.set_state(db_path, scheduler.MAINTENANCE_STATE_KEY, "not-json")
+
+    response = client.get("/api/integrations")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "maintenance": {"last_run": None, "next_run": None},
+        "mqtt": _DISABLED_MQTT_STATUS,
+        "milestones": _DISABLED_MILESTONE_STATUS,
+    }
+
+
+def test_integrations_degrades_to_none_on_schema_mismatched_state(tmp_path):
+    # Valid JSON that doesn't match MaintenanceLastRun's shape (e.g. from
+    # some future writer) must degrade like unparseable JSON does, not
+    # 500 the endpoint.
+    import json
+
+    from numbers_go_up import scheduler
+
+    client, db_path = client_for(tmp_path)
+    storage.set_state(
+        db_path, scheduler.MAINTENANCE_STATE_KEY, json.dumps({"unexpected": "shape"})
+    )
+
+    response = client.get("/api/integrations")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "maintenance": {"last_run": None, "next_run": None},
+        "mqtt": _DISABLED_MQTT_STATUS,
+        "milestones": _DISABLED_MILESTONE_STATUS,
+    }
+
 
 def test_integrations_with_no_mqtt_publisher_reports_disabled(tmp_path):
     client, _ = client_for(tmp_path)
@@ -505,6 +597,7 @@ def test_integrations_with_no_mqtt_publisher_reports_disabled(tmp_path):
 
     assert response.status_code == 200
     assert response.json() == {
+        "maintenance": {"last_run": None, "next_run": None},
         "mqtt": {
             "enabled": False,
             "connected": False,
@@ -512,13 +605,7 @@ def test_integrations_with_no_mqtt_publisher_reports_disabled(tmp_path):
             "last_publish": None,
             "last_error": None,
         },
-        "milestones": {
-            "enabled": False,
-            "rules": [],
-            "pending": [],
-            "last_sent": None,
-            "last_error": None,
-        },
+        "milestones": _DISABLED_MILESTONE_STATUS,
     }
 
 

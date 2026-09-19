@@ -20,7 +20,7 @@ import math
 import random
 import time
 import traceback
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -42,6 +42,11 @@ logger = logging.getLogger(__name__)
 # seconds, matching the "delay-only" behaviour Responsible Use #3 accepts.
 DEFAULT_JITTER_FRACTION = 0.2
 FIRST_RUN_MAX_DELAY_SECONDS = 60
+
+MAINTENANCE_JOB_ID = "maintenance"
+MAINTENANCE_STATE_KEY = "maintenance:last_run"
+MAINTENANCE_INTERVAL_SECONDS = 86400
+MAINTENANCE_FIRST_RUN_DELAY_SECONDS = 600
 
 # 429 without Retry-After, and 403, back off exponentially, capped --
 # Responsible Use #3's exceptions to "no backoff storms" (Failure Handling #4).
@@ -625,6 +630,119 @@ def _validated_jitter_fraction(value: Any) -> float:
     return fraction
 
 
+def _validated_keep_daily(value: Any) -> int:
+    """Return ``value`` as an int usable as the daily-backup retention count.
+
+    Same failure mode as :func:`_validated_jitter_fraction`: a quoted
+    ``keep_daily: "7"`` would reach ``keep_daily <= 0`` in
+    ``storage.backup_database`` and raise ``TypeError`` on every maintenance
+    run, silently disabling backups one daily warning at a time. Fail
+    startup instead.
+    """
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ConfigError(
+            f"storage.backups.keep_daily must be an integer, got {value!r} "
+            f"({type(value).__name__})"
+        )
+    if value < 0:
+        raise ConfigError(f"storage.backups.keep_daily must be >= 0, got {value!r}")
+    return value
+
+
+def _validated_plugin_runs_retention_days(value: Any) -> int:
+    """Return ``value`` as an int usable as the plugin_runs retention window.
+
+    Same failure mode as :func:`_validated_keep_daily`: a quoted
+    ``plugin_runs_retention_days: "30"`` would make ``days * 86400`` in
+    ``storage.prune_plugin_runs`` a ~173K-character string, and
+    ``now - <str>`` raises ``TypeError`` on every maintenance run --
+    pruning silently never happens, recorded as one ``errors`` entry per
+    day. Fail startup instead.
+    """
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ConfigError(
+            f"storage.plugin_runs_retention_days must be an integer, got "
+            f"{value!r} ({type(value).__name__})"
+        )
+    if value < 0:
+        raise ConfigError(
+            f"storage.plugin_runs_retention_days must be >= 0, got {value!r}"
+        )
+    return value
+
+
+def _run_maintenance(db_path: str | Path, config: dict[str, Any]) -> None:
+    """Prune old plugin_runs, take a daily backup, and tune SQLite.
+
+    Each step is isolated: a failing step is logged and recorded, and the
+    steps after it still run. Nothing here touches plugin polling -- a
+    backup failure must never stop or slow down a poll.
+    """
+    now = int(time.time())
+    storage_config = config["storage"]
+    retention_days = _validated_plugin_runs_retention_days(
+        storage_config["plugin_runs_retention_days"]
+    )
+    keep_daily = _validated_keep_daily(
+        storage_config.get("backups", {}).get("keep_daily", 7)
+    )
+    backup_dir = Path(db_path).parent / "backups"
+    today = datetime.now(UTC).strftime("%Y%m%d")
+
+    pruned_rows: int | None = None
+    backup_file: str | None = None
+    backup_bytes: int | None = None
+    errors: list[str] = []
+
+    try:
+        pruned_rows = storage.prune_plugin_runs(db_path, retention_days, now)
+    except Exception:
+        logger.warning("Maintenance: pruning plugin_runs failed", exc_info=True)
+        errors.append(f"prune_plugin_runs: {traceback.format_exc().splitlines()[-1]}")
+
+    try:
+        result = storage.backup_database(db_path, backup_dir, keep_daily, today)
+        backup_file = result["backup_file"]
+        backup_bytes = result["backup_bytes"]
+    except Exception:
+        logger.warning("Maintenance: daily backup failed", exc_info=True)
+        errors.append(f"backup_database: {traceback.format_exc().splitlines()[-1]}")
+
+    try:
+        storage.optimize(db_path)
+    except Exception:
+        logger.warning("Maintenance: PRAGMA optimize failed", exc_info=True)
+        errors.append(f"optimize: {traceback.format_exc().splitlines()[-1]}")
+
+    try:
+        storage.wal_checkpoint_truncate(db_path)
+    except Exception:
+        logger.warning("Maintenance: wal_checkpoint(TRUNCATE) failed", exc_info=True)
+        errors.append(
+            f"wal_checkpoint_truncate: {traceback.format_exc().splitlines()[-1]}"
+        )
+
+    record = {
+        "ts": now,
+        "pruned_rows": pruned_rows,
+        "backup_file": backup_file,
+        "backup_bytes": backup_bytes,
+        "errors": errors,
+    }
+    try:
+        storage.set_state(db_path, MAINTENANCE_STATE_KEY, json.dumps(record))
+    except Exception:
+        logger.warning("Maintenance: could not record last-run state", exc_info=True)
+
+    logger.info(
+        "Maintenance run: pruned=%s backup=%s (%s bytes) errors=%d",
+        pruned_rows,
+        backup_file,
+        backup_bytes,
+        len(errors),
+    )
+
+
 def build_scheduler(
     config: dict[str, Any],
     http: Any = None,
@@ -643,10 +761,12 @@ def build_scheduler(
     executor executes late instead of being silently discarded (which
     would leave a poll missing from ``plugin_runs``).
 
-    ``jitter_fraction`` is validated up front (float in ``[0, 1)``): a bad
-    value raises ``ConfigError`` here and fails startup, instead of
-    killing the scheduler's polling loop at the first fire (see
-    :func:`_validated_jitter_fraction`).
+    ``jitter_fraction``, ``keep_daily``, and ``plugin_runs_retention_days``
+    are all validated up front: a bad value raises ``ConfigError`` here and
+    fails startup, instead of killing the scheduler's polling loop or
+    silently disabling backups/pruning at the first fire (see
+    :func:`_validated_jitter_fraction`, :func:`_validated_keep_daily`, and
+    :func:`_validated_plugin_runs_retention_days`).
 
     One uvicorn worker, always: multiple workers would mean multiple
     schedulers polling the same sources and writing the same SQLite file
@@ -657,6 +777,10 @@ def build_scheduler(
     heartbeat_seconds = config["storage"]["heartbeat_seconds"]
     jitter_fraction = _validated_jitter_fraction(
         config.get("poll", {}).get("jitter_fraction", DEFAULT_JITTER_FRACTION)
+    )
+    _validated_keep_daily(config["storage"].get("backups", {}).get("keep_daily", 7))
+    _validated_plugin_runs_retention_days(
+        config["storage"]["plugin_runs_retention_days"]
     )
     if publisher is None:
         publisher = mqtt.NoopPublisher()
@@ -699,5 +823,20 @@ def build_scheduler(
             plugin.interval_seconds,
             plugin.source,
         )
+
+    scheduler.add_job(
+        _run_maintenance,
+        trigger="interval",
+        seconds=MAINTENANCE_INTERVAL_SECONDS,
+        jitter=MAINTENANCE_INTERVAL_SECONDS * jitter_fraction,
+        next_run_time=datetime.now()
+        + timedelta(seconds=MAINTENANCE_FIRST_RUN_DELAY_SECONDS),
+        max_instances=1,
+        coalesce=True,
+        misfire_grace_time=None,
+        id=MAINTENANCE_JOB_ID,
+        args=[db_path, config],
+    )
+    logger.info("Scheduled maintenance every %ss", MAINTENANCE_INTERVAL_SECONDS)
 
     return scheduler

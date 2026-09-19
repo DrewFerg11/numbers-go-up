@@ -15,9 +15,9 @@ from datetime import UTC, datetime
 from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException, Query, Request, Response
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
-from numbers_go_up import storage
+from numbers_go_up import scheduler, storage
 from numbers_go_up.http import BLOCKED_ERROR_PREFIX
 
 router = APIRouter(prefix="/api")
@@ -129,6 +129,53 @@ class PluginsHealthResponse(BaseModel):
     status: Literal["ok", "unhealthy"]
     failure_threshold: int
     unhealthy: list[UnhealthyPlugin]
+
+
+class MaintenanceLastRun(BaseModel):
+    ts: int
+    pruned_rows: int | None
+    backup_file: str | None
+    backup_bytes: int | None
+    errors: list[str]
+
+
+class MaintenanceStatus(BaseModel):
+    last_run: MaintenanceLastRun | None
+    next_run: str | None
+
+
+class MqttStatus(BaseModel):
+    enabled: bool
+    connected: bool
+    broker: str | None
+    last_publish: str | None
+    last_error: str | None
+
+
+class MilestoneRule(BaseModel):
+    metric: str
+    every: float | None
+    at: list[float]
+
+
+class MilestonePending(BaseModel):
+    metric: str
+    threshold: float
+    since: str | None
+
+
+class MilestoneStatus(BaseModel):
+    enabled: bool
+    rules: list[MilestoneRule]
+    pending: list[MilestonePending]
+    last_sent: str | None
+    last_error: str | None
+
+
+class IntegrationsResponse(BaseModel):
+    maintenance: MaintenanceStatus
+    mqtt: MqttStatus
+    milestones: MilestoneStatus
 
 
 # Matches the dashboard footer's "red" (Failure Handling #2).
@@ -423,65 +470,6 @@ def list_metrics(request: Request) -> dict[str, Any]:
     return {"metrics": metrics}
 
 
-@router.get("/integrations")
-def integrations(request: Request) -> dict[str, Any]:
-    """Status of external integrations -- MQTT and milestone webhooks.
-    Never includes a password, broker credential, or webhook URL -- only
-    connectivity/delivery status."""
-    publisher = getattr(request.app.state, "mqtt_publisher", None)
-    mqtt_status = (
-        publisher.status
-        if publisher is not None
-        else {
-            "enabled": False,
-            "connected": False,
-            "broker": None,
-            "last_publish": None,
-            "last_error": None,
-        }
-    )
-    last_publish = mqtt_status.get("last_publish")
-
-    milestone_evaluator = getattr(request.app.state, "milestone_evaluator", None)
-    milestone_status = (
-        milestone_evaluator.status
-        if milestone_evaluator is not None
-        else {
-            "enabled": False,
-            "rules": [],
-            "pending": [],
-            "last_sent": None,
-            "last_error": None,
-        }
-    )
-    last_sent = milestone_status.get("last_sent")
-    pending = [
-        {
-            "metric": item["metric"],
-            "threshold": item["threshold"],
-            "since": _iso(int(item["since"])) if item.get("since") else None,
-        }
-        for item in milestone_status.get("pending", [])
-    ]
-
-    return {
-        "mqtt": {
-            "enabled": mqtt_status["enabled"],
-            "connected": mqtt_status["connected"],
-            "broker": mqtt_status["broker"],
-            "last_publish": _iso(int(last_publish)) if last_publish else None,
-            "last_error": mqtt_status["last_error"],
-        },
-        "milestones": {
-            "enabled": milestone_status["enabled"],
-            "rules": milestone_status["rules"],
-            "pending": pending,
-            "last_sent": _iso(int(last_sent)) if last_sent else None,
-            "last_error": milestone_status["last_error"],
-        },
-    }
-
-
 def _plugin_statuses(request: Request) -> list[dict[str, Any]]:
     """One status report per discovered plugin, shared by /api/plugins and
     /health/plugins so the two can never disagree."""
@@ -586,6 +574,98 @@ def _unhealthy_reason(plugin: dict[str, Any], failure_threshold: int) -> str | N
     if finished_failures >= failure_threshold:
         return f"{finished_failures} consecutive failures"
     return None
+
+
+@router.get(
+    "/integrations",
+    tags=["integrations"],
+    summary="Status of the maintenance job, MQTT publisher, and milestone webhooks",
+    response_model=IntegrationsResponse,
+)
+def integrations(request: Request) -> dict[str, Any]:
+    """Status of background integrations that aren't a plugin poll: the
+    scheduled maintenance job (pruning, backups, PRAGMA tuning), the MQTT
+    publisher, and milestone webhooks. Never includes a password, broker
+    credential, or webhook URL -- only connectivity/delivery status.
+    """
+    config = request.app.state.config
+    db_path = config["storage"]["path"]
+
+    raw = storage.get_state(db_path, scheduler.MAINTENANCE_STATE_KEY)
+    last_run = None
+    if raw is not None:
+        try:
+            # Validated here, not left to response_model serialization, so
+            # a record shape from some future schema change degrades to
+            # None instead of 500ing the endpoint -- there's exactly one
+            # writer today (_run_maintenance), but that won't always hold.
+            last_run = MaintenanceLastRun(**json.loads(raw))
+        except (json.JSONDecodeError, TypeError, ValidationError):
+            last_run = None
+
+    next_run = None
+    job_scheduler = getattr(request.app.state, "scheduler", None)
+    if job_scheduler is not None:
+        job = job_scheduler.get_job(scheduler.MAINTENANCE_JOB_ID)
+        if job is not None and job.next_run_time is not None:
+            next_run = _iso(int(job.next_run_time.timestamp()))
+
+    publisher = getattr(request.app.state, "mqtt_publisher", None)
+    mqtt_status = (
+        publisher.status
+        if publisher is not None
+        else {
+            "enabled": False,
+            "connected": False,
+            "broker": None,
+            "last_publish": None,
+            "last_error": None,
+        }
+    )
+    last_publish = mqtt_status.get("last_publish")
+
+    milestone_evaluator = getattr(request.app.state, "milestone_evaluator", None)
+    milestone_status = (
+        milestone_evaluator.status
+        if milestone_evaluator is not None
+        else {
+            "enabled": False,
+            "rules": [],
+            "pending": [],
+            "last_sent": None,
+            "last_error": None,
+        }
+    )
+    last_sent = milestone_status.get("last_sent")
+    pending = [
+        {
+            "metric": item["metric"],
+            "threshold": item["threshold"],
+            "since": _iso(int(item["since"])) if item.get("since") else None,
+        }
+        for item in milestone_status.get("pending", [])
+    ]
+
+    return {
+        "maintenance": {
+            "last_run": last_run,
+            "next_run": next_run,
+        },
+        "mqtt": {
+            "enabled": mqtt_status["enabled"],
+            "connected": mqtt_status["connected"],
+            "broker": mqtt_status["broker"],
+            "last_publish": _iso(int(last_publish)) if last_publish else None,
+            "last_error": mqtt_status["last_error"],
+        },
+        "milestones": {
+            "enabled": milestone_status["enabled"],
+            "rules": milestone_status["rules"],
+            "pending": pending,
+            "last_sent": _iso(int(last_sent)) if last_sent else None,
+            "last_error": milestone_status["last_error"],
+        },
+    }
 
 
 @health_router.get(

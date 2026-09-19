@@ -11,6 +11,7 @@ from __future__ import annotations
 import contextlib
 import json
 import logging
+import re
 import sqlite3
 from collections.abc import Iterable
 from pathlib import Path
@@ -255,14 +256,112 @@ def prune_plugin_runs(db_path: str | Path, days: int, now: int) -> int:
     """Delete plugin_runs rows older than ``days`` days before ``now``.
 
     The boundary is exclusive: a row exactly ``days`` days old is kept, so
-    the last ``days`` days of runs are always retained. Never touches
-    samples, metric_series, or state. Returns the number of rows deleted.
+    the last ``days`` days of runs are always retained. The newest
+    *finished* run for each plugin is kept regardless of age, so a plugin
+    disabled for longer than the retention window still reports its last
+    status via :func:`latest_finished_run` / :func:`latest_run`. Never
+    touches samples, metric_series, or state. Returns the number of rows
+    deleted.
+
+    "Newest" is broken by ``id`` as well as ``started_at``: two finished
+    runs for the same plugin can share a ``started_at`` (second-resolution
+    timestamps), and matching on ``MAX(started_at)`` alone would keep
+    *both* rather than picking one deterministically. ``ORDER BY
+    started_at DESC, id DESC LIMIT 1`` always names exactly one row.
     """
     cutoff = now - days * 86400
     with contextlib.closing(connect(db_path)) as conn:
-        cursor = conn.execute("DELETE FROM plugin_runs WHERE started_at < ?", (cutoff,))
+        cursor = conn.execute(
+            "DELETE FROM plugin_runs WHERE started_at < ? AND id NOT IN ("
+            "  SELECT id FROM plugin_runs pr WHERE finished_at IS NOT NULL"
+            "  AND id = ("
+            "    SELECT id FROM plugin_runs"
+            "    WHERE plugin_name = pr.plugin_name AND finished_at IS NOT NULL"
+            "    ORDER BY started_at DESC, id DESC LIMIT 1"
+            "  )"
+            ")",
+            (cutoff,),
+        )
         conn.commit()
         return cursor.rowcount
+
+
+_DAILY_BACKUP_PREFIX = "stats-daily-"
+# Anchors retention to files this function actually wrote (an 8-digit
+# YYYYMMDD stamp) -- the glob alone would also match a user-placed file
+# like "stats-daily-junk.db" in the same bind-mounted directory.
+_DAILY_BACKUP_RE = re.compile(rf"{re.escape(_DAILY_BACKUP_PREFIX)}\d{{8}}\.db")
+
+
+def backup_database(
+    db_path: str | Path, backup_dir: str | Path, keep_daily: int, today: str
+) -> dict[str, Any]:
+    """Back up the database to ``backup_dir/stats-daily-<today>.db``.
+
+    Uses ``sqlite3.Connection.backup()``, which is safe to run against a
+    live WAL-mode database with no downtime. The backup file is verified
+    with ``PRAGMA quick_check`` -- a failure deletes it and raises, rather
+    than leaving a corrupt file that looks like a valid backup. Retention
+    then keeps the newest ``keep_daily`` files matching
+    ``stats-daily-<8 digits>.db`` only, so migrate.py's ``stats-pre-v*``
+    backups are never touched (and vice versa), and neither is anything
+    else a user might drop in this directory -- it's a plain bind mount,
+    not exclusively ours.
+
+    ``keep_daily <= 0`` disables backups entirely and creates nothing.
+    Returns ``{"backup_file": str | None, "backup_bytes": int | None}``.
+    """
+    if keep_daily <= 0:
+        return {"backup_file": None, "backup_bytes": None}
+
+    backup_dir = Path(backup_dir)
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    backup_path = backup_dir / f"{_DAILY_BACKUP_PREFIX}{today}.db"
+
+    source = sqlite3.connect(str(db_path))
+    try:
+        dest = sqlite3.connect(str(backup_path))
+        try:
+            source.backup(dest)
+        finally:
+            dest.close()
+    finally:
+        source.close()
+
+    check_conn = sqlite3.connect(str(backup_path))
+    try:
+        result = check_conn.execute("PRAGMA quick_check").fetchone()
+    finally:
+        check_conn.close()
+
+    if result is None or result[0] != "ok":
+        backup_path.unlink(missing_ok=True)
+        raise ValueError(f"Backup {backup_path} failed PRAGMA quick_check: {result}")
+
+    backup_bytes = backup_path.stat().st_size
+
+    stale = sorted(
+        p
+        for p in backup_dir.glob(f"{_DAILY_BACKUP_PREFIX}*.db")
+        if _DAILY_BACKUP_RE.fullmatch(p.name)
+    )
+    for old in stale[: max(0, len(stale) - keep_daily)]:
+        old.unlink(missing_ok=True)
+
+    return {"backup_file": str(backup_path), "backup_bytes": backup_bytes}
+
+
+def optimize(db_path: str | Path) -> None:
+    """Run ``PRAGMA optimize`` -- SQLite's own periodic query-planner tune-up."""
+    with contextlib.closing(connect(db_path)) as conn:
+        conn.execute("PRAGMA optimize")
+
+
+def wal_checkpoint_truncate(db_path: str | Path) -> None:
+    """Checkpoint the WAL and truncate it, so ``-wal`` doesn't sit at its
+    high-water mark between writes."""
+    with contextlib.closing(connect(db_path)) as conn:
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
 
 
 def consecutive_failures(db_path: str | Path, plugin_name: str) -> int:

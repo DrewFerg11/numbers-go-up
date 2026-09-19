@@ -46,6 +46,8 @@ EXAMPLE_CONFIG = """\
 # storage:
 #   heartbeat_seconds: 86400    # force one sample/day even if unchanged
 #   plugin_runs_retention_days: 30
+#   backups:
+#     keep_daily: 7              # daily DB backups to keep; 0 disables them
 #
 # server:
 #   host: 0.0.0.0
@@ -122,6 +124,9 @@ def _defaults(data_dir: str) -> dict[str, Any]:
             "path": str(Path(data_dir) / "stats.db"),
             "heartbeat_seconds": 86400,
             "plugin_runs_retention_days": 30,
+            "backups": {
+                "keep_daily": 7,
+            },
         },
         "server": {
             "host": "0.0.0.0",
