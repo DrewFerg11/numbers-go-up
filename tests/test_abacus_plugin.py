@@ -178,6 +178,7 @@ class TestCountersValidation:
             "https://abacus.jasoncameron.dev#frag",  # fragment
             "ftp://abacus.jasoncameron.dev",
             "not-a-url",
+            "https://host.example/abacus",  # path prefix
             123,
         ],
     )
@@ -370,6 +371,35 @@ class TestFailureHandling:
 
         with pytest.raises(ValueError, match="must be numeric"):
             abacus.collect({"counters": [_counter()]}, client)
+
+    def test_nan_value_fails_distinctly(self):
+        # json.loads is not RFC-strict and accepts a bare NaN literal.
+        client = _client(
+            lambda r: httpx.Response(
+                200,
+                text='{"exists": true, "value": NaN, "expires_in": 100}',
+                headers={"content-type": "application/json"},
+            )
+        )
+
+        with pytest.raises(ValueError, match="must be finite"):
+            abacus.collect({"counters": [_counter()]}, client)
+
+        assert "sfd_flash_factory" not in abacus._last_known_values
+
+    def test_infinity_value_fails_distinctly(self):
+        client = _client(
+            lambda r: httpx.Response(
+                200,
+                text='{"exists": true, "value": Infinity, "expires_in": 100}',
+                headers={"content-type": "application/json"},
+            )
+        )
+
+        with pytest.raises(ValueError, match="must be finite"):
+            abacus.collect({"counters": [_counter()]}, client)
+
+        assert "sfd_flash_factory" not in abacus._last_known_values
 
     def test_unparseable_json_fails_distinctly(self):
         client = _client(lambda r: httpx.Response(200, text="<html>oops</html>"))

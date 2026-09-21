@@ -71,6 +71,7 @@ oversight -- see the README's Abacus section.
 
 import json
 import logging
+import math
 import re
 from urllib.parse import quote, urlparse
 
@@ -144,6 +145,12 @@ def _validate_base_url(config: dict) -> str:
         raise ValueError(f"base_url must have a host, got {base_url!r}")
     if parsed.query or parsed.fragment:
         raise ValueError(f"base_url must have no query or fragment, got {base_url!r}")
+    # No path component beyond "" or "/": a prefix like "https://host/abacus"
+    # would compose into "/abacus/info/<ns>/<key>", which fails the
+    # "/info/"-route-prefix guard in `_fetch_counter` on every poll -- a
+    # config this validator blessed would be guaranteed to fail at runtime.
+    if parsed.path not in ("", "/"):
+        raise ValueError(f"base_url must not include a path, got {base_url!r}")
     # Normalize away a trailing slash so `_INFO_URL_TEMPLATE` never doubles
     # one up into `//info/...`.
     return base_url.rstrip("/")
@@ -278,6 +285,16 @@ def _validate_value(body: dict, namespace: str, name: str) -> int | float:
     if isinstance(value, bool) or not isinstance(value, int | float):
         raise ValueError(
             f"Abacus counter {namespace}/{name} 'value' must be numeric, got {value!r}"
+        )
+    # `json.loads` is not RFC-strict and parses bare NaN/Infinity bodies. A
+    # non-finite value would poison downstream JSON serialization (storage.py
+    # dumps attrs/samples to JSON, which has no NaN/Infinity representation)
+    # and neutralize the regression guard below (`nan < nan` is False), so a
+    # genuine later drop to 0 would be silently accepted. Same convention as
+    # api.py's `_parse_attrs` NaN/Infinity guard (#58).
+    if isinstance(value, float) and not math.isfinite(value):
+        raise ValueError(
+            f"Abacus counter {namespace}/{name} 'value' must be finite, got {value!r}"
         )
     return value
 
