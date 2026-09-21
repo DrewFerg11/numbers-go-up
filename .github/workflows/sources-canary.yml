@@ -51,6 +51,8 @@ jobs:
             # Unlike GitHub, there's no free job-scoped token for YouTube's
             # Data API -- the canary needs its own API key secret too.
             extra_secret_name: NGU_YOUTUBE_API_KEY
+          - plugin: tiktok
+            secret_name: NGU_CANARY_TIKTOK_HANDLE
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
