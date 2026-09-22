@@ -5,10 +5,11 @@
 # far flakier for any compiled wheel.
 #
 # linux/arm/v7 is the one exception: there is no free native 32-bit-ARM
-# runner (ubuntu-24.04-arm is aarch64, and Armv9-A silicon like GitHub's
-# Cobalt 100 runners has dropped AArch32 support entirely), so it builds
-# under QEMU. That's only affordable because requirements.txt drops
-# uvicorn[standard] -- see docs/gh-workflows/README.md ("Multi-arch").
+# runner. ubuntu-24.04-arm is aarch64 and its image ships an aarch64-only
+# userland, so AArch32 execution has never been demonstrated there -- the
+# silicon (Neoverse N2) does support AArch32 at EL0; it is the runner image,
+# not the CPU, that rules it out. So arm/v7 builds under QEMU, which is only
+# affordable because requirements.txt drops uvicorn[standard].
 #
 # Tagged v* releases (semver + latest, GitHub Release, provenance
 # attestation) are handled separately by release.yml, which is gated by the

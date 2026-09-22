@@ -4,7 +4,7 @@
 # Each source is its own matrix entry so one plugin's 403 can't mask another
 # plugin's parse break, and adding a source is a one-line change.
 #
-# Filing policy (see docs/gh-workflows if this disagrees):
+# Filing policy:
 #   - A single failure is noise -- MakerWorld and TikTok both 403 GitHub's
 #     Azure IP ranges sometimes while working fine from a residential
 #     connection (CONTRIBUTING.md, the broken_source issue template).
