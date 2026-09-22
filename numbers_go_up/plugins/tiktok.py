@@ -418,12 +418,25 @@ def _fetch_video_info(http, video_id: str) -> dict:
 def _validate_stat(value: object, what: str, subject: str) -> int | float:
     """``subject`` is the error message's prefix after "TikTok " -- e.g.
     ``f"profile @{handle}"`` or ``f"video {video_id}"`` -- so this one
-    helper covers both the account and per-video stat fields."""
+    helper covers both the account and per-video stat fields.
+
+    TikTok serializes some counters (``collectCount`` in the video schema,
+    and per its ``statsV2`` sibling of the same scope, potentially any
+    counter) as a digit-string rather than a JSON number. A digit-string is
+    accepted and converted here -- anything else (a non-digit string, a
+    bool, None) still fails -- so a serialization flip on TikTok's side
+    doesn't turn every future poll of otherwise-healthy data into a
+    failure.
+    """
     if value is None:
         raise ValueError(f"TikTok {subject} {what} is missing")
-    if isinstance(value, bool) or not isinstance(value, int | float):
+    if isinstance(value, bool):
         raise ValueError(f"TikTok {subject} {what} must be numeric, got {value!r}")
-    return value
+    if isinstance(value, int | float):
+        return value
+    if isinstance(value, str) and value.isdigit():
+        return int(value)
+    raise ValueError(f"TikTok {subject} {what} must be numeric, got {value!r}")
 
 
 def _handle_metrics(
@@ -491,6 +504,12 @@ def _handle_metrics(
 
 def _video_metrics(key: str, video_id: str, item_struct: dict) -> dict:
     item_id = item_struct.get("id")
+    # Same str|int normalization as _validate_videos' own id handling --
+    # the id's type in a response isn't guaranteed to always be a string
+    # (#114 review), so this compares by value rather than hard-requiring
+    # one JSON type.
+    if isinstance(item_id, int) and not isinstance(item_id, bool):
+        item_id = str(item_id)
     if not isinstance(item_id, str) or item_id != video_id:
         raise ValueError(
             f"TikTok video {video_id} response id {item_id!r} does not "

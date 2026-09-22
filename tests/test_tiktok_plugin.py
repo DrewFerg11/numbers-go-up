@@ -488,6 +488,16 @@ class TestSuccess:
             assert "heart" not in json.dumps(entry).lower()
         assert not any("heart" in key.lower() for key in tiktok.METRICS)
 
+    def test_string_followercount_is_accepted(self):
+        # _validate_stat's digit-string tolerance (#114 review) applies to
+        # every caller, not just videos -- pin it here too.
+        def handler(request: httpx.Request) -> httpx.Response:
+            return _html_response(followerCount="48213")
+
+        result = tiktok.collect({"handles": [_handle()]}, _client(handler))
+
+        assert result["tiktok.user.canary.followers"]["value"] == 48213
+
 
 class TestVideoSuccess:
     def test_one_video_makes_exactly_one_request_with_browser_headers(self):
@@ -577,6 +587,46 @@ class TestVideoSuccess:
             == "https://www.tiktok.com/@i/video/7123456789012345678"
         )
         assert result["tiktok.video.clip.views"]["attrs"]["handle"] is None
+
+    def test_string_playcount_and_diggcount_are_accepted(self):
+        # TikTok's statsV2 sibling of this same scope stringifies every
+        # counter -- a serialization flip must not fail an otherwise
+        # healthy poll (#114 review).
+        def handler(request: httpx.Request) -> httpx.Response:
+            return _video_html_response(playCount="3800000", diggCount="378600")
+
+        result = tiktok.collect({"videos": [_video()]}, _client(handler))
+
+        assert result["tiktok.video.clip.views"]["value"] == 3800000
+        assert result["tiktok.video.clip.likes"]["value"] == 378600
+
+    def test_int_item_id_matches_a_string_configured_id(self):
+        # A response id isn't guaranteed to always be a JSON string
+        # (#114 review) -- compare by value via the same normalization
+        # _validate_videos already applies to a configured id.
+        def handler(request: httpx.Request) -> httpx.Response:
+            blob = {
+                "__DEFAULT_SCOPE__": {
+                    "webapp.video-detail": {
+                        "statusCode": 0,
+                        "itemInfo": {
+                            "itemStruct": {
+                                "id": 7123456789012345678,
+                                "stats": {"playCount": 1, "diggCount": 1},
+                            }
+                        },
+                    }
+                }
+            }
+            html = (
+                '<html><body><script id="__UNIVERSAL_DATA_FOR_REHYDRATION__" '
+                f'type="application/json">{json.dumps(blob)}</script></body></html>'
+            )
+            return httpx.Response(200, text=html)
+
+        result = tiktok.collect({"videos": [_video()]}, _client(handler))
+
+        assert result["tiktok.video.clip.views"]["value"] == 1
 
 
 class TestFailureHandling:
