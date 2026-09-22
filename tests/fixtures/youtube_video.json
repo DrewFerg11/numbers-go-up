@@ -1,0 +1,25 @@
+{
+  "kind": "youtube#videoListResponse",
+  "etag": "placeholder-etag",
+  "pageInfo": {
+    "totalResults": 1,
+    "resultsPerPage": 5
+  },
+  "items": [
+    {
+      "kind": "youtube#video",
+      "etag": "placeholder-etag-item",
+      "id": "dQw4w9WgXcQ",
+      "snippet": {
+        "title": "Example Video",
+        "description": "A placeholder video used for offline plugin tests.",
+        "publishedAt": "2024-06-01T00:00:00Z"
+      },
+      "statistics": {
+        "viewCount": "789012",
+        "likeCount": "34567",
+        "commentCount": "890"
+      }
+    }
+  ]
+}
