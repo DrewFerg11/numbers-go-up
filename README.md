@@ -353,6 +353,50 @@ above on why the unofficial `livecounts` path was dropped before it shipped).
   on its next poll — the same trade-off the GitHub plugin makes with
   `full_name`.
 
+### Abacus
+
+Tracks generic counters (any Abacus `namespace`/key pair) via the public,
+unauthenticated [Abacus API](https://abacus.jasoncameron.dev). Not tied to
+any specific site — it's config-driven, so it can track any static page's
+Abacus-backed counter, such as the "boards flashed" badge on the
+Split-Flap-Display web flasher. Configure `plugins.abacus.counters` with
+one or more `{key, namespace, name, label, unit}` entries (see
+[`config.yaml.example`](config.yaml.example)).
+
+- **This is a feel-good badge, not an audit trail.** The count is
+  client-side and unauthenticated — anyone who knows (or guesses) the
+  namespace and key can hit Abacus's `/hit/` endpoint directly and inflate
+  it. Nothing about this plugin, or the source it reads, proves the number
+  reflects real user activity.
+- **Counters expire after ~6 months of no *increments*.** Reads alone don't
+  refresh the TTL (verified live, see #96) — only an actual `/hit/` does.
+  A counter that goes quiet for that long is garbage-collected upstream and
+  a later read comes back 404/`exists: false`, which this plugin treats as
+  a **failed poll**, never a silent drop to 0 in a `cumulative` series.
+- **`key` is a permanent slug**, separate from the real Abacus `namespace`/
+  `name` (which may contain characters — dots, mixed case — outside the
+  `[a-z0-9_-]+` metric-key charset). Same convention as the YouTube
+  plugin's channel `key`. Pick it once; it can't be renamed without losing
+  history.
+- **`unit` is config-accepted but not the entity's actual unit.** Every
+  configured counter shares one `METRICS` pattern
+  (`abacus.counter.{key}.value`), and this project's plugin contract fixes
+  `kind`/`unit`/`icon` per pattern at declare time — they can never vary
+  per poll (only `label`/`attrs` can). So `unit` from config can't become
+  each series' real `unit_of_measurement`; it's carried through into that
+  series' `attrs.unit` instead, so it's still visible via the API/
+  dashboard, rather than silently discarded.
+- **Known limitation — the "value went backwards" check is best-effort
+  and in-process only.** `collect()` has no access to storage (no plugin
+  does), and storage itself doesn't reject a falling cumulative series
+  (same known limitation the GitHub plugin documents above). This plugin
+  keeps its own last-seen value per counter in memory for the life of the
+  process and fails the poll if a new read comes in lower — catching a
+  `get`/`hit` typo or an expired-and-reset counter *within* a run of the
+  service. It is **not persisted**: a restart forgets every counter's
+  last-seen value, so a regression that happens to land right after a
+  restart is not caught. Treat it as a helpful guard, not a guarantee.
+
 ### TikTok
 
 Tracks followers, following, and video count for your own handle(s), by
