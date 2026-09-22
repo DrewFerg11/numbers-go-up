@@ -122,10 +122,11 @@ def _validate_max_handles(value: object) -> int:
 def _validate_handles(config: dict) -> list[dict]:
     """Validate ``handles`` up front, before any request is made.
 
-    Returns the validated list of {"key", "handle"} dicts, order preserved
-    (a leading '@' already stripped from ``handle``). Raises ValueError on a
-    missing/empty/non-list ``handles``, a malformed entry, an invalid or
-    duplicate ``key``, a bad ``handle``, or exceeding ``max``.
+    Returns the validated list of {"key", "handle", "allow_zero_followers"}
+    dicts, order preserved (a leading '@' already stripped from ``handle``).
+    Raises ValueError on a missing/empty/non-list ``handles``, a malformed
+    entry, an invalid or duplicate ``key``, a bad ``handle``, a non-bool
+    ``allow_zero_followers``, or exceeding ``max``.
     """
     handles = config.get("handles")
     if not handles:
@@ -161,7 +162,20 @@ def _validate_handles(config: dict) -> list[dict]:
                 f"{_HANDLE_PATTERN.pattern} (a leading '@' is optional)"
             )
 
-        validated.append({"key": key, "handle": handle})
+        allow_zero_followers = entry.get("allow_zero_followers", False)
+        if not isinstance(allow_zero_followers, bool):
+            raise ValueError(
+                f"handles[{key!r}].allow_zero_followers must be a bool, "
+                f"got {allow_zero_followers!r}"
+            )
+
+        validated.append(
+            {
+                "key": key,
+                "handle": handle,
+                "allow_zero_followers": allow_zero_followers,
+            }
+        )
 
     if len(validated) > max_handles:
         raise ValueError(
@@ -231,7 +245,9 @@ def _validate_stat(value: object, what: str, handle: str) -> int | float:
     return value
 
 
-def _handle_metrics(key: str, handle: str, user_info: dict) -> dict:
+def _handle_metrics(
+    key: str, handle: str, user_info: dict, *, allow_zero_followers: bool = False
+) -> dict:
     try:
         user = user_info["user"]
         stats = user_info["stats"]
@@ -251,11 +267,15 @@ def _handle_metrics(key: str, handle: str, user_info: dict) -> dict:
         )
 
     followers = _validate_stat(stats.get("followerCount"), "followerCount", handle)
-    if followers == 0:
+    if followers == 0 and not allow_zero_followers:
         # Sanity guard, same precedent as youtube.py's subscriberCount==0
-        # check: a real, tracked account is never at exactly zero followers.
+        # check: a real, tracked account is never at exactly zero followers
+        # -- unless its owner opted out via allow_zero_followers, because
+        # they're actually tracking a fresh/inactive account.
         raise ValueError(
-            f"TikTok profile @{handle} followerCount is 0; refusing to write a sample"
+            f"TikTok profile @{handle} followerCount is 0; refusing to write "
+            "a sample (set handles[].allow_zero_followers: true if this "
+            "account genuinely has 0 followers)"
         )
     following = _validate_stat(stats.get("followingCount"), "followingCount", handle)
     videos = _validate_stat(stats.get("videoCount"), "videoCount", handle)
@@ -288,16 +308,18 @@ def _handle_metrics(key: str, handle: str, user_info: dict) -> dict:
 
 
 def collect(config: dict, http) -> dict[str, int | float | dict]:
-    """config["handles"]: list of {"key", "handle"} (a leading '@' on
-    ``handle`` is accepted and stripped). No default -- the plugin makes no
-    request at all until it's set.
+    """config["handles"]: list of {"key", "handle", "allow_zero_followers"}
+    (a leading '@' on ``handle`` is accepted and stripped;
+    ``allow_zero_followers`` is optional, default false). No default -- the
+    plugin makes no request at all until it's set.
 
     config["max"]: cardinality guard on handles, default 5.
 
     Exactly one GET per handle, to the handle's own profile page. Any
     handle failing (HTTP error, missing/unparseable rehydration blob,
     missing userInfo, a uniqueId that doesn't match the configured handle,
-    or a missing/non-numeric/zero followerCount) fails the whole poll --
+    a missing/non-numeric followerCount, or a zero followerCount without
+    that handle's ``allow_zero_followers: true``) fails the whole poll --
     handles come from config, not discovery, so nothing is ever
     deactivated here.
     """
@@ -311,5 +333,12 @@ def collect(config: dict, http) -> dict[str, int | float | dict]:
         # plugin here: one handle failing fails the whole poll rather than
         # partially reporting.
         user_info = _fetch_user_info(http, handle)
-        result.update(_handle_metrics(key, handle, user_info))
+        result.update(
+            _handle_metrics(
+                key,
+                handle,
+                user_info,
+                allow_zero_followers=entry["allow_zero_followers"],
+            )
+        )
     return result

@@ -64,6 +64,8 @@
 #     handles:
 #       - key: main              # metric-key slug: [a-z0-9_-]+, permanent
 #         handle: yourhandle      # without the leading @; letters/digits/./_ only
+#         # allow_zero_followers: true  # opt out of the zero-followers guard
+#         #                              # (default false) for a fresh account
 #     max: 5                     # cardinality guard on handles
 #     # No auth -- reads your own public profile page.
 #
