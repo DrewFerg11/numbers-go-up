@@ -1,6 +1,6 @@
-"""TikTok plugin: followers, following, and video count for your own
-handle(s), via the profile-page rehydration blob (no library, no auth, no
-cookies).
+"""TikTok plugin: followers/following/video count for your own handle(s),
+and views/likes for individual videos, via the profile-page and video-page
+rehydration blobs (no library, no auth, no cookies).
 
 **The technique** (verified against a live capture, see #95): ``GET
 https://www.tiktok.com/@{handle}`` returns an HTML page embedding
@@ -11,25 +11,46 @@ type="application/json">{...}</script>``. The blob at
 ``<script>`` element by its fixed ``id`` and ``json.loads`` its contents --
 it never regexes the JSON itself, only the tag boundaries around it.
 
+**Per-video views/likes** (see #113): the same technique applied to
+``GET https://www.tiktok.com/@i/video/{id}`` -- ``@i`` is a placeholder,
+not a real handle; TikTok resolves this page purely by the numeric video
+id (verified against a live capture), so no handle is needed in config.
+The blob's ``data["__DEFAULT_SCOPE__"]["webapp.video-detail"]`` carries
+``itemInfo.itemStruct`` with ``stats.playCount`` (views) and
+``stats.diggCount`` (likes -- this is a different, per-video field from
+the account-level ``heartCount`` below, and not known to share its
+overflow problem).
+
+Video ids can't be discovered from this plugin -- that's exactly what
+TikTok's own item-list API does, and it's gated behind request signing
+(``X-Bogus``/``_signature``) computed by obfuscated client JS. A direct
+call without that signature returns ``HTTP 200`` with an empty body --
+silent bot detection, confirmed live during #113's investigation.
+Replicating that signing would be a fundamentally different (and far more
+fragile) undertaking than this module's one honest, unsigned GET, so video
+ids are always supplied directly in config, same as handles.
+
 **Responsible Use #3 exception.** The rehydration blob is only served for a
 browser-shaped request: this module sends one fixed, documented ``User-Agent``
 plus ``Accept-Language`` on every request to ``tiktok.com``, next to
 MakerWorld's Cloudflare-host workaround as the project's other documented
 departure from an honest UA. No rotation, no cookies (the shared client
 already clears them every response -- see http.py), no session reuse, no
-proxies. Public data about your own account(s); opt-in and inert by default,
-same as every other plugin here.
+proxies. Public data about your own account(s) and videos; opt-in and inert
+by default, same as every other plugin here.
 
-**Do NOT track likes.** ``stats.heartCount`` overflows a signed int32 in
-practice (a live capture during the spike returned a negative value for a
-large account) -- it is deliberately absent from both ``METRICS`` and
-``collect()`` and must stay that way.
+**Do NOT track account-level likes.** ``stats.heartCount`` (the profile's
+total-likes-received counter) overflows a signed int32 in practice (a live
+capture during the spike returned a negative value for a large account) --
+it is deliberately absent from both ``METRICS`` and ``collect()`` and must
+stay that way. This does not apply to a single video's ``stats.diggCount``
+above, which is a much smaller, unrelated field.
 
-**Handle mismatch is a failed poll, not a silent write.** TikTok serves a
-different (or generic) profile for a renamed, redirected, or nonexistent
-handle; if the blob's ``user.uniqueId`` doesn't case-insensitively match the
-configured handle, this counts as a failure so an existing series is never
-corrupted with another account's numbers.
+**Handle/id mismatch is a failed poll, not a silent write.** TikTok serves
+a different (or generic) profile/video for a renamed, redirected, deleted,
+or nonexistent handle/id; if the blob's ``user.uniqueId`` or ``itemStruct.id``
+doesn't match what was configured, this counts as a failure so an existing
+series is never corrupted with another account's or video's numbers.
 
 **Cap on the response body.** This is an HTML page from an origin openly
 hostile to scraping, not a small, well-behaved API response -- a captcha
@@ -70,9 +91,22 @@ METRICS = {
         "unit": "videos",
         "icon": "mdi:video",
     },
+    "tiktok.video.{key}.views": {
+        "kind": "cumulative",  # playCount only rises while a video exists
+        "label": "TT Views",
+        "unit": "views",
+        "icon": "mdi:eye",
+    },
+    "tiktok.video.{key}.likes": {
+        "kind": "gauge",  # un-likes happen, same as unfollows/unstars
+        "label": "TT Likes",
+        "unit": "likes",
+        "icon": "mdi:heart",
+    },
 }
 
 _DEFAULT_MAX_HANDLES = 5
+_DEFAULT_MAX_VIDEOS = 20
 
 # Metric-key slug: Home-Assistant-entity-id-safe, permanent once picked --
 # same convention as youtube.py's channel `key` (#62/#95 precedent), because
@@ -84,7 +118,15 @@ _KEY_PATTERN = re.compile(r"^[a-z0-9_-]+$")
 # is accepted and stripped, never required).
 _HANDLE_PATTERN = re.compile(r"^[A-Za-z0-9._]{2,24}$")
 
+# TikTok video (aweme) ids are numeric; current ones run 19 digits, but this
+# is generous rather than pinned to today's exact length.
+_VIDEO_ID_PATTERN = re.compile(r"^[0-9]{5,25}$")
+
 _PROFILE_URL_TEMPLATE = "https://www.tiktok.com/@{handle}"
+# "@i" is a placeholder handle segment, not a real one -- see the module
+# docstring's "Per-video views/likes" note. Verified live: TikTok serves
+# the correct video page from this URL regardless of the handle segment.
+_VIDEO_URL_TEMPLATE = "https://www.tiktok.com/@i/video/{id}"
 
 # One fixed, documented browser UA + Accept-Language -- see the module
 # docstring's Responsible Use #3 note. Never rotated.
@@ -116,6 +158,18 @@ def _validate_max_handles(value: object) -> int:
         raise ValueError(f"max must be an int, got {value!r}")
     if value < 1:
         raise ValueError(f"max must be at least 1, got {value!r}")
+    return value
+
+
+def _validate_max_videos(value: object) -> int:
+    """Same convention as ``_validate_max_handles``, for ``videos_max`` --
+    a separate key rather than reusing ``max``, since ``max`` already means
+    "cardinality guard on handles" and changing that would be a breaking
+    change for existing configs."""
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(f"videos_max must be an int, got {value!r}")
+    if value < 1:
+        raise ValueError(f"videos_max must be at least 1, got {value!r}")
     return value
 
 
@@ -184,6 +238,62 @@ def _validate_handles(config: dict) -> list[dict]:
     return validated
 
 
+def _validate_videos(config: dict) -> list[dict]:
+    """Validate ``videos`` up front, before any request is made.
+
+    Returns the validated list of {"key", "id"} dicts, order preserved
+    (``id`` normalized to a string). Unlike ``handles``, an absent or empty
+    ``videos`` is not an error here -- video tracking is entirely optional,
+    and whether *something* is configured at all is checked once in
+    ``collect()``. Raises ValueError on a non-list ``videos``, a malformed
+    entry, an invalid or duplicate ``key``, a bad ``id``, or exceeding
+    ``videos_max``.
+    """
+    videos = config.get("videos")
+    if not videos:
+        return []
+    if not isinstance(videos, list):
+        raise ValueError(f"videos must be a list, got {type(videos).__name__}")
+
+    max_videos = _validate_max_videos(config.get("videos_max", _DEFAULT_MAX_VIDEOS))
+
+    validated: list[dict] = []
+    seen_keys: set[str] = set()
+    for entry in videos:
+        if not isinstance(entry, dict):
+            raise ValueError(f"videos entry must be a mapping, got {entry!r}")
+
+        key = entry.get("key")
+        if not isinstance(key, str) or not _KEY_PATTERN.fullmatch(key):
+            raise ValueError(f"videos entry key {key!r} must match [a-z0-9_-]+")
+        if key in seen_keys:
+            raise ValueError(f"videos key {key!r} is a duplicate")
+        seen_keys.add(key)
+
+        raw_id = entry.get("id")
+        # Both an int and a str are accepted -- YAML parses a bare numeric
+        # id as an int, and Python ints are arbitrary-precision (unlike
+        # JS numbers), so this loses no precision even at 19 digits.
+        if isinstance(raw_id, bool) or not isinstance(raw_id, str | int):
+            raise ValueError(
+                f"videos[{key!r}].id must be a string or int, got {raw_id!r}"
+            )
+        video_id = str(raw_id)
+        if not _VIDEO_ID_PATTERN.fullmatch(video_id):
+            raise ValueError(
+                f"videos[{key!r}].id {raw_id!r} must match "
+                f"{_VIDEO_ID_PATTERN.pattern} (digits only)"
+            )
+
+        validated.append({"key": key, "id": video_id})
+
+    if len(validated) > max_videos:
+        raise ValueError(
+            f"videos count ({len(validated)}) exceeds videos_max ({max_videos})"
+        )
+    return validated
+
+
 def _fetch_user_info(http, handle: str) -> dict:
     """Fetch and parse the profile page for ``handle``, returning its
     ``userInfo`` object. Raises ValueError, never crashes, on anything the
@@ -235,14 +345,98 @@ def _fetch_user_info(http, handle: str) -> dict:
     return user_info
 
 
-def _validate_stat(value: object, what: str, handle: str) -> int | float:
-    if value is None:
-        raise ValueError(f"TikTok profile @{handle} {what} is missing")
-    if isinstance(value, bool) or not isinstance(value, int | float):
+def _fetch_video_info(http, video_id: str) -> dict:
+    """Fetch and parse the video page for ``video_id``, returning its
+    ``itemStruct`` object. Raises ValueError, never crashes, on anything
+    the page could plausibly do short of a real HTTP error (which the
+    shared client's ``raise_for_status`` / ``Blocked`` / ``RateLimited``
+    already cover). See the module docstring's "Per-video views/likes"
+    note for why the URL's handle segment is a fixed placeholder."""
+    url = _VIDEO_URL_TEMPLATE.format(id=video_id)
+    response = http.get(
+        url,
+        headers={
+            "User-Agent": _BROWSER_USER_AGENT,
+            "Accept-Language": _ACCEPT_LANGUAGE,
+        },
+        timeout=15,
+    )
+    response.raise_for_status()
+
+    if len(response.content) > _MAX_BODY_BYTES:
         raise ValueError(
-            f"TikTok profile @{handle} {what} must be numeric, got {value!r}"
+            f"TikTok video {video_id} response exceeds the "
+            f"{_MAX_BODY_BYTES}-byte cap; refusing to parse it"
         )
-    return value
+
+    match = _SCRIPT_PATTERN.search(response.text)
+    if match is None:
+        raise ValueError(
+            f"TikTok video {video_id} response has no "
+            f"{_REHYDRATION_SCRIPT_ID} script -- captcha/interstitial page, "
+            "region block, or TikTok changed the page shape"
+        )
+
+    try:
+        data = json.loads(match.group(1))
+    except json.JSONDecodeError as exc:
+        raise ValueError(
+            f"TikTok video {video_id} {_REHYDRATION_SCRIPT_ID} script is not valid JSON"
+        ) from exc
+
+    try:
+        video_detail = data["__DEFAULT_SCOPE__"]["webapp.video-detail"]
+    except (KeyError, TypeError):
+        raise ValueError(
+            f"TikTok video {video_id} response has no webapp.video-detail"
+        ) from None
+    if not isinstance(video_detail, dict):
+        raise ValueError(
+            f"TikTok video {video_id} webapp.video-detail is not an object"
+        )
+
+    # A deleted/private/region-blocked/nonexistent video has no itemInfo at
+    # all (verified live: statusCode is a nonzero TikTok-internal code with
+    # a statusMsg like "status_deleted", itemInfo is simply absent) rather
+    # than an itemInfo with empty/null stats -- so this is the one check
+    # that distinguishes "video gone" from "response shape changed".
+    item_info = video_detail.get("itemInfo")
+    if not isinstance(item_info, dict):
+        raise ValueError(
+            f"TikTok video {video_id} is unavailable (statusCode="
+            f"{video_detail.get('statusCode')!r}, statusMsg="
+            f"{video_detail.get('statusMsg')!r}) -- deleted, private, or "
+            "region-blocked"
+        )
+
+    item_struct = item_info.get("itemStruct")
+    if not isinstance(item_struct, dict):
+        raise ValueError(f"TikTok video {video_id} itemInfo has no itemStruct")
+    return item_struct
+
+
+def _validate_stat(value: object, what: str, subject: str) -> int | float:
+    """``subject`` is the error message's prefix after "TikTok " -- e.g.
+    ``f"profile @{handle}"`` or ``f"video {video_id}"`` -- so this one
+    helper covers both the account and per-video stat fields.
+
+    TikTok serializes some counters (``collectCount`` in the video schema,
+    and per its ``statsV2`` sibling of the same scope, potentially any
+    counter) as a digit-string rather than a JSON number. A digit-string is
+    accepted and converted here -- anything else (a non-digit string, a
+    bool, None) still fails -- so a serialization flip on TikTok's side
+    doesn't turn every future poll of otherwise-healthy data into a
+    failure.
+    """
+    if value is None:
+        raise ValueError(f"TikTok {subject} {what} is missing")
+    if isinstance(value, bool):
+        raise ValueError(f"TikTok {subject} {what} must be numeric, got {value!r}")
+    if isinstance(value, int | float):
+        return value
+    if isinstance(value, str) and value.isdigit():
+        return int(value)
+    raise ValueError(f"TikTok {subject} {what} must be numeric, got {value!r}")
 
 
 def _handle_metrics(
@@ -266,7 +460,8 @@ def _handle_metrics(
             "redirected, or a different account served)"
         )
 
-    followers = _validate_stat(stats.get("followerCount"), "followerCount", handle)
+    profile = f"profile @{handle}"
+    followers = _validate_stat(stats.get("followerCount"), "followerCount", profile)
     if followers == 0 and not allow_zero_followers:
         # Sanity guard, same precedent as youtube.py's subscriberCount==0
         # check: a real, tracked account is never at exactly zero followers
@@ -277,8 +472,8 @@ def _handle_metrics(
             "a sample (set handles[].allow_zero_followers: true if this "
             "account genuinely has 0 followers)"
         )
-    following = _validate_stat(stats.get("followingCount"), "followingCount", handle)
-    videos = _validate_stat(stats.get("videoCount"), "videoCount", handle)
+    following = _validate_stat(stats.get("followingCount"), "followingCount", profile)
+    videos = _validate_stat(stats.get("videoCount"), "videoCount", profile)
 
     nickname = user.get("nickname")
     subject = nickname if isinstance(nickname, str) and nickname else key
@@ -307,23 +502,88 @@ def _handle_metrics(
     }
 
 
+def _video_metrics(key: str, video_id: str, item_struct: dict) -> dict:
+    item_id = item_struct.get("id")
+    # Same str|int normalization as _validate_videos' own id handling --
+    # the id's type in a response isn't guaranteed to always be a string
+    # (#114 review), so this compares by value rather than hard-requiring
+    # one JSON type.
+    if isinstance(item_id, int) and not isinstance(item_id, bool):
+        item_id = str(item_id)
+    if not isinstance(item_id, str) or item_id != video_id:
+        raise ValueError(
+            f"TikTok video {video_id} response id {item_id!r} does not "
+            "match the configured id -- refusing (TikTok changed the page "
+            "shape or served the wrong video)"
+        )
+
+    stats = item_struct.get("stats")
+    if not isinstance(stats, dict):
+        raise ValueError(f"TikTok video {video_id} 'stats' is not an object")
+
+    video = f"video {video_id}"
+    views = _validate_stat(stats.get("playCount"), "playCount", video)
+    likes = _validate_stat(stats.get("diggCount"), "diggCount", video)
+
+    author = item_struct.get("author")
+    handle = author.get("uniqueId") if isinstance(author, dict) else None
+    # Label uses the config key, not the video's caption -- captions are
+    # free text (length, emoji, hashtags) that make a poor, unstable label
+    # compared to a key the user picked deliberately, unlike a profile's
+    # short nickname.
+    attrs = {
+        "video_id": video_id,
+        "url": f"https://www.tiktok.com/@{handle}/video/{video_id}"
+        if isinstance(handle, str) and handle
+        else f"https://www.tiktok.com/@i/video/{video_id}",
+        "handle": handle,
+    }
+    return {
+        f"tiktok.video.{key}.views": {
+            "value": views,
+            "label": f"TT {key} Views",
+            "attrs": attrs,
+        },
+        f"tiktok.video.{key}.likes": {
+            "value": likes,
+            "label": f"TT {key} Likes",
+            "attrs": attrs,
+        },
+    }
+
+
 def collect(config: dict, http) -> dict[str, int | float | dict]:
     """config["handles"]: list of {"key", "handle", "allow_zero_followers"}
     (a leading '@' on ``handle`` is accepted and stripped;
-    ``allow_zero_followers`` is optional, default false). No default -- the
-    plugin makes no request at all until it's set.
+    ``allow_zero_followers`` is optional, default false).
 
     config["max"]: cardinality guard on handles, default 5.
 
-    Exactly one GET per handle, to the handle's own profile page. Any
-    handle failing (HTTP error, missing/unparseable rehydration blob,
-    missing userInfo, a uniqueId that doesn't match the configured handle,
-    a missing/non-numeric followerCount, or a zero followerCount without
-    that handle's ``allow_zero_followers: true``) fails the whole poll --
-    handles come from config, not discovery, so nothing is ever
+    config["videos"]: list of {"key", "id"} (``id`` is a TikTok video's
+    numeric id, digits only -- accepted as either a YAML int or string).
+    Entirely optional and independent of ``handles``: this plugin can
+    track videos with no handle configured, or vice versa, or both.
+    Unlike handles, a video's id can't be discovered here (see the module
+    docstring's "Per-video views/likes" note), so it's always supplied
+    directly.
+
+    config["videos_max"]: cardinality guard on videos, default 20.
+
+    At least one of ``handles``/``videos`` must be configured -- otherwise
+    the plugin makes no request at all. Exactly one GET per handle (its
+    profile page) plus one GET per video (its video page). Any handle or
+    video failing (HTTP error, missing/unparseable rehydration blob, an
+    id/uniqueId that doesn't match what was configured, a missing/non-
+    numeric stat, or -- handles only -- a zero followerCount without
+    ``allow_zero_followers: true``) fails the whole poll -- both handles
+    and videos come from config, not discovery, so nothing is ever
     deactivated here.
     """
-    handles = _validate_handles(config)
+    if not config.get("handles") and not config.get("videos"):
+        raise ValueError("handles or videos must be configured")
+
+    handles = _validate_handles(config) if config.get("handles") else []
+    videos = _validate_videos(config)
 
     result: dict[str, int | float | dict] = {}
     for entry in handles:
@@ -341,4 +601,9 @@ def collect(config: dict, http) -> dict[str, int | float | dict]:
                 allow_zero_followers=entry["allow_zero_followers"],
             )
         )
+    for entry in videos:
+        key = entry["key"]
+        video_id = entry["id"]
+        item_struct = _fetch_video_info(http, video_id)
+        result.update(_video_metrics(key, video_id, item_struct))
     return result
