@@ -100,7 +100,11 @@ EXAMPLE_CONFIG = """\
 #         # allow_zero_followers: true  # opt out of the zero-followers guard
 #         #                              # (default false) for a fresh account
 #     max: 5                     # cardinality guard on handles
-#     # No auth -- reads your own public profile page.
+#     videos:                    # optional, independent of handles -- views/likes
+#       - key: launch_video      # metric-key slug: [a-z0-9_-]+, permanent
+#         id: "7123456789012345678"   # the numeric id from the video's URL
+#     videos_max: 20             # cardinality guard on videos
+#     # No auth -- reads your own public profile/video pages.
 #
 # dashboard:
 #   pinned: []        # up to 6 metric keys for the index strip

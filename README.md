@@ -406,9 +406,10 @@ one or more `{key, namespace, name, label, unit}` entries (see
 
 ### TikTok
 
-Tracks followers, following, and video count for your own handle(s), by
-reading the same `__UNIVERSAL_DATA_FOR_REHYDRATION__` JSON blob your browser
-does when it loads your profile page — no library, no login, no cookies.
+Tracks followers, following, and video count for your own handle(s), plus
+views and likes for individual videos, by reading the same
+`__UNIVERSAL_DATA_FOR_REHYDRATION__` JSON blob your browser does when it
+loads a profile or video page — no library, no login, no cookies.
 
 - **Finding your handle:** it's the part after the `@` in your profile URL
   (`tiktok.com/@yourhandle`) — a leading `@` in config is accepted and
@@ -416,26 +417,40 @@ does when it loads your profile page — no library, no login, no cookies.
   [`config.yaml.example`](config.yaml.example)); the `key` is a permanent
   slug, same convention as YouTube's `channels[].key`, since a handle may
   contain `.` or uppercase letters that aren't Home-Assistant-entity-id-safe.
+- **Per-video views and likes:** configure `plugins.tiktok.videos` with the
+  numeric `id` from a video's URL (`tiktok.com/@handle/video/{id}`) — no
+  handle needed alongside it, and independent of `handles` entirely (track
+  videos with no account configured, or vice versa, or both). There's no way
+  to discover a handle's videos here: doing that means TikTok's own
+  item-list API, which is gated behind request signing that a plain HTTP
+  client can't replicate (confirmed live during #113 — an unsigned call
+  returns `HTTP 200` with an empty body). So video ids are always supplied
+  directly, same as handles.
 - **Documented exception:** this is the one plugin here that doesn't send the
-  project's honest User-Agent. The profile page only serves the data blob to
-  a browser-shaped request, so this plugin sends one fixed, documented
-  `User-Agent` + `Accept-Language` — no rotation, no cookies, no session
-  reuse, no proxies. Still reads only public data about your own account(s).
-- **Likes are not tracked.** TikTok's `heartCount` overflows a signed int32
-  for large accounts (observed as a negative number in the wild) — it will
-  never appear in this plugin's metrics.
+  project's honest User-Agent. The profile/video pages only serve the data
+  blob to a browser-shaped request, so this plugin sends one fixed,
+  documented `User-Agent` + `Accept-Language` — no rotation, no cookies, no
+  session reuse, no proxies. Still reads only public data about your own
+  account(s) and videos.
+- **Account-level likes are not tracked.** TikTok's `heartCount` (total
+  likes received) overflows a signed int32 for large accounts (observed as
+  a negative number in the wild) — it will never appear in this plugin's
+  metrics. A single video's like count doesn't share this problem and is
+  tracked normally.
 - **Display rounding above ~1M followers/likes**, same caveat as YouTube's
   official API: the page itself rounds large numbers, so day-to-day change
   on a big account may show as a flat line with an occasional step.
-- A handle that resolves to a different account (renamed, redirected, or
+- A handle/video id that resolves to something else (renamed, redirected, or
   TikTok serving a mismatched page) fails the poll instead of writing that
-  other account's numbers into your series. Missing or non-numeric followers
-  also fails the poll rather than writing a bogus value.
+  other account's or video's numbers into your series. Missing or
+  non-numeric stats also fail the poll rather than writing a bogus value,
+  and a deleted/private/unavailable video fails distinctly.
 - **Zero followers fails the poll by default** — a real, tracked account is
   almost never at exactly zero, so this is treated as a broken scrape. If
   you're genuinely tracking a fresh account that has 0 followers, set
   `allow_zero_followers: true` on that handle's entry to opt out of the
-  guard.
+  guard. (Zero views/likes on a video is not guarded the same way — a
+  freshly posted video legitimately starts at 0.)
 
 ## Home Assistant
 
