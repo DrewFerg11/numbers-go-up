@@ -126,7 +126,7 @@ class TestHandlesValidation:
 
     @pytest.mark.parametrize(
         "bad_handle",
-        ["", None, "a" * 25, "has space", "has/slash", "has#hash", 123],
+        ["", "a", None, "a" * 25, "has space", "has/slash", "has#hash", 123],
     )
     def test_invalid_handle_fails_without_a_request(self, bad_handle):
         def handler(request: httpx.Request) -> httpx.Response:

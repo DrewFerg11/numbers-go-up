@@ -82,7 +82,7 @@ _KEY_PATTERN = re.compile(r"^[a-z0-9_-]+$")
 
 # TikTok handles: letters, digits, '.', '_', 2-24 characters (a leading '@'
 # is accepted and stripped, never required).
-_HANDLE_PATTERN = re.compile(r"^[A-Za-z0-9._]{1,24}$")
+_HANDLE_PATTERN = re.compile(r"^[A-Za-z0-9._]{2,24}$")
 
 _PROFILE_URL_TEMPLATE = "https://www.tiktok.com/@{handle}"
 
