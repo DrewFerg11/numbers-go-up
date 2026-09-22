@@ -80,6 +80,18 @@ EXAMPLE_CONFIG = """\
 #     max: 5                     # cardinality guard on channels
 #     # Required: set the NGU_YOUTUBE_API_KEY env var, never here.
 #
+#   abacus:
+#     enabled: true              # every plugin is OFF until explicitly enabled
+#     base_url: https://abacus.jasoncameron.dev   # self-hosted instance override
+#     counters:
+#       - key: sfd_flash_factory    # metric-key slug: [a-z0-9_-]+, permanent
+#         namespace: example.github.io   # no '/' or whitespace
+#         name: flash-finished-factory   # no '/' or whitespace
+#         label: Boards Flashed (factory)
+#         unit: flashes
+#     max: 20                    # cardinality guard on counters
+#     # No auth, no env vars -- the source is unauthenticated and public.
+#
 # dashboard:
 #   pinned: []        # up to 6 metric keys for the index strip
 #                      # empty = first 4 cumulative metrics
