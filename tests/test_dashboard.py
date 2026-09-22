@@ -340,17 +340,36 @@ def test_overview_each_range_bound(tmp_path):
     series_id = seed_series(db_path, "acme.widgets", now=now - 400 * DAY)
     storage.record_sample(db_path, series_id, now - 400 * DAY, 100, DAY)
     storage.record_sample(db_path, series_id, now - 10 * DAY, 150, DAY)
-    storage.record_sample(db_path, series_id, now - HOUR, 200, DAY)
+    storage.record_sample(db_path, series_id, now - 8 * HOUR, 160, DAY)
+    storage.record_sample(db_path, series_id, now - 3 * HOUR, 170, DAY)
+    storage.record_sample(db_path, series_id, now - 20 * 60, 180, DAY)
+    storage.record_sample(db_path, series_id, now - 1, 200, DAY)
 
-    for range_key, hours in dashboard.RANGE_HOURS.items():
+    # "open" carries forward the latest sample at or before each range's
+    # window start, given the samples seeded above.
+    expected_open = {
+        "1H": 170,
+        "6H": 160,
+        "12H": 150,
+        "1D": 150,
+        "1W": 150,
+        "1M": 100,
+        "3M": 100,
+        "1Y": 100,
+    }
+
+    for range_key in dashboard.RANGE_HOURS:
         response = client.get(f"/api/stats/overview?range={range_key}")
         assert response.status_code == 200
         metric = response.json()["metrics"][0]
         assert metric["value"] == 200
-        if hours >= 400 * 24:
-            assert metric["open"] == 100
-        else:
-            assert metric["open"] in (100, 150)
+        assert metric["open"] == expected_open[range_key]
+
+    response = client.get("/api/stats/overview?range=ALL")
+    assert response.status_code == 200
+    metric = response.json()["metrics"][0]
+    assert metric["value"] == 200
+    assert metric["open"] == 100
 
 
 def test_overview_all_starts_at_first_sample(tmp_path):

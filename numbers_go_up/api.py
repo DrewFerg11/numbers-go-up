@@ -186,9 +186,16 @@ DEFAULT_UNHEALTHY_FAILURES = 3
 MAX_HOURS = 8760
 
 # Range bounds in hours, shared by /api/stats/overview, /api/stats/history,
-# and /m/{key} -- the same six named ranges everywhere in the app. ALL has
+# and /m/{key} -- the same named ranges everywhere in the app. ALL has
 # no fixed bound: each series starts at its own first sample.
+#
+# 1H/6H/12H are here temporarily for testing -- more frequent checking while
+# the app is being shaken out. Revisit per issue #116 (button row vs.
+# dropdown) once that settles down.
 RANGE_HOURS = {
+    "1H": 1,
+    "6H": 6,
+    "12H": 12,
     "1D": 24,
     "1W": 24 * 7,
     "1M": 24 * 30,
@@ -197,9 +204,12 @@ RANGE_HOURS = {
 }
 VALID_RANGES = (*RANGE_HOURS, "ALL")
 
-# Change-bar bucket width in seconds, keyed by named range: 1D->1h, 1W->6h,
-# 1M/3M->1d, 1Y/ALL->1w, per the big chart's change-bar spec.
+# Change-bar bucket width in seconds, keyed by named range: 1H/6H/12H->5m,
+# 1D->1h, 1W->6h, 1M/3M->1d, 1Y/ALL->1w, per the big chart's change-bar spec.
 BAR_BUCKET_SECONDS = {
+    "1H": 5 * 60,
+    "6H": 5 * 60,
+    "12H": 15 * 60,
     "1D": 3600,
     "1W": 6 * 3600,
     "1M": 86400,
