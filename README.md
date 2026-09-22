@@ -429,8 +429,13 @@ does when it loads your profile page — no library, no login, no cookies.
   on a big account may show as a flat line with an occasional step.
 - A handle that resolves to a different account (renamed, redirected, or
   TikTok serving a mismatched page) fails the poll instead of writing that
-  other account's numbers into your series. Zero, missing, or non-numeric
-  followers also fails the poll rather than writing a bogus 0.
+  other account's numbers into your series. Missing or non-numeric followers
+  also fails the poll rather than writing a bogus value.
+- **Zero followers fails the poll by default** — a real, tracked account is
+  almost never at exactly zero, so this is treated as a broken scrape. If
+  you're genuinely tracking a fresh account that has 0 followers, set
+  `allow_zero_followers: true` on that handle's entry to opt out of the
+  guard.
 
 ## Home Assistant
 

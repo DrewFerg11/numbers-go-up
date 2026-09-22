@@ -152,6 +152,27 @@ class TestHandlesValidation:
 
         assert requests[0].url.path == "/@example.user"
 
+    @pytest.mark.parametrize("bad_value", ["true", 1, None])
+    def test_non_bool_allow_zero_followers_fails_without_a_request(self, bad_value):
+        def handler(request: httpx.Request) -> httpx.Response:
+            raise AssertionError(
+                "no request should be made with a bad allow_zero_followers"
+            )
+
+        with pytest.raises(ValueError, match="allow_zero_followers"):
+            tiktok.collect(
+                {
+                    "handles": [
+                        {
+                            "key": "main",
+                            "handle": "example.user",
+                            "allow_zero_followers": bad_value,
+                        }
+                    ]
+                },
+                _client(handler),
+            )
+
     def test_non_int_max_fails_before_any_request(self):
         def handler(request: httpx.Request) -> httpx.Response:
             raise AssertionError("no request should be made with a bad max")
@@ -353,6 +374,25 @@ class TestFailureHandling:
 
         with pytest.raises(ValueError, match="followerCount is 0"):
             tiktok.collect({"handles": [_handle()]}, _client(handler))
+
+    def test_zero_followers_allowed_when_opted_in(self):
+        def handler(request: httpx.Request) -> httpx.Response:
+            return _html_response(followerCount=0)
+
+        result = tiktok.collect(
+            {
+                "handles": [
+                    {
+                        "key": "canary",
+                        "handle": "example.user",
+                        "allow_zero_followers": True,
+                    }
+                ]
+            },
+            _client(handler),
+        )
+
+        assert result["tiktok.user.canary.followers"]["value"] == 0
 
     def test_missing_followers_fails_distinctly(self):
         def handler(request: httpx.Request) -> httpx.Response:
