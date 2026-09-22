@@ -293,7 +293,14 @@ def build_overview(request: Request, range_key: str) -> dict[str, Any]:
     }
 
 
-@router.get("/api/stats/overview")
+# include_in_schema=False on this route and the two HTML routes below: all
+# three exist to feed this app's own dashboard (a denormalized batch fetch
+# for the overview's 60s auto-refresh, and the two page templates
+# themselves), not as a public contract -- unlike everything in api.py,
+# they carry no response model and aren't meant to be depended on. Keeping
+# them off /docs and /openapi.json stops them looking like part of the
+# documented API alongside api.py's tagged, schema'd routes.
+@router.get("/api/stats/overview", include_in_schema=False)
 def stats_overview(
     request: Request, range: str = Query(DEFAULT_RANGE)
 ) -> dict[str, Any]:
@@ -306,7 +313,7 @@ def stats_overview(
     return build_overview(request, range_key)
 
 
-@router.get("/", response_class=HTMLResponse)
+@router.get("/", response_class=HTMLResponse, include_in_schema=False)
 def dashboard_index(
     request: Request, range: str = Query(DEFAULT_RANGE)
 ) -> HTMLResponse:
@@ -359,7 +366,7 @@ def _safe_url(attrs: dict[str, Any]) -> str | None:
     return url if urlparse(url).scheme == "https" else None
 
 
-@router.get("/m/{metric_key}", response_class=HTMLResponse)
+@router.get("/m/{metric_key}", response_class=HTMLResponse, include_in_schema=False)
 def metric_detail(
     request: Request, metric_key: str, range: str = Query(DEFAULT_RANGE)
 ) -> HTMLResponse:
