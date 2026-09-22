@@ -34,7 +34,7 @@ so you can ask what changed, how fast, and since when.
 | MakerWorld | Shipped |
 | GitHub | Shipped |
 | YouTube | Shipped |
-| TikTok | Planned |
+| TikTok | Shipped |
 | Anything else | Write a plugin — that's the point |
 
 **Every plugin is opt-in and inert by default.** A fresh install makes zero
@@ -396,6 +396,34 @@ one or more `{key, namespace, name, label, unit}` entries (see
   service. It is **not persisted**: a restart forgets every counter's
   last-seen value, so a regression that happens to land right after a
   restart is not caught. Treat it as a helpful guard, not a guarantee.
+
+### TikTok
+
+Tracks followers, following, and video count for your own handle(s), by
+reading the same `__UNIVERSAL_DATA_FOR_REHYDRATION__` JSON blob your browser
+does when it loads your profile page — no library, no login, no cookies.
+
+- **Finding your handle:** it's the part after the `@` in your profile URL
+  (`tiktok.com/@yourhandle`) — a leading `@` in config is accepted and
+  stripped, but not required. Configure `plugins.tiktok.handles` (see
+  [`config.yaml.example`](config.yaml.example)); the `key` is a permanent
+  slug, same convention as YouTube's `channels[].key`, since a handle may
+  contain `.` or uppercase letters that aren't Home-Assistant-entity-id-safe.
+- **Documented exception:** this is the one plugin here that doesn't send the
+  project's honest User-Agent. The profile page only serves the data blob to
+  a browser-shaped request, so this plugin sends one fixed, documented
+  `User-Agent` + `Accept-Language` — no rotation, no cookies, no session
+  reuse, no proxies. Still reads only public data about your own account(s).
+- **Likes are not tracked.** TikTok's `heartCount` overflows a signed int32
+  for large accounts (observed as a negative number in the wild) — it will
+  never appear in this plugin's metrics.
+- **Display rounding above ~1M followers/likes**, same caveat as YouTube's
+  official API: the page itself rounds large numbers, so day-to-day change
+  on a big account may show as a flat line with an occasional step.
+- A handle that resolves to a different account (renamed, redirected, or
+  TikTok serving a mismatched page) fails the poll instead of writing that
+  other account's numbers into your series. Zero, missing, or non-numeric
+  followers also fails the poll rather than writing a bogus 0.
 
 ## Home Assistant
 

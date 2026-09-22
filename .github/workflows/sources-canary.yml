@@ -57,6 +57,8 @@ jobs:
             # namespace alone doesn't identify a counter -- the canary
             # needs the key too, same shape as youtube's extra secret.
             extra_secret_name: NGU_CANARY_ABACUS_KEY
+          - plugin: tiktok
+            secret_name: NGU_CANARY_TIKTOK_HANDLE
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 

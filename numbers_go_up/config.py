@@ -92,6 +92,14 @@ EXAMPLE_CONFIG = """\
 #     max: 20                    # cardinality guard on counters
 #     # No auth, no env vars -- the source is unauthenticated and public.
 #
+#   tiktok:
+#     enabled: true              # every plugin is OFF until explicitly enabled
+#     handles:
+#       - key: main              # metric-key slug: [a-z0-9_-]+, permanent
+#         handle: yourhandle      # without the leading @; letters/digits/./_ only
+#     max: 5                     # cardinality guard on handles
+#     # No auth -- reads your own public profile page.
+#
 # dashboard:
 #   pinned: []        # up to 6 metric keys for the index strip
 #                      # empty = first 4 cumulative metrics
