@@ -3,10 +3,10 @@
 Self-hosted, plugin-based tracker for the counters you care about — with
 history, rate-of-change, a REST API, and Home Assistant integration.
 
-> **Status: early.** Phase 0 (scaffold + container) is landing. There's no
-> plugin, storage, or dashboard yet — just a service that builds, runs, and
-> answers `/health`. This README will grow into real setup instructions as the
-> phases land.
+> **Status: usable.** Everything through hardening has landed — storage,
+> scheduler, the MakerWorld/GitHub/YouTube plugins, the REST API, the
+> dashboard, Home Assistant via MQTT discovery, milestone alerts, scheduled
+> maintenance, and multi-arch release images. No `v1.0.0` tag yet.
 
 ## The idea
 
@@ -27,7 +27,7 @@ so you can ask what changed, how fast, and since when.
   the right `state_class`, so you get real long-term statistics without writing
   YAML.
 
-## Planned sources
+## Sources
 
 | Source | Status |
 |---|---|
@@ -253,9 +253,16 @@ API; the raw schema is at `/openapi.json`.
 
 ## Roadmap
 
-MVP is a service that builds and runs in Docker, collects from one real source,
-and exposes a REST API to inspect what it collected. After that: the remaining
-plugins, a small dashboard, Home Assistant, and hardening.
+The MVP — a service that builds and runs in Docker, collects from one real
+source, and exposes a REST API to inspect what it collected — shipped, and so
+did everything planned after it: the GitHub and YouTube plugins, the
+dashboard, Home Assistant via MQTT discovery, milestone alerts, and the
+hardening pass (scheduled maintenance, backups, PUID/PGID, multi-arch
+releases).
+
+What's left is tracked in
+[issues](https://github.com/DrewFerg11/numbers-go-up/issues): the TikTok
+plugin, and a `v1.0.0` tag once it has run long enough to earn one.
 
 ## Contributing
 
