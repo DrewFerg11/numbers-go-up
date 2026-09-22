@@ -84,7 +84,7 @@ jobs:
           fi
           echo "Tag $GITHUB_REF_NAME resolves to version $VERSION"
 
-      # Opt-in Docker Hub mirror (see docs/gh-workflows/README.md). A release
+      # Opt-in Docker Hub mirror. A release
       # that only half-publishes -- GHCR done, Docker Hub silently skipped
       # because a secret was blank -- is worse than one that fails outright,
       # so this checks before anything builds.

@@ -239,7 +239,7 @@ with sparklines, and a status line showing each plugin's polling health.
 It's server-rendered (no build step, no CDN — everything, including fonts,
 is served from the container) and refreshes itself every 60 seconds.
 
-![Dashboard overview](docs/dashboard.png)
+![Dashboard overview](docs/assets/dashboard.png)
 
 Pin up to 6 metrics to the index strip with `dashboard.pinned` in
 `config.yaml` (see [`config.yaml.example`](config.yaml.example)); leave it

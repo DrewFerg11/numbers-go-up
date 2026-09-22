@@ -8,7 +8,7 @@
 # runner (ubuntu-24.04-arm is aarch64, and Armv9-A silicon like GitHub's
 # Cobalt 100 runners has dropped AArch32 support entirely), so it builds
 # under QEMU. That's only affordable because requirements.txt drops
-# uvicorn[standard] -- see docs/gh-workflows/README.md ("Multi-arch").
+# uvicorn[standard].
 #
 # Tagged v* releases (semver + latest, GitHub Release, provenance
 # attestation) are handled separately by release.yml, which is gated by the
