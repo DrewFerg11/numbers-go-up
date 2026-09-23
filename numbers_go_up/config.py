@@ -78,6 +78,10 @@ EXAMPLE_CONFIG = """\
 #       - key: main              # metric-key slug: [a-z0-9_-]+, permanent
 #         id: "UCxxxxxxxxxxxxxxxxxxxxxx"   # case-sensitive; not a handle/URL
 #     max: 5                     # cardinality guard on channels
+#     videos:                    # optional, independent of channels -- views/likes
+#       - key: launch_video      # metric-key slug: [a-z0-9_-]+, permanent
+#         id: "dQw4w9WgXcQ"      # the 11-character id from the video's URL
+#     videos_max: 20             # cardinality guard on videos
 #     # Required: set the NGU_YOUTUBE_API_KEY env var, never here.
 #
 #   abacus:

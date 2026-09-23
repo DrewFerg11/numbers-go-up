@@ -333,9 +333,10 @@ official REST API. Configure `plugins.github.repos` with one or more
 
 ### YouTube
 
-Tracks subscribers, views, and video count for your own channel(s), via the
-official Data API v3 — the only source this plugin ships (see the spike note
-above on why the unofficial `livecounts` path was dropped before it shipped).
+Tracks subscribers, views, and video count for your own channel(s), plus
+views and likes for individual videos, via the official Data API v3 — the
+only source this plugin ships (see the spike note above on why the
+unofficial `livecounts` path was dropped before it shipped).
 
 - **Finding your channel ID:** it's the `UC...` string (24 characters,
   case-sensitive) in your channel's Advanced Settings on YouTube Studio, or
@@ -345,7 +346,8 @@ above on why the unofficial `livecounts` path was dropped before it shipped).
 - **API key (required):** create one in Google Cloud Console (YouTube Data
   API v3 enabled) and set it via the `NGU_YOUTUBE_API_KEY` environment
   variable — never in `config.yaml`. It costs 1 quota unit per poll against
-  a free 10,000/day quota.
+  a free 10,000/day quota, whether the request is against `channels` or
+  `videos`.
 - **Exact vs. rounded:** the official API rounds `subscriberCount` to about
   3 significant figures once a channel gets reasonably large, so day-to-day
   changes on a bigger channel may show as a flat line most days with an
@@ -359,6 +361,15 @@ above on why the unofficial `livecounts` path was dropped before it shipped).
   its `key` if unavailable), so a renamed channel's label drifts to match
   on its next poll — the same trade-off the GitHub plugin makes with
   `full_name`.
+- **Per-video views and likes (#115):** configure `plugins.youtube.videos`
+  with the 11-character `id` from a video's URL
+  (`youtube.com/watch?v={id}`) — no channel needed alongside it, and
+  independent of `channels` entirely (track videos with no channel
+  configured, or vice versa, or both). Uses the same `videos` endpoint and
+  API key as `channels`, so no scraping is involved. A video's `viewCount`
+  has no zero-value guard (a freshly uploaded video legitimately starts at
+  0), but `likeCount` is simply omitted from that poll's series when the
+  uploader has hidden it, rather than failing the whole poll.
 
 ### Abacus
 

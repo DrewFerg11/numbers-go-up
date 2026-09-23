@@ -33,6 +33,10 @@ def _fixture() -> dict:
     )
 
 
+def _video_fixture() -> dict:
+    return json.loads((FIXTURES_DIR / "youtube_video.json").read_text(encoding="utf-8"))
+
+
 def _config(**overrides) -> dict:
     config = {
         "source": "official",
@@ -368,6 +372,268 @@ class TestRealCaptureFixture:
         assert result["youtube.channel.main.subscribers"]["value"] == int(
             stats["subscriberCount"]
         )
+
+
+class TestNeitherChannelsNorVideosConfigured:
+    def test_neither_configured_fails_without_a_request(self, monkeypatch):
+        monkeypatch.setenv(youtube._ENV_API_KEY, "fake-key")
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            raise AssertionError("no request should be made with nothing configured")
+
+        with pytest.raises(ValueError, match="channels or videos"):
+            youtube.collect({"source": "official", "channels": None}, _client(handler))
+
+    def test_videos_only_is_valid_with_no_channels(self, monkeypatch):
+        monkeypatch.setenv(youtube._ENV_API_KEY, "fake-key")
+        body = _video_fixture()
+        client = _client(lambda r: httpx.Response(200, json=body))
+
+        result = youtube.collect(
+            {
+                "source": "official",
+                "videos": [{"key": "launch", "id": "dQw4w9WgXcQ"}],
+            },
+            client,
+        )
+
+        assert set(result) == {
+            "youtube.video.launch.views",
+            "youtube.video.launch.likes",
+        }
+
+
+class TestVideosValidation:
+    def test_missing_videos_is_inert_when_channels_configured(self, monkeypatch):
+        monkeypatch.setenv(youtube._ENV_API_KEY, "fake-key")
+        body = _fixture()
+        client = _client(lambda r: httpx.Response(200, json=body))
+
+        result = youtube.collect(_config(videos=None), client)
+
+        assert not any(k.startswith("youtube.video.") for k in result)
+
+    def test_videos_not_a_list_fails_without_a_request(self, monkeypatch):
+        monkeypatch.setenv(youtube._ENV_API_KEY, "fake-key")
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            raise AssertionError("no request should be made with bad videos")
+
+        with pytest.raises(ValueError, match="videos must be a list"):
+            youtube.collect(_config(videos="not-a-list"), _client(handler))
+
+    @pytest.mark.parametrize(
+        "bad_key", ["Main", "main slug", "MAIN", "", None, "main!"]
+    )
+    def test_invalid_key_fails_without_a_request(self, monkeypatch, bad_key):
+        monkeypatch.setenv(youtube._ENV_API_KEY, "fake-key")
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            raise AssertionError("no request should be made with a bad key")
+
+        with pytest.raises(ValueError, match="key"):
+            youtube.collect(
+                _config(videos=[{"key": bad_key, "id": "dQw4w9WgXcQ"}]),
+                _client(handler),
+            )
+
+    def test_duplicate_key_fails_without_a_request(self, monkeypatch):
+        monkeypatch.setenv(youtube._ENV_API_KEY, "fake-key")
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            raise AssertionError("no request should be made with duplicate keys")
+
+        with pytest.raises(ValueError, match="duplicate"):
+            youtube.collect(
+                _config(
+                    videos=[
+                        {"key": "launch", "id": "dQw4w9WgXcQ"},
+                        {"key": "launch", "id": "aaaaaaaaaaa"},
+                    ]
+                ),
+                _client(handler),
+            )
+
+    @pytest.mark.parametrize(
+        "bad_id",
+        [
+            "short",  # too short
+            "waytoolongvideoid",  # too long
+            "bad!chars!!",  # invalid characters
+            123,
+            None,
+        ],
+    )
+    def test_invalid_video_id_fails_without_a_request(self, monkeypatch, bad_id):
+        monkeypatch.setenv(youtube._ENV_API_KEY, "fake-key")
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            raise AssertionError("no request should be made with a bad video id")
+
+        with pytest.raises(ValueError, match="id"):
+            youtube.collect(
+                _config(videos=[{"key": "launch", "id": bad_id}]), _client(handler)
+            )
+
+    def test_exceeding_videos_max_fails_without_a_request(self, monkeypatch):
+        monkeypatch.setenv(youtube._ENV_API_KEY, "fake-key")
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            raise AssertionError("no request should be made when exceeding videos_max")
+
+        videos = [{"key": f"v{i}", "id": f"aaaaaaaaaa{i}"} for i in range(3)]
+        with pytest.raises(ValueError, match="exceeds videos_max"):
+            youtube.collect(_config(videos=videos, videos_max=2), _client(handler))
+
+
+class TestSingleVideo:
+    def test_exactly_one_request_and_two_series(self, monkeypatch):
+        monkeypatch.setenv(youtube._ENV_API_KEY, "fake-key")
+        body = _video_fixture()
+        requests = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            requests.append(request)
+            assert request.url.host == "www.googleapis.com"
+            assert request.url.path.endswith("/videos")
+            assert request.url.params["id"] == "dQw4w9WgXcQ"
+            assert request.url.params["key"] == "fake-key"
+            return httpx.Response(200, json=body)
+
+        result = youtube.collect(
+            _config(channels=None, videos=[{"key": "launch", "id": "dQw4w9WgXcQ"}]),
+            _client(handler),
+        )
+
+        assert len(requests) == 1
+        assert set(result) == {
+            "youtube.video.launch.views",
+            "youtube.video.launch.likes",
+        }
+        stats = body["items"][0]["statistics"]
+        assert result["youtube.video.launch.views"]["value"] == int(stats["viewCount"])
+        assert result["youtube.video.launch.likes"]["value"] == int(stats["likeCount"])
+        assert result["youtube.video.launch.views"]["attrs"] == {
+            "video_id": "dQw4w9WgXcQ",
+            "url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+            "source": "official",
+        }
+        assert result["youtube.video.launch.views"]["label"] == "YT Example Video Views"
+
+    def test_missing_title_falls_back_to_key_in_label(self, monkeypatch):
+        monkeypatch.setenv(youtube._ENV_API_KEY, "fake-key")
+        body = _video_fixture()
+        del body["items"][0]["snippet"]["title"]
+
+        client = _client(lambda r: httpx.Response(200, json=body))
+        result = youtube.collect(
+            _config(channels=None, videos=[{"key": "launch", "id": "dQw4w9WgXcQ"}]),
+            client,
+        )
+
+        assert result["youtube.video.launch.views"]["label"] == "YT launch Views"
+
+    def test_hidden_like_count_omits_the_likes_series(self, monkeypatch):
+        monkeypatch.setenv(youtube._ENV_API_KEY, "fake-key")
+        body = _video_fixture()
+        del body["items"][0]["statistics"]["likeCount"]
+
+        client = _client(lambda r: httpx.Response(200, json=body))
+        result = youtube.collect(
+            _config(channels=None, videos=[{"key": "launch", "id": "dQw4w9WgXcQ"}]),
+            client,
+        )
+
+        assert "youtube.video.launch.views" in result
+        assert "youtube.video.launch.likes" not in result
+
+    def test_zero_view_count_is_not_a_sanity_failure(self, monkeypatch):
+        monkeypatch.setenv(youtube._ENV_API_KEY, "fake-key")
+        body = _video_fixture()
+        body["items"][0]["statistics"]["viewCount"] = "0"
+
+        client = _client(lambda r: httpx.Response(200, json=body))
+        result = youtube.collect(
+            _config(channels=None, videos=[{"key": "launch", "id": "dQw4w9WgXcQ"}]),
+            client,
+        )
+
+        assert result["youtube.video.launch.views"]["value"] == 0
+
+    def test_missing_view_count_fails_the_poll(self, monkeypatch):
+        monkeypatch.setenv(youtube._ENV_API_KEY, "fake-key")
+        body = _video_fixture()
+        del body["items"][0]["statistics"]["viewCount"]
+
+        client = _client(lambda r: httpx.Response(200, json=body))
+        with pytest.raises(ValueError, match="is missing"):
+            youtube.collect(
+                _config(channels=None, videos=[{"key": "launch", "id": "dQw4w9WgXcQ"}]),
+                client,
+            )
+
+    def test_non_numeric_like_count_fails_the_poll(self, monkeypatch):
+        monkeypatch.setenv(youtube._ENV_API_KEY, "fake-key")
+        body = _video_fixture()
+        body["items"][0]["statistics"]["likeCount"] = "not-a-number"
+
+        client = _client(lambda r: httpx.Response(200, json=body))
+        with pytest.raises(ValueError, match="numeric"):
+            youtube.collect(
+                _config(channels=None, videos=[{"key": "launch", "id": "dQw4w9WgXcQ"}]),
+                client,
+            )
+
+    def test_empty_items_fails_the_poll(self, monkeypatch):
+        monkeypatch.setenv(youtube._ENV_API_KEY, "fake-key")
+        body = copy.deepcopy(_video_fixture())
+        body["items"] = []
+
+        client = _client(lambda r: httpx.Response(200, json=body))
+        with pytest.raises(ValueError, match="not found"):
+            youtube.collect(
+                _config(channels=None, videos=[{"key": "launch", "id": "dQw4w9WgXcQ"}]),
+                client,
+            )
+
+    def test_second_video_failing_fails_the_whole_poll(self, monkeypatch):
+        monkeypatch.setenv(youtube._ENV_API_KEY, "fake-key")
+        good = _video_fixture()
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.params.get("id") == "bbbbbbbbbbb":
+                return httpx.Response(404)
+            return httpx.Response(200, json=good)
+
+        with pytest.raises(ValueError):
+            youtube.collect(
+                _config(
+                    channels=None,
+                    videos=[
+                        {"key": "launch", "id": "dQw4w9WgXcQ"},
+                        {"key": "second", "id": "bbbbbbbbbbb"},
+                    ],
+                ),
+                _client(handler),
+            )
+
+    def test_channel_and_video_together_in_one_poll(self, monkeypatch):
+        monkeypatch.setenv(youtube._ENV_API_KEY, "fake-key")
+        channel_body = _fixture()
+        video_body = _video_fixture()
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path.endswith("/videos"):
+                return httpx.Response(200, json=video_body)
+            return httpx.Response(200, json=channel_body)
+
+        result = youtube.collect(
+            _config(videos=[{"key": "launch", "id": "dQw4w9WgXcQ"}]),
+            _client(handler),
+        )
+
+        assert "youtube.channel.main.subscribers" in result
+        assert "youtube.video.launch.views" in result
 
 
 @pytest.mark.live
