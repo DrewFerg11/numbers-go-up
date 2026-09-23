@@ -204,8 +204,9 @@ RANGE_HOURS = {
 }
 VALID_RANGES = (*RANGE_HOURS, "ALL")
 
-# Change-bar bucket width in seconds, keyed by named range: 1H/6H/12H->5m,
-# 1D->1h, 1W->6h, 1M/3M->1d, 1Y/ALL->1w, per the big chart's change-bar spec.
+# Change-bar bucket width in seconds, keyed by named range: 1H/6H->5m,
+# 12H->15m, 1D->1h, 1W->6h, 1M/3M->1d, 1Y/ALL->1w, per the big chart's
+# change-bar spec.
 BAR_BUCKET_SECONDS = {
     "1H": 5 * 60,
     "6H": 5 * 60,
