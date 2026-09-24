@@ -9,9 +9,14 @@ validated as a Pydantic model tree, with ``extra="forbid"`` so an unknown
 key -- a typo'd ``mqqt:`` or a quoted ``heartbeat_seconds: "86400"`` -- fails
 startup instead of silently doing nothing or crashing on the second poll.
 Set ``NGU_CONFIG_STRICT=0`` to downgrade a failed top-level/unknown-key
-check to a warning and start anyway, as an escape hatch for a config that
-worked before this validation existed. ``mqtt``/``milestones``/``plugins``
-stay loosely-typed dicts here; their own modules validate their contents.
+check to a warning and start anyway, as a temporary escape hatch for a
+config that worked before this validation existed -- meant for getting an
+existing install running again long enough to fix the config properly, not
+as a standing setting: left on, it silently accepts the exact class of
+typo (a misspelled section name, a quoted number) this validation exists
+to catch, which is why it defaults to on (strict) and has to be opted out
+of explicitly. ``mqtt``/``milestones``/``plugins`` stay loosely-typed
+dicts here; their own modules validate their contents.
 """
 
 from __future__ import annotations
@@ -63,7 +68,10 @@ EXAMPLE_CONFIG = """\
 #
 # An unknown top-level key (a typo like "mqqt:") fails startup, so a mistake
 # doesn't silently do nothing. Set NGU_CONFIG_STRICT=0 (an env var, not a
-# config key) to downgrade that to a warning and start anyway.
+# config key) to downgrade that to a warning and start anyway -- a
+# temporary escape hatch to get a broken config booting again while you
+# fix it, not something to leave set: it accepts the exact typos this
+# check exists to catch.
 
 # poll:
 #   default_interval: 1800      # 30 min

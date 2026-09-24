@@ -8,7 +8,10 @@
 #
 # An unknown top-level key (a typo like "mqqt:") fails startup, so a mistake
 # doesn't silently do nothing. Set NGU_CONFIG_STRICT=0 (an env var, not a
-# config key) to downgrade that to a warning and start anyway.
+# config key) to downgrade that to a warning and start anyway -- a
+# temporary escape hatch to get a broken config booting again while you
+# fix it, not something to leave set: it accepts the exact typos this
+# check exists to catch.
 
 # poll:
 #   default_interval: 1800      # 30 min
