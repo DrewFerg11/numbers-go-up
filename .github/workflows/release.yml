@@ -92,17 +92,23 @@ jobs:
         if: vars.DOCKERHUB_IMAGE != ''
         run: |
           if [ -z "$DOCKERHUB_USERNAME" ] || [ -z "$DOCKERHUB_TOKEN" ]; then
-            echo "::error::vars.DOCKERHUB_IMAGE is set (${{ vars.DOCKERHUB_IMAGE }}) but DOCKERHUB_USERNAME and/or DOCKERHUB_TOKEN secrets are missing. Set both, or unset the variable to release to GHCR only."
+            echo "::error::vars.DOCKERHUB_IMAGE is set ($DOCKERHUB_IMAGE) but DOCKERHUB_USERNAME and/or DOCKERHUB_TOKEN secrets are missing. Set both, or unset the variable to release to GHCR only."
             exit 1
           fi
-          echo "Docker Hub mirror enabled: ${{ vars.DOCKERHUB_IMAGE }}"
+          echo "Docker Hub mirror enabled: $DOCKERHUB_IMAGE"
         env:
+          DOCKERHUB_IMAGE: ${{ vars.DOCKERHUB_IMAGE }}
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
           DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
 
+  test:
+    name: test
+    needs: authorize
+    uses: ./.github/workflows/ci-test.yml
+
   build:
     name: build ${{ matrix.platform }}
-    needs: authorize
+    needs: [authorize, test]
     runs-on: ${{ matrix.runner }}
     permissions:
       contents: read
@@ -359,10 +365,17 @@ jobs:
           else
             LOG=$(git log "$TAG" --pretty=format:"%B---")
           fi
+          # A fixed heredoc delimiter is exploitable: a commit message
+          # containing a line that's exactly "COMMITLOG_EOF" would end the
+          # "log" value early, and the runner would parse the rest of that
+          # message as further name=value outputs -- including a smuggled
+          # "prev=". A per-run random delimiter closes that off; see
+          # GitHub's docs on setting a multiline output to arbitrary data.
+          DELIM="EOF_$(openssl rand -hex 16)"
           {
-            echo "log<<COMMITLOG_EOF"
+            echo "log<<$DELIM"
             echo "$LOG"
-            echo "COMMITLOG_EOF"
+            echo "$DELIM"
           } >> "$GITHUB_OUTPUT"
         env:
           TAG: ${{ github.ref_name }}
@@ -386,7 +399,17 @@ jobs:
 
       - name: Save AI summary
         if: always()
-        run: echo "${{ steps.ai_summary.outcome == 'success' && steps.ai_summary.outputs.response || '' }}" > /tmp/ai-summary.txt
+        env:
+          # The model's response is derived from commit messages, which
+          # include merged PR titles/bodies -- untrusted text. Interpolating
+          # it directly into a `run:` script (the previous form of this
+          # step) is the textbook `${{ }}`-in-run injection: it's pasted
+          # into the script *before* bash ever parses it, so a crafted
+          # value containing `$(...)` or backticks executes. Routing it
+          # through `env:` and printing it as data avoids that -- this job
+          # holds `contents: write` and a `GH_TOKEN`.
+          AI_SUMMARY: ${{ steps.ai_summary.outcome == 'success' && steps.ai_summary.outputs.response || '' }}
+        run: printf '%s\n' "$AI_SUMMARY" > /tmp/ai-summary.txt
 
       - name: Set up Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
@@ -400,9 +423,12 @@ jobs:
       - id: stats
         name: Collect release stats
         run: |
+          # Collected, not run: the actual pass/fail count already gated
+          # this release in the `test` job above (release.yml's `build`
+          # needs it). Worded honestly rather than claimed as "passing" --
+          # see the acceptance criteria on #124.
           TESTS=$(pytest --collect-only -q | tail -1 | grep -oE '^[0-9]+')
           PLUGINS=$(ls numbers_go_up/plugins/*.py | xargs -n1 basename | sed 's/\.py$//' | grep -vE '^(__init__|_template)$' | paste -sd, -)
-          PREV="${{ steps.commitlog.outputs.prev }}"
           if [ -n "$PREV" ]; then
             DIFFSTAT=$(git diff --shortstat "${PREV}..${TAG}")
           else
@@ -413,6 +439,7 @@ jobs:
           echo "diffstat=$DIFFSTAT" >> "$GITHUB_OUTPUT"
         env:
           TAG: ${{ github.ref_name }}
+          PREV: ${{ steps.commitlog.outputs.prev }}
 
       - name: Log in to GHCR
         uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
@@ -454,7 +481,7 @@ jobs:
             echo
             echo "## At a glance"
             echo
-            echo "- **Tests:** ${TESTS} passing"
+            echo "- **Tests:** ${TESTS} (all must pass before this release is built)"
             echo "- **Sources:** ${PLUGINS}"
             echo "- **Changed since last release:** ${DIFFSTAT}"
             echo "- **Image size (amd64):** ${IMAGE_MB} MB"

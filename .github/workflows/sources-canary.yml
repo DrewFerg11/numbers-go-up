@@ -139,10 +139,16 @@ jobs:
         name: Collect (scrubbed) error tail
         if: always()
         run: |
+          # Random per-run delimiter, not a fixed one -- captured output
+          # from a live third-party page could otherwise contain a line
+          # matching a fixed delimiter and smuggle extra $GITHUB_OUTPUT
+          # entries. Consumed only via `env:` below, so the risk here was
+          # always lower than release.yml's equivalent, but same fix.
+          DELIM="EOF_$(openssl rand -hex 16)"
           {
-            echo "tail<<CANARY_EOF"
+            echo "tail<<$DELIM"
             tail -n 30 /tmp/canary-output.txt 2>/dev/null || echo "(no output captured)"
-            echo "CANARY_EOF"
+            echo "$DELIM"
           } >> "$GITHUB_OUTPUT"
 
       - name: Report result
