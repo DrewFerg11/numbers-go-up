@@ -1,3 +1,4 @@
+import sys
 from pathlib import Path
 
 import pytest
@@ -5,6 +6,15 @@ import pytest
 from numbers_go_up.netfs import NetworkFilesystemError, check_not_network_filesystem
 
 FIXTURES = Path(__file__).parent / "fixtures" / "mountinfo"
+
+# The fixtures use POSIX paths (e.g. "/data") and check_not_network_filesystem
+# resolves them with Path.resolve(). On Windows that turns "/data" into
+# "C:\\data", which never matches the fixture mount points, so the refusal
+# never fires -- not a production bug, since the real check only ever runs
+# against /proc/self/mountinfo, which is Linux-only by construction.
+pytestmark = pytest.mark.skipif(
+    sys.platform == "win32", reason="mountinfo fixtures use POSIX paths"
+)
 
 
 def test_local_filesystem_is_allowed():

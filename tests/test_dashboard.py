@@ -116,7 +116,7 @@ def test_index_tile_has_no_href_but_row_label_links_to_detail_page(tmp_path):
     # test runner in this repo), so it pins the static asset's source --
     # it fails loudly if a future edit drops the row link or adds a tile
     # link back.
-    js = (dashboard.STATIC_DIR / "js" / "dashboard.js").read_text()
+    js = (dashboard.STATIC_DIR / "js" / "dashboard.js").read_text(encoding="utf-8")
 
     assert 'node.removeAttribute("href")' in js
     assert 'label.href = "/m/' in js
@@ -129,7 +129,7 @@ def test_status_class_checks_last_error_not_just_status(tmp_path):
     # plugin stays scheduled, so a retry in flight reports status
     # "polling" while last_error still says blocked. Fails loudly if a
     # future edit reverts to the status-only check.
-    js = (dashboard.STATIC_DIR / "js" / "dashboard.js").read_text()
+    js = (dashboard.STATIC_DIR / "js" / "dashboard.js").read_text(encoding="utf-8")
 
     assert "plugin.last_error" in js
     assert "BLOCKED_PREFIX" in js
@@ -143,8 +143,10 @@ def test_chart_js_implements_the_stale_dashed_tail(tmp_path):
     # documented-but-unimplemented opts field was the exact regression a
     # prior review caught) and that callers pass a real per-point
     # direction rather than collapsing it to a flat "stale" color.
-    chart_js = (dashboard.STATIC_DIR / "js" / "chart.js").read_text()
-    dashboard_js = (dashboard.STATIC_DIR / "js" / "dashboard.js").read_text()
+    chart_js = (dashboard.STATIC_DIR / "js" / "chart.js").read_text(encoding="utf-8")
+    dashboard_js = (dashboard.STATIC_DIR / "js" / "dashboard.js").read_text(
+        encoding="utf-8"
+    )
 
     assert "opts.staleSinceTs" in chart_js
     assert "direction: directionOf(metric)" in dashboard_js
@@ -164,7 +166,7 @@ def test_theme_toggle_reloads_the_selected_chart(tmp_path):
     # time -- toggling the theme without re-rendering leaves the big
     # chart and change bars showing the previous theme's colors until the
     # next 60s auto-refresh happens to fire.
-    js = (dashboard.STATIC_DIR / "js" / "dashboard.js").read_text()
+    js = (dashboard.STATIC_DIR / "js" / "dashboard.js").read_text(encoding="utf-8")
     toggle_start = js.index('themeToggle.addEventListener("click"')
     toggle_body = js[toggle_start : toggle_start + 800]
 
@@ -178,8 +180,10 @@ def test_change_bar_domain_extends_to_now_for_a_stale_series(tmp_path):
     # (worst at the last one, which ends up drawn under the dashed "no
     # data" tail instead of at its own timestamp). Both the overview
     # (dashboard.js) and detail page (detail.js) share this bug shape.
-    dashboard_js = (dashboard.STATIC_DIR / "js" / "dashboard.js").read_text()
-    detail_js = (dashboard.STATIC_DIR / "js" / "detail.js").read_text()
+    dashboard_js = (dashboard.STATIC_DIR / "js" / "dashboard.js").read_text(
+        encoding="utf-8"
+    )
+    detail_js = (dashboard.STATIC_DIR / "js" / "detail.js").read_text(encoding="utf-8")
 
     assert "staleSinceTs != null ? Date.now()" in dashboard_js
     assert "staleSinceTs != null ? Date.now()" in detail_js
@@ -191,7 +195,7 @@ def test_load_chart_for_guards_against_out_of_order_responses(tmp_path):
     # selection (a stale metric's history is exactly the expensive case)
     # can land after a faster response for a later one and render under
     # the wrong metric's header/stats/highlighted row.
-    js = (dashboard.STATIC_DIR / "js" / "dashboard.js").read_text()
+    js = (dashboard.STATIC_DIR / "js" / "dashboard.js").read_text(encoding="utf-8")
 
     assert "chartRequestId" in js
     assert "requestId !== state.chartRequestId" in js
@@ -204,9 +208,11 @@ def test_change_bars_positioned_by_timestamp_not_array_index(tmp_path):
     # time relative to the line above it, which is drawn on a real time
     # axis. renderBars must derive each bar's x from bar.ts against a
     # domain, and both chart callers must pass one.
-    chart_js = (dashboard.STATIC_DIR / "js" / "chart.js").read_text()
-    dashboard_js = (dashboard.STATIC_DIR / "js" / "dashboard.js").read_text()
-    detail_js = (dashboard.STATIC_DIR / "js" / "detail.js").read_text()
+    chart_js = (dashboard.STATIC_DIR / "js" / "chart.js").read_text(encoding="utf-8")
+    dashboard_js = (dashboard.STATIC_DIR / "js" / "dashboard.js").read_text(
+        encoding="utf-8"
+    )
+    detail_js = (dashboard.STATIC_DIR / "js" / "detail.js").read_text(encoding="utf-8")
 
     assert "bar.ts - start" in chart_js
     assert "i * barWidth" not in chart_js
@@ -223,7 +229,7 @@ def test_detail_range_switch_does_a_full_reload(tmp_path):
     # keep describing the page's original range. A full navigation keeps
     # the whole page consistent by construction instead of duplicating
     # that computation in JS a second time.
-    js = (dashboard.STATIC_DIR / "js" / "detail.js").read_text()
+    js = (dashboard.STATIC_DIR / "js" / "detail.js").read_text(encoding="utf-8")
     set_range_start = js.index("function setRange(range)")
     set_range_body = js[set_range_start : set_range_start + 900]
 
