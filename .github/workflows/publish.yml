@@ -16,7 +16,7 @@
 # "release" environment and the "release tags" ruleset -- this workflow never
 # touches those, so anyone who can push to main can produce an `edge` image,
 # but only the repo owner can cut a release.
-name: Publish
+name: Release / Edge
 
 on:
   push:
