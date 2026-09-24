@@ -55,6 +55,7 @@ fi
 for dir in /data /config; do
     owner="$(stat -c '%u:%g' "$dir")"
     if [ "$owner" != "${PUID}:${PGID}" ]; then
+        echo "entrypoint: chown -R ${PUID}:${PGID} ${dir}" >&2
         chown -R "${PUID}:${PGID}" "$dir"
     fi
 done
