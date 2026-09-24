@@ -748,8 +748,16 @@ def build_scheduler(
     http: Any = None,
     publisher: Publisher | None = None,
     milestone_evaluator: MilestoneEvaluator | None = None,
+    enabled_plugins: list[LoadedPlugin] | None = None,
 ) -> BackgroundScheduler:
     """Build (but don't start) one interval job per enabled plugin.
+
+    ``enabled_plugins`` lets a caller that already discovered plugins once
+    (``main.lifespan``) hand the result in directly, instead of this
+    function calling :func:`discover_plugins` itself -- which would
+    re-import every plugin file yet again. Defaults to ``None``, which
+    discovers internally exactly as before, for callers (mainly tests)
+    that don't already have a plugin list on hand.
 
     A single-threaded executor is deliberate: it makes ``max_instances=1``
     meaningful per job (APScheduler enforces it per job regardless, but a
@@ -791,7 +799,10 @@ def build_scheduler(
     backoff_state: dict[str, int] = {}
     failure_streaks: dict[str, _FailureStreak] = {}
 
-    for plugin in discover_plugins(config):
+    if enabled_plugins is None:
+        enabled_plugins = discover_plugins(config)
+
+    for plugin in enabled_plugins:
         job_id = f"plugin:{plugin.name}"
         first_run_delay = random.uniform(0, FIRST_RUN_MAX_DELAY_SECONDS)
         scheduler.add_job(

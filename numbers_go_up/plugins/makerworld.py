@@ -27,6 +27,8 @@ request per poll".
 import json
 import logging
 
+from numbers_go_up.plugins import _helpers
+
 logger = logging.getLogger(__name__)
 
 POLL_INTERVAL_SECONDS = 1800  # 30 min -- these move a few times a day
@@ -172,20 +174,6 @@ def _validate_include(include: object) -> list[str] | None:
             seen.add(model_id)
             deduped.append(model_id)
     return deduped
-
-
-def _validate_max_models(value: object) -> int:
-    """Validate ``models.max`` up front, before any request is made.
-
-    Same convention as ``plugins._is_valid_interval`` and
-    ``scheduler._validated_jitter_fraction``: must be a plain int (bools
-    are int subclasses but not counts), at least 1.
-    """
-    if isinstance(value, bool) or not isinstance(value, int):
-        raise ValueError(f"models.max must be an int, got {value!r}")
-    if value < 1:
-        raise ValueError(f"models.max must be at least 1, got {value!r}")
-    return value
 
 
 def _fetch_all_models(http, user_id: str) -> list[dict]:
@@ -366,7 +354,9 @@ def collect(config: dict, http) -> dict[str, int | float | dict]:
         # entry or `max` must fail clearly without making the profile
         # request.
         include_ids = _validate_include(models_config.get("include"))
-        max_models = _validate_max_models(models_config.get("max", _DEFAULT_MODELS_MAX))
+        max_models = _helpers.validate_max(
+            models_config.get("max", _DEFAULT_MODELS_MAX), "models.max"
+        )
 
     response = http.get(_PROFILE_URL.format(uid=user_id), timeout=15)
     response.raise_for_status()

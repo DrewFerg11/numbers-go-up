@@ -68,6 +68,8 @@ import logging
 import re
 from urllib.parse import quote
 
+from numbers_go_up.plugins import _helpers
+
 logger = logging.getLogger(__name__)
 
 POLL_INTERVAL_SECONDS = 1800  # 30 min
@@ -112,8 +114,6 @@ _DEFAULT_MAX_VIDEOS = 20
 # same convention as youtube.py's channel `key` (#62/#95 precedent), because
 # a TikTok handle may contain '.' and uppercase, neither of which survives
 # this charset.
-_KEY_PATTERN = re.compile(r"^[a-z0-9_-]+$")
-
 # TikTok handles: letters, digits, '.', '_', 2-24 characters (a leading '@'
 # is accepted and stripped, never required).
 _HANDLE_PATTERN = re.compile(r"^[A-Za-z0-9._]{2,24}$")
@@ -146,31 +146,12 @@ _SCRIPT_PATTERN = re.compile(
 )
 
 # See the module docstring's "Cap on the response body" note. Generous for
-# a real profile page (typically well under 1 MB) but far below what an
-# unbounded hostile response could otherwise force into memory.
+# a real profile page (typically well under 1 MB). This bounds what gets
+# *parsed*, not memory: the check runs on response.content, after httpx has
+# already read the full body into memory, so a hostile response can still
+# force an allocation up to whatever the client/transport itself allows
+# before this cap ever sees it.
 _MAX_BODY_BYTES = 5_000_000
-
-
-def _validate_max_handles(value: object) -> int:
-    """Same convention as every other plugin's ``max``: a plain int (bools
-    are int subclasses but not counts), at least 1."""
-    if isinstance(value, bool) or not isinstance(value, int):
-        raise ValueError(f"max must be an int, got {value!r}")
-    if value < 1:
-        raise ValueError(f"max must be at least 1, got {value!r}")
-    return value
-
-
-def _validate_max_videos(value: object) -> int:
-    """Same convention as ``_validate_max_handles``, for ``videos_max`` --
-    a separate key rather than reusing ``max``, since ``max`` already means
-    "cardinality guard on handles" and changing that would be a breaking
-    change for existing configs."""
-    if isinstance(value, bool) or not isinstance(value, int):
-        raise ValueError(f"videos_max must be an int, got {value!r}")
-    if value < 1:
-        raise ValueError(f"videos_max must be at least 1, got {value!r}")
-    return value
 
 
 def _validate_handles(config: dict) -> list[dict]:
@@ -188,7 +169,7 @@ def _validate_handles(config: dict) -> list[dict]:
     if not isinstance(handles, list):
         raise ValueError(f"handles must be a list, got {type(handles).__name__}")
 
-    max_handles = _validate_max_handles(config.get("max", _DEFAULT_MAX_HANDLES))
+    max_handles = _helpers.validate_max(config.get("max", _DEFAULT_MAX_HANDLES), "max")
 
     validated: list[dict] = []
     seen_keys: set[str] = set()
@@ -197,7 +178,7 @@ def _validate_handles(config: dict) -> list[dict]:
             raise ValueError(f"handles entry must be a mapping, got {entry!r}")
 
         key = entry.get("key")
-        if not isinstance(key, str) or not _KEY_PATTERN.fullmatch(key):
+        if not isinstance(key, str) or not _helpers.KEY_SLUG.fullmatch(key):
             raise ValueError(f"handles entry key {key!r} must match [a-z0-9_-]+")
         if key in seen_keys:
             raise ValueError(f"handles key {key!r} is a duplicate")
@@ -255,7 +236,9 @@ def _validate_videos(config: dict) -> list[dict]:
     if not isinstance(videos, list):
         raise ValueError(f"videos must be a list, got {type(videos).__name__}")
 
-    max_videos = _validate_max_videos(config.get("videos_max", _DEFAULT_MAX_VIDEOS))
+    max_videos = _helpers.validate_max(
+        config.get("videos_max", _DEFAULT_MAX_VIDEOS), "videos_max"
+    )
 
     validated: list[dict] = []
     seen_keys: set[str] = set()
@@ -264,7 +247,7 @@ def _validate_videos(config: dict) -> list[dict]:
             raise ValueError(f"videos entry must be a mapping, got {entry!r}")
 
         key = entry.get("key")
-        if not isinstance(key, str) or not _KEY_PATTERN.fullmatch(key):
+        if not isinstance(key, str) or not _helpers.KEY_SLUG.fullmatch(key):
             raise ValueError(f"videos entry key {key!r} must match [a-z0-9_-]+")
         if key in seen_keys:
             raise ValueError(f"videos key {key!r} is a duplicate")

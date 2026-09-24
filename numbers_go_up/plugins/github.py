@@ -28,6 +28,8 @@ from urllib.parse import urlparse
 
 import httpx
 
+from numbers_go_up.plugins import _helpers
+
 logger = logging.getLogger(__name__)
 
 POLL_INTERVAL_SECONDS = 1800  # 30 min
@@ -95,16 +97,6 @@ def _headers(token: str | None) -> dict[str, str]:
     return headers
 
 
-def _validate_max_repos(value: object) -> int:
-    """Same convention as MakerWorld's ``_validate_max_models``: a plain
-    int (bools are int subclasses but not counts), at least 1."""
-    if isinstance(value, bool) or not isinstance(value, int):
-        raise ValueError(f"max must be an int, got {value!r}")
-    if value < 1:
-        raise ValueError(f"max must be at least 1, got {value!r}")
-    return value
-
-
 def _validate_repos(config: dict) -> list[str]:
     """Validate ``repos`` up front, before any request is made.
 
@@ -118,7 +110,7 @@ def _validate_repos(config: dict) -> list[str]:
     if not isinstance(repos, list):
         raise ValueError(f"repos must be a list, got {type(repos).__name__}")
 
-    max_repos = _validate_max_repos(config.get("max", _DEFAULT_MAX_REPOS))
+    max_repos = _helpers.validate_max(config.get("max", _DEFAULT_MAX_REPOS), "max")
 
     validated: list[str] = []
     seen: set[str] = set()

@@ -51,6 +51,7 @@ import re
 import httpx
 
 from numbers_go_up import http as http_module
+from numbers_go_up.plugins import _helpers
 
 logger = logging.getLogger(__name__)
 
@@ -95,31 +96,11 @@ _VIDEOS_URL = "https://www.googleapis.com/youtube/v3/videos"
 _DEFAULT_MAX_CHANNELS = 5
 _DEFAULT_MAX_VIDEOS = 20
 
-_KEY_PATTERN = re.compile(r"^[a-z0-9_-]+$")
 # "UC" + 22 base64url characters -- channel IDs are case-sensitive, which
 # is exactly why `key` (not the channel ID) is the metric-key slug.
 _CHANNEL_ID_PATTERN = re.compile(r"^UC[A-Za-z0-9_-]{22}$")
 # YouTube video ids: exactly 11 base64url characters, case-sensitive.
 _VIDEO_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{11}$")
-
-
-def _validate_max_channels(value: object) -> int:
-    if isinstance(value, bool) or not isinstance(value, int):
-        raise ValueError(f"max must be an int, got {value!r}")
-    if value < 1:
-        raise ValueError(f"max must be at least 1, got {value!r}")
-    return value
-
-
-def _validate_max_videos(value: object) -> int:
-    """Same convention as ``_validate_max_channels``, for ``videos_max`` --
-    a separate key rather than reusing ``max``, since ``max`` already means
-    "cardinality guard on channels"."""
-    if isinstance(value, bool) or not isinstance(value, int):
-        raise ValueError(f"videos_max must be an int, got {value!r}")
-    if value < 1:
-        raise ValueError(f"videos_max must be at least 1, got {value!r}")
-    return value
 
 
 def _validate_source(config: dict) -> None:
@@ -150,7 +131,9 @@ def _validate_channels(config: dict) -> list[tuple[str, str]]:
     if not isinstance(channels, list):
         raise ValueError(f"channels must be a list, got {type(channels).__name__}")
 
-    max_channels = _validate_max_channels(config.get("max", _DEFAULT_MAX_CHANNELS))
+    max_channels = _helpers.validate_max(
+        config.get("max", _DEFAULT_MAX_CHANNELS), "max"
+    )
 
     validated: list[tuple[str, str]] = []
     seen_keys: set[str] = set()
@@ -159,7 +142,7 @@ def _validate_channels(config: dict) -> list[tuple[str, str]]:
             raise ValueError(f"channels entry must be a mapping, got {entry!r}")
 
         key = entry.get("key")
-        if not isinstance(key, str) or not _KEY_PATTERN.fullmatch(key):
+        if not isinstance(key, str) or not _helpers.KEY_SLUG.fullmatch(key):
             raise ValueError(f"channels entry key {key!r} must match [a-z0-9_-]+")
         if key in seen_keys:
             raise ValueError(f"channels key {key!r} is a duplicate")
@@ -196,7 +179,9 @@ def _validate_videos(config: dict) -> list[tuple[str, str]]:
     if not isinstance(videos, list):
         raise ValueError(f"videos must be a list, got {type(videos).__name__}")
 
-    max_videos = _validate_max_videos(config.get("videos_max", _DEFAULT_MAX_VIDEOS))
+    max_videos = _helpers.validate_max(
+        config.get("videos_max", _DEFAULT_MAX_VIDEOS), "videos_max"
+    )
 
     validated: list[tuple[str, str]] = []
     seen_keys: set[str] = set()
@@ -205,7 +190,7 @@ def _validate_videos(config: dict) -> list[tuple[str, str]]:
             raise ValueError(f"videos entry must be a mapping, got {entry!r}")
 
         key = entry.get("key")
-        if not isinstance(key, str) or not _KEY_PATTERN.fullmatch(key):
+        if not isinstance(key, str) or not _helpers.KEY_SLUG.fullmatch(key):
             raise ValueError(f"videos entry key {key!r} must match [a-z0-9_-]+")
         if key in seen_keys:
             raise ValueError(f"videos key {key!r} is a duplicate")

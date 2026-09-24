@@ -1,8 +1,9 @@
 """Plugin discovery and the plugin contract.
 
 This package is both the loader (this file) and the home of the built-in
-plugins (its sibling ``*.py`` files, e.g. a future ``makerworld.py``).
-Keeping them together means the Dockerfile's ``COPY numbers_go_up
+plugins (its sibling ``*.py`` files: ``abacus.py``, ``github.py``,
+``makerworld.py``, ``tiktok.py``, ``youtube.py``). Keeping them together
+means the Dockerfile's ``COPY numbers_go_up
 ./numbers_go_up`` ships both without a separate top-level ``plugins/``
 folder that would otherwise be missing from the image.
 
@@ -37,10 +38,11 @@ from pathlib import Path
 from types import ModuleType
 from typing import Any
 
+from numbers_go_up.storage import VALID_KINDS as VALID_METRIC_KINDS
+
 logger = logging.getLogger(__name__)
 
 MIN_POLL_INTERVAL_SECONDS = 300
-VALID_METRIC_KINDS = {"gauge", "cumulative"}
 # Stems that are not lowercase identifiers are rejected in ``_discover_dir``.
 _VALID_PLUGIN_NAME = re.compile(r"^[a-z][a-z0-9_]*$")
 
@@ -174,6 +176,26 @@ class LoadedPlugin:
     source: str  # "built-in" or "user"
 
 
+@dataclasses.dataclass(frozen=True)
+class DiscoveredPlugin:
+    """A contract-valid plugin, whether or not it's enabled in config.
+
+    :func:`discover` returns one of these per plugin file that imports
+    cleanly and passes :func:`validate_plugin_contract` -- every consumer
+    (the enabled-plugin list, the full name list for ``/api/plugins``)
+    derives from this same single pass, so a plugin module is only ever
+    imported once per process, not once per consumer.
+    """
+
+    name: str
+    module: ModuleType
+    metrics: dict[str, dict[str, Any]]
+    config: dict[str, Any]
+    interval_seconds: int
+    source: str  # "built-in" or "user"
+    enabled: bool
+
+
 def load_plugin_from_path(path: str | Path) -> ModuleType | None:
     """Import one plugin module from an explicit file path.
 
@@ -228,6 +250,18 @@ def validate_plugin_contract(
 
     prefix = f"{name}."
     for key, meta in metrics.items():
+        # A non-str key (an int, a tuple, ...) would crash .startswith()
+        # below, and a non-hashable kind (a list, a dict) would crash the
+        # VALID_METRIC_KINDS membership test after it -- either one, from a
+        # single malformed user plugin, used to take the whole app's
+        # startup down with it. Check types before using them.
+        if not isinstance(key, str):
+            logger.warning(
+                "Plugin %s: metric key %r must be a string; skipping",
+                name,
+                key,
+            )
+            return None
         if not key.startswith(prefix):
             logger.warning(
                 "Plugin %s: metric key %r must start with %r; skipping",
@@ -237,12 +271,36 @@ def validate_plugin_contract(
             )
             return None
         kind = meta.get("kind") if isinstance(meta, dict) else None
-        if kind not in VALID_METRIC_KINDS:
+        if not isinstance(kind, str) or kind not in VALID_METRIC_KINDS:
             logger.warning(
                 "Plugin %s: metric %r has invalid kind %r; skipping",
                 name,
                 key,
                 kind,
+            )
+            return None
+
+        # meta is a dict by this point (the kind check above already
+        # rejected anything else). label is required and non-empty; unit
+        # is required but may be "" -- the template promises both, but
+        # nothing previously enforced it.
+        label = meta.get("label")
+        if not isinstance(label, str) or not label:
+            logger.warning(
+                "Plugin %s: metric %r has invalid label %r (must be a "
+                "non-empty string); skipping",
+                name,
+                key,
+                label,
+            )
+            return None
+        if not isinstance(meta.get("unit"), str):
+            logger.warning(
+                "Plugin %s: metric %r has invalid unit %r (must be a "
+                "string, may be empty); skipping",
+                name,
+                key,
+                meta.get("unit"),
             )
             return None
 
@@ -323,17 +381,28 @@ def _is_valid_interval(value: Any) -> bool:
     return isinstance(value, int) and not isinstance(value, bool)
 
 
-def discover_plugins(
+def discover(
     config: dict[str, Any], builtin_dir: Path | None = None
-) -> list[LoadedPlugin]:
-    """Discover, validate, and resolve the interval for every enabled plugin.
+) -> list[DiscoveredPlugin]:
+    """Discover and validate every plugin, enabled or not, in one pass.
 
     Discovers built-in plugins (``builtin_dir``, defaulting to this
     package's own directory) plus any in ``config["plugin_dir"]``; a user
-    plugin replaces a built-in of the same name. A plugin is scheduled only
-    if ``config["plugins"][name]["enabled"]`` is ``True`` — discovered but
-    unconfigured plugins are silently left out, per Responsible Use #2 (a
-    fresh install makes zero outbound requests until configured).
+    plugin replaces a built-in of the same name. Every plugin file that
+    imports cleanly and passes :func:`validate_plugin_contract` is
+    returned, with ``.enabled`` reflecting
+    ``config["plugins"][name]["enabled"]``.
+
+    This is the single import pass: call it once per process (in
+    ``main.lifespan``) and derive every other view -- the enabled-plugin
+    list for the scheduler/MQTT/milestones, the full name list for
+    ``/api/plugins`` -- from its result, rather than calling this or the
+    older :func:`discover_plugins`/:func:`discover_plugin_names` more than
+    once. Each additional call re-imports every plugin file from scratch
+    (a fresh module object per call), which used to mean split module-level
+    state (e.g. a plugin's own in-memory guards) between the scheduler's
+    copy and everyone else's, and every contract-violation warning logged
+    once per call site instead of once.
 
     ``builtin_dir`` exists so tests can point discovery at a fixture
     directory instead of the real built-in plugins.
@@ -362,9 +431,19 @@ def discover_plugins(
     plugins_config = config.get("plugins") or {}
     default_interval = (config.get("poll") or {}).get("default_interval", 1800)
 
-    loaded: list[LoadedPlugin] = []
+    discovered: list[DiscoveredPlugin] = []
     for name, (module, source) in sorted(combined.items()):
-        metrics = validate_plugin_contract(name, module)
+        # One malformed plugin's contract check must never take down
+        # discovery for every other plugin -- validate_plugin_contract
+        # type-checks its inputs, but this is a last line of defense
+        # against anything it doesn't yet guard.
+        try:
+            metrics = validate_plugin_contract(name, module)
+        except Exception:
+            logger.exception(
+                "Plugin %s: contract check raised unexpectedly; skipping", name
+            )
+            continue
         if metrics is None:
             continue
 
@@ -375,59 +454,97 @@ def discover_plugins(
                 "treating plugin as disabled",
                 name,
             )
-            continue
-        if not plugin_config.get("enabled"):
-            continue
+            plugin_config = {}
 
-        # Explicit ``is not None`` checks rather than an ``or`` chain, so a
-        # configured falsy value such as ``poll_interval: 0`` is respected
-        # and reaches the floor check and its warning instead of being
-        # silently swallowed into the module or default interval.
-        interval = plugin_config.get("poll_interval")
-        if interval is None:
-            interval = getattr(module, "POLL_INTERVAL_SECONDS", None)
-        if interval is None:
-            interval = default_interval
+        enabled = bool(plugin_config.get("enabled"))
 
-        # A non-integer interval (e.g. ``"30m"`` — an easy YAML quoting slip)
-        # would raise TypeError at the floor comparison below and abort
-        # discovery for every other plugin. Booleans are ints in Python, so
-        # ``poll_interval: true`` must be excluded explicitly.
-        if not _is_valid_interval(interval):
-            fallback = (
-                default_interval
-                if _is_valid_interval(default_interval)
-                else MIN_POLL_INTERVAL_SECONDS
-            )
-            logger.warning(
-                "Plugin %s: poll interval %r is not an integer; using %ss instead",
-                name,
-                interval,
-                fallback,
-            )
-            interval = fallback
+        interval = (
+            default_interval
+            if _is_valid_interval(default_interval)
+            else (MIN_POLL_INTERVAL_SECONDS)
+        )
+        if enabled:
+            # Explicit ``is not None`` checks rather than an ``or`` chain,
+            # so a configured falsy value such as ``poll_interval: 0`` is
+            # respected and reaches the floor check and its warning
+            # instead of being silently swallowed into the module or
+            # default interval.
+            interval = plugin_config.get("poll_interval")
+            if interval is None:
+                interval = getattr(module, "POLL_INTERVAL_SECONDS", None)
+            if interval is None:
+                interval = default_interval
 
-        if interval < MIN_POLL_INTERVAL_SECONDS:
-            logger.warning(
-                "Plugin %s: poll interval %ss is below the %ss floor; raising it",
-                name,
-                interval,
-                MIN_POLL_INTERVAL_SECONDS,
-            )
-            interval = MIN_POLL_INTERVAL_SECONDS
+            # A non-integer interval (e.g. ``"30m"`` — an easy YAML quoting
+            # slip) would raise TypeError at the floor comparison below and
+            # abort discovery for every other plugin. Booleans are ints in
+            # Python, so ``poll_interval: true`` must be excluded
+            # explicitly.
+            if not _is_valid_interval(interval):
+                fallback = (
+                    default_interval
+                    if _is_valid_interval(default_interval)
+                    else MIN_POLL_INTERVAL_SECONDS
+                )
+                logger.warning(
+                    "Plugin %s: poll interval %r is not an integer; using %ss instead",
+                    name,
+                    interval,
+                    fallback,
+                )
+                interval = fallback
 
-        loaded.append(
-            LoadedPlugin(
+            if interval < MIN_POLL_INTERVAL_SECONDS:
+                logger.warning(
+                    "Plugin %s: poll interval %ss is below the %ss floor; raising it",
+                    name,
+                    interval,
+                    MIN_POLL_INTERVAL_SECONDS,
+                )
+                interval = MIN_POLL_INTERVAL_SECONDS
+
+        discovered.append(
+            DiscoveredPlugin(
                 name=name,
                 module=module,
                 metrics=metrics,
-                interval_seconds=interval,
                 config=plugin_config,
+                interval_seconds=interval,
                 source=source,
+                enabled=enabled,
             )
         )
 
-    return loaded
+    return discovered
+
+
+def discover_plugins(
+    config: dict[str, Any], builtin_dir: Path | None = None
+) -> list[LoadedPlugin]:
+    """Discover, validate, and resolve the interval for every enabled plugin.
+
+    A plugin is scheduled only if ``config["plugins"][name]["enabled"]`` is
+    ``True`` — discovered but unconfigured plugins are silently left out,
+    per Responsible Use #2 (a fresh install makes zero outbound requests
+    until configured).
+
+    A thin filter over :func:`discover`. Prefer calling :func:`discover`
+    directly and reusing its result when you also need
+    :func:`discover_plugin_names`' view (e.g. ``main.lifespan``) — calling
+    both functions separately imports every plugin file twice.
+    """
+    return [
+        LoadedPlugin(
+            name=p.name,
+            module=p.module,
+            metrics=p.metrics,
+            interval_seconds=p.interval_seconds,
+            config=p.config,
+            source=p.source,
+        )
+        for p in discover(config, builtin_dir)
+        if p.enabled
+    ]
 
 
 def discover_plugin_names(
@@ -435,23 +552,8 @@ def discover_plugin_names(
 ) -> list[str]:
     """Every contract-valid plugin name, whether or not it's enabled.
 
-    Mirrors :func:`discover_plugins`' combining of built-ins and
-    ``NGU_PLUGIN_DIR`` (a user plugin replaces a built-in of the same
-    name), but skips the config enabled-check: ``/api/plugins`` reports on
-    every plugin the service could run, not just the ones currently turned
-    on.
+    ``/api/plugins`` reports on every plugin the service could run, not
+    just the ones currently turned on. A thin filter over :func:`discover`
+    — see its docstring about avoiding repeat imports.
     """
-    if builtin_dir is None:
-        builtin_dir = Path(__file__).parent
-    builtin_modules = _discover_dir(builtin_dir)
-
-    user_dir = config.get("plugin_dir")
-    user_modules = _discover_dir(Path(user_dir)) if user_dir else {}
-
-    combined: dict[str, ModuleType] = {**builtin_modules, **user_modules}
-
-    return [
-        name
-        for name, module in sorted(combined.items())
-        if validate_plugin_contract(name, module) is not None
-    ]
+    return [p.name for p in discover(config, builtin_dir)]
