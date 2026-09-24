@@ -5,9 +5,11 @@
 <h1 align="center">numbers-go-up</h1>
 
 <p align="center">
-  <a href="https://github.com/DrewFerg11/numbers-go-up/releases"><img alt="Latest release" src="https://img.shields.io/github/v/release/DrewFerg11/numbers-go-up?include_prereleases&sort=semver" /></a>
+  <a href="https://github.com/DrewFerg11/numbers-go-up/releases/latest"><img alt="Latest stable release" src="https://img.shields.io/github/v/release/DrewFerg11/numbers-go-up?label=stable" /></a>
+  <a href="https://github.com/DrewFerg11/numbers-go-up/releases"><img alt="Latest RC" src="https://img.shields.io/github/v/release/DrewFerg11/numbers-go-up?include_prereleases&sort=semver&filter=*-rc.*&label=rc" /></a>
   <a href="https://github.com/DrewFerg11/numbers-go-up/actions/workflows/ci-test.yml"><img alt="CI / Test" src="https://img.shields.io/github/actions/workflow/status/DrewFerg11/numbers-go-up/ci-test.yml?branch=main&label=test" /></a>
   <a href="https://github.com/DrewFerg11/numbers-go-up/actions/workflows/ci-build.yml"><img alt="CI / Build" src="https://img.shields.io/github/actions/workflow/status/DrewFerg11/numbers-go-up/ci-build.yml?branch=main&label=build" /></a>
+  <a href="https://github.com/DrewFerg11/numbers-go-up/actions/workflows/codeql.yml"><img alt="CodeQL" src="https://img.shields.io/github/actions/workflow/status/DrewFerg11/numbers-go-up/codeql.yml?branch=main&label=codeql" /></a>
   <a href="https://github.com/DrewFerg11/numbers-go-up/actions/workflows/sources-canary.yml"><img alt="Sources canary" src="https://img.shields.io/github/actions/workflow/status/DrewFerg11/numbers-go-up/sources-canary.yml?label=sources%20canary" /></a>
 </p>
 
@@ -16,6 +18,8 @@
   <a href="./LICENSE"><img alt="License: MIT" src="https://img.shields.io/github/license/DrewFerg11/numbers-go-up" /></a>
   <img alt="Python 3.12+" src="https://img.shields.io/badge/python-3.12%2B-blue" />
   <a href="https://hub.docker.com/r/drewferg11/numbers-go-up"><img alt="Docker pulls" src="https://img.shields.io/docker/pulls/drewferg11/numbers-go-up" /></a>
+  <a href="https://hub.docker.com/r/drewferg11/numbers-go-up"><img alt="Docker image size" src="https://img.shields.io/docker/image-size/drewferg11/numbers-go-up?sort=semver" /></a>
+  <img alt="Multi-arch: amd64, arm64, armv7" src="https://img.shields.io/badge/arch-amd64%20%7C%20arm64%20%7C%20armv7-informational" />
 </p>
 
 ---
