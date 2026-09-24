@@ -156,6 +156,105 @@ def test_only_five_newest_backups_are_kept(tmp_path):
     assert remaining[-1].name == "stats-pre-v1-20200106T000000.db"
 
 
+def test_pruning_sorts_by_version_not_filename_text(tmp_path):
+    # Lexicographic sort puts "stats-pre-v10-..." before "stats-pre-v9-...",
+    # which would prune the newest backup first once v10 exists.
+    backups_dir = tmp_path / "backups"
+    backups_dir.mkdir(parents=True, exist_ok=True)
+    (backups_dir / "stats-pre-v9-20260101T000000.db").write_bytes(b"")
+    (backups_dir / "stats-pre-v10-20260102T000000.db").write_bytes(b"")
+
+    migrate._prune_backups(backups_dir, keep=1)
+
+    remaining = list(backups_dir.glob("stats-pre-v*.db"))
+    assert [p.name for p in remaining] == ["stats-pre-v10-20260102T000000.db"]
+
+
+def test_pruning_never_touches_a_non_matching_file(tmp_path):
+    backups_dir = tmp_path / "backups"
+    backups_dir.mkdir(parents=True, exist_ok=True)
+    (backups_dir / "stats-pre-v1-20260101T000000.db").write_bytes(b"")
+    user_file = backups_dir / "stats-pre-v-notes.db"
+    user_file.write_bytes(b"not ours")
+
+    migrate._prune_backups(backups_dir, keep=0)
+
+    assert user_file.exists()
+
+
+def test_rebuild_migration_preserves_samples_last_value_and_attrs(tmp_path):
+    db_path = tmp_path / "stats.db"
+    migrate.run_migrations(db_path)
+
+    series_id = storage.get_or_create_series(
+        db_path, "x.a", "x", "gauge", "A", "u", "icon", 100, attrs={"k": "v"}
+    )
+    for ts in range(100, 110):
+        storage.record_sample(db_path, series_id, ts, float(ts), 86400)
+
+    migrate.run_migrations(db_path, migrations_dir=FIXTURES_DIR / "rebuild_ok")
+
+    conn = sqlite3.connect(str(db_path))
+    try:
+        count = conn.execute("SELECT COUNT(*) FROM samples").fetchone()[0]
+        row = conn.execute(
+            "SELECT metric_key, last_value, attrs FROM metric_series"
+        ).fetchone()
+        version = conn.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[
+            0
+        ]
+    finally:
+        conn.close()
+
+    assert count == 10
+    assert row == ("x.a", 109.0, '{"k": "v"}')
+    assert version == 2
+
+
+def test_rebuild_migration_with_dangling_fk_rolls_back_entirely(tmp_path):
+    db_path = tmp_path / "stats.db"
+    migrate.run_migrations(db_path)
+
+    series_id = storage.get_or_create_series(
+        db_path, "x.a", "x", "gauge", "A", "u", "icon", 100
+    )
+    for ts in range(100, 110):
+        storage.record_sample(db_path, series_id, ts, float(ts), 86400)
+
+    with pytest.raises(migrate.MigrationError, match="samples"):
+        migrate.run_migrations(db_path, migrations_dir=FIXTURES_DIR / "rebuild_bad")
+
+    conn = sqlite3.connect(str(db_path))
+    try:
+        count = conn.execute("SELECT COUNT(*) FROM samples").fetchone()[0]
+        version = conn.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[
+            0
+        ]
+        tables = {
+            row[0]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()
+        }
+    finally:
+        conn.close()
+
+    assert count == 10
+    assert version == 1
+    assert "metric_series_old" not in tables
+
+
+def test_runtime_connections_still_enforce_foreign_keys_after_migrating(tmp_path):
+    db_path = tmp_path / "stats.db"
+    migrate.run_migrations(db_path)
+
+    conn = storage.connect(db_path)
+    try:
+        assert conn.execute("PRAGMA foreign_keys").fetchone()[0] == 1
+    finally:
+        conn.close()
+
+
 def test_failed_migration_leaves_no_partial_schema_or_ledger_row(tmp_path):
     db_path = tmp_path / "stats.db"
     migrate.run_migrations(db_path)

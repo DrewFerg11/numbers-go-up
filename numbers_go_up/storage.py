@@ -293,16 +293,49 @@ _DAILY_BACKUP_PREFIX = "stats-daily-"
 _DAILY_BACKUP_RE = re.compile(rf"{re.escape(_DAILY_BACKUP_PREFIX)}\d{{8}}\.db")
 
 
+def copy_and_verify(source_path: str | Path, dest_path: str | Path) -> int:
+    """Copy ``source_path`` to ``dest_path`` and verify it with ``PRAGMA
+    quick_check``, so a corrupt copy is never mistaken for a good backup.
+
+    Uses ``sqlite3.Connection.backup()``, which is safe to run against a
+    live WAL-mode database with no downtime. On a failed check, the copy is
+    deleted and ``ValueError`` is raised rather than leaving a corrupt file
+    that looks like a valid one. Returns the copy's size in bytes. Shared by
+    :func:`backup_database` (daily backups) and ``migrate._backup``
+    (pre-migration backups), so both get the same integrity guarantee.
+    """
+    dest_path = Path(dest_path)
+
+    source = sqlite3.connect(str(source_path))
+    try:
+        dest = sqlite3.connect(str(dest_path))
+        try:
+            source.backup(dest)
+        finally:
+            dest.close()
+    finally:
+        source.close()
+
+    check_conn = sqlite3.connect(str(dest_path))
+    try:
+        result = check_conn.execute("PRAGMA quick_check").fetchone()
+    finally:
+        check_conn.close()
+
+    if result is None or result[0] != "ok":
+        dest_path.unlink(missing_ok=True)
+        raise ValueError(f"Backup {dest_path} failed PRAGMA quick_check: {result}")
+
+    return dest_path.stat().st_size
+
+
 def backup_database(
     db_path: str | Path, backup_dir: str | Path, keep_daily: int, today: str
 ) -> dict[str, Any]:
     """Back up the database to ``backup_dir/stats-daily-<today>.db``.
 
-    Uses ``sqlite3.Connection.backup()``, which is safe to run against a
-    live WAL-mode database with no downtime. The backup file is verified
-    with ``PRAGMA quick_check`` -- a failure deletes it and raises, rather
-    than leaving a corrupt file that looks like a valid backup. Retention
-    then keeps the newest ``keep_daily`` files matching
+    See :func:`copy_and_verify` for how the copy is made and checked.
+    Retention then keeps the newest ``keep_daily`` files matching
     ``stats-daily-<8 digits>.db`` only, so migrate.py's ``stats-pre-v*``
     backups are never touched (and vice versa), and neither is anything
     else a user might drop in this directory -- it's a plain bind mount,
@@ -318,27 +351,7 @@ def backup_database(
     backup_dir.mkdir(parents=True, exist_ok=True)
     backup_path = backup_dir / f"{_DAILY_BACKUP_PREFIX}{today}.db"
 
-    source = sqlite3.connect(str(db_path))
-    try:
-        dest = sqlite3.connect(str(backup_path))
-        try:
-            source.backup(dest)
-        finally:
-            dest.close()
-    finally:
-        source.close()
-
-    check_conn = sqlite3.connect(str(backup_path))
-    try:
-        result = check_conn.execute("PRAGMA quick_check").fetchone()
-    finally:
-        check_conn.close()
-
-    if result is None or result[0] != "ok":
-        backup_path.unlink(missing_ok=True)
-        raise ValueError(f"Backup {backup_path} failed PRAGMA quick_check: {result}")
-
-    backup_bytes = backup_path.stat().st_size
+    backup_bytes = copy_and_verify(db_path, backup_path)
 
     stale = sorted(
         p
