@@ -8,8 +8,14 @@
 # container, published or not.
 set -euo pipefail
 
+# Default 90s, not the Dockerfile's --interval=30s alone: Docker's interval
+# is also the wait before the *first* probe (moby/moby#33410), so a plain
+# 60s budget only gives ~25s of real headroom past that first probe before
+# this loop's own timeout fires -- less than the old curl loops gave polling
+# from t=0. --start-period=30s doesn't help here: it only delays when
+# failures start counting toward --retries, not the probe cadence itself.
 container="$1"
-timeout="${2:-60}"
+timeout="${2:-90}"
 elapsed=0
 
 while [ "$elapsed" -lt "$timeout" ]; do
