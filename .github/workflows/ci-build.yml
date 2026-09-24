@@ -70,11 +70,16 @@ jobs:
           docker rm -f ngu-default
 
       # (b) custom PUID/PGID: process and fresh bind mount both get the new IDs.
+      # /config is bind-mounted too (not just /data), even though nothing
+      # here reads it, so the next step's "second start" reuses the same
+      # already-chowned host directory for both of the entrypoint's dirs --
+      # otherwise /config gets a fresh, wrong-owned directory on every
+      # `docker run` and its chown fires every time regardless.
       - name: PUID/PGID=1026/100 applies to process and bind mount
         run: |
-          mkdir -p /tmp/ngu-data
+          mkdir -p /tmp/ngu-data /tmp/ngu-config
           docker run -d --name ngu-puid -e PUID=1026 -e PGID=100 \
-            -v /tmp/ngu-data:/data app:ci
+            -v /tmp/ngu-data:/data -v /tmp/ngu-config:/config app:ci
           bash .github/scripts/wait-healthy.sh ngu-puid
           UID_IN_CONTAINER=$(docker exec ngu-puid stat -c '%u' /proc/1)
           GID_IN_CONTAINER=$(docker exec ngu-puid stat -c '%g' /proc/1)
@@ -99,7 +104,7 @@ jobs:
       - name: Second start with correct ownership skips the recursive chown
         run: |
           docker run -d --name ngu-puid2 -e PUID=1026 -e PGID=100 \
-            -v /tmp/ngu-data:/data app:ci
+            -v /tmp/ngu-data:/data -v /tmp/ngu-config:/config app:ci
           bash .github/scripts/wait-healthy.sh ngu-puid2
           if docker logs ngu-puid2 2>&1 | grep -q "entrypoint: chown"; then
             echo "::error::Expected no chown on a second start with matching ownership"
@@ -209,7 +214,7 @@ jobs:
 
       - name: Clean up test volumes
         if: always()
-        run: sudo rm -rf /tmp/ngu-data /tmp/ngu-hardened-data
+        run: sudo rm -rf /tmp/ngu-data /tmp/ngu-config /tmp/ngu-hardened-data
 
   armv7-smoke:
     name: arm/v7 boot smoke test
