@@ -4,21 +4,31 @@ on:
   push:
     branches: [main]
   pull_request:
+  # Lets release.yml gate the release build on this same job, so the tagged
+  # commit is tested rather than trusting main to already be green.
+  workflow_call:
 
 permissions:
   contents: read
 
 jobs:
   test:
-    name: lint + unit tests
+    name: lint + unit tests (py${{ matrix.python-version }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # The requires-python floor, plus the version the image actually
+        # ships (Dockerfile:1) -- bumping that base image should bump this
+        # too.
+        python-version: ["3.12", "3.14"]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0   # setuptools-scm needs full history + tags
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
-          python-version: "3.12"
+          python-version: ${{ matrix.python-version }}
           cache: pip
       - name: Install dependencies
         run: pip install -e . -r requirements-dev.txt
