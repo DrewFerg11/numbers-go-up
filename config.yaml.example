@@ -5,6 +5,10 @@
 # handles, or repos ever ship in the image.
 #
 # All intervals are in seconds.
+#
+# An unknown top-level key (a typo like "mqqt:") fails startup, so a mistake
+# doesn't silently do nothing. Set NGU_CONFIG_STRICT=0 (an env var, not a
+# config key) to downgrade that to a warning and start anyway.
 
 # poll:
 #   default_interval: 1800      # 30 min
@@ -17,8 +21,12 @@
 #     keep_daily: 7              # daily DB backups to keep; 0 disables them
 #
 # server:
-#   host: 0.0.0.0
-#   port: 8080
+#   external_url: "http://192.168.1.50:8080"   # optional; feeds Home Assistant's
+#                                                # device "Visit" link. The container
+#                                                # always listens on 0.0.0.0:8080 --
+#                                                # change the outside port with
+#                                                # compose's port mapping
+#                                                # ("9000:8080"), not here.
 #
 # plugins:
 #   makerworld:

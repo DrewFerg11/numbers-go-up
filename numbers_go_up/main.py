@@ -118,23 +118,31 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     shared_http_client = http.build_client()
 
-    # Built (and started) whether or not config["mqtt"] is set -- a
-    # NoopPublisher when it's absent, so nothing downstream ever branches on
-    # "is MQTT on". A broker that's unreachable never fails startup: the
-    # client just keeps retrying on its own network thread.
+    # Built whether or not config["mqtt"] is set -- a NoopPublisher when
+    # it's absent, so nothing downstream ever branches on "is MQTT on". Not
+    # started yet: see the comment below start() for why.
     mqtt_publisher = mqtt.build_publisher(config, app.state.plugin_intervals)
     app.state.mqtt_publisher = mqtt_publisher
-    mqtt_publisher.start()
 
     # Built (and validated) whether or not config["milestones"] is set -- a
     # NoopEvaluator when it's absent, so nothing downstream ever branches on
     # "are milestones on". A bad milestones *config* (a missing webhook env
-    # var, an invalid rule) fails startup here; an unreachable *webhook* is
-    # only ever discovered later, on delivery.
+    # var, an invalid rule, an unmatched pattern) fails startup here; an
+    # unreachable *webhook* is only ever discovered later, on delivery.
+    #
+    # Validated before mqtt_publisher.start(), not after: milestones config
+    # needs enabled_plugins to check pattern rules, so it can't be validated
+    # as early as the mqtt block. Starting the MQTT client first and then
+    # failing here would leave a retained "online" message and a running
+    # paho network thread behind on a startup that never actually succeeds.
     milestone_evaluator = milestones.build_evaluator(
         config, enabled_plugins, shared_http_client
     )
     app.state.milestone_evaluator = milestone_evaluator
+
+    # A broker that's unreachable must never fail startup: the client just
+    # keeps retrying on its own network thread.
+    mqtt_publisher.start()
 
     job_scheduler = scheduler.build_scheduler(
         config,

@@ -230,6 +230,25 @@ class TestValidateMqttConfig:
             mqtt.validate_mqtt_config({"host": "broker.local", "include": [""]})
 
 
+class TestClientIdentity:
+    def test_two_publishers_from_the_same_config_get_different_client_ids(
+        self, db_path
+    ):
+        mqtt_config = {
+            "host": "broker.local",
+            "port": 1883,
+            "topic_prefix": "numbers-go-up",
+        }
+        first = mqtt.MqttPublisher(mqtt_config, db_path, {}, 1800)
+        second = mqtt.MqttPublisher(mqtt_config, db_path, {}, 1800)
+
+        assert first._client._client_id != second._client._client_id
+        # unique_id/object_id derivation is untouched by the client id --
+        # unrelated to a broker session and must not orphan existing HA
+        # entities.
+        assert first._client._client_id.startswith(b"numbers-go-up-numbers-go-up-")
+
+
 # --- discovery payload ----------------------------------------------------
 
 
@@ -297,7 +316,7 @@ class TestDiscoveryPayload:
     def test_device_block_matches_spec(self, db_path):
         _seed_series(db_path, "acme.designs", value=1)
         publisher, fake = _publisher(
-            db_path, server_config={"host": "0.0.0.0", "port": 8080}
+            db_path, server_config={"external_url": "http://192.168.1.50:8080"}
         )
 
         publisher._republish_snapshot()
@@ -313,8 +332,23 @@ class TestDiscoveryPayload:
             "manufacturer": "numbers-go-up",
             "model": "stats poller",
             "sw_version": mqtt.__version__,
-            "configuration_url": "http://localhost:8080/",
+            "configuration_url": "http://192.168.1.50:8080",
         }
+
+    def test_device_block_omits_configuration_url_when_external_url_unset(
+        self, db_path
+    ):
+        _seed_series(db_path, "acme.designs", value=1)
+        publisher, fake = _publisher(db_path)
+
+        publisher._republish_snapshot()
+
+        payload = json.loads(
+            fake.published_dict(
+                "homeassistant/sensor/numbers_go_up/ngu_acme_designs/config"
+            )
+        )
+        assert "configuration_url" not in payload["device"]
 
     def test_availability_topic_is_the_status_topic(self, db_path):
         _seed_series(db_path, "acme.designs", value=1)
