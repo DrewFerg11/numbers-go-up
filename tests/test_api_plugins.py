@@ -256,9 +256,9 @@ def test_plugins_polling_while_run_in_flight(tmp_path):
     assert plugin["status"] == "polling"
     assert plugin["last_poll"] is None
     assert plugin["last_error"] is None
-    # consecutive_failures keeps #28's liveness convention (an unfinished
-    # run counts as a failure); only ``status`` is spared the sentinel.
-    assert plugin["consecutive_failures"] == 1
+    # consecutive_failures now only counts *finished* runs (#127): an
+    # in-flight poll is liveness, not a failure, and must not move it.
+    assert plugin["consecutive_failures"] == 0
 
 
 def test_plugins_error_status_and_last_error_from_latest_finished_run(tmp_path):

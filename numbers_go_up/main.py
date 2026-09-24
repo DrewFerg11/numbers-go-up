@@ -1,5 +1,6 @@
 import logging
 import os
+import time
 from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager
 
@@ -17,6 +18,7 @@ from numbers_go_up import (
     mqtt,
     netfs,
     scheduler,
+    storage,
 )
 from numbers_go_up.api import HealthResponse
 from numbers_go_up.config import load_config
@@ -91,6 +93,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     config = load_config()
     netfs.check_not_network_filesystem(config["storage"]["path"])
     migrate.run_migrations(config["storage"]["path"])
+    # A docker stop or crash mid-poll leaves a plugin_runs row with
+    # finished_at IS NULL -- close it as interrupted before anything reads
+    # plugin state, so a restart never reports a stale "polling" plugin or
+    # counts the orphaned row as a failure.
+    storage.close_interrupted_runs(config["storage"]["path"], int(time.time()))
 
     app.state.config = config
     # One discovery pass for the whole process: every consumer below

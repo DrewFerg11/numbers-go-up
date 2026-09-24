@@ -220,7 +220,11 @@ class MqttPublisher:
         server_config = server_config or {}
         self._configuration_url = server_config.get("external_url")
 
-        self._lock = threading.Lock()
+        # RLock, not Lock: _publish() (called from inside the
+        # object-id/discovery bookkeeping methods below, all guarded by
+        # this same lock) also takes it, and a plain Lock would deadlock
+        # on that same-thread re-entry.
+        self._lock = threading.RLock()
         self._connected = False
         self._last_publish: float | None = None
         self._last_error: str | None = None
@@ -404,27 +408,33 @@ class MqttPublisher:
         metric_key to claim an object_id keeps it for the life of the
         process; the loser is logged once, with an ERROR line naming both
         keys, and skipped forever (never overwrites the winner).
-        """
-        object_id = "ngu_" + metric_key.replace(".", "_")
-        owner = self._object_id_owner.get(object_id)
-        if owner is None:
-            self._object_id_owner[object_id] = metric_key
-            return object_id
-        if owner == metric_key:
-            return object_id
 
-        if metric_key not in self._collision_logged:
-            logger.error(
-                "MQTT discovery: metric %r and %r both map to object_id %r; "
-                "keeping %r, skipping %r",
-                owner,
-                metric_key,
-                object_id,
-                owner,
-                metric_key,
-            )
-            self._collision_logged.add(metric_key)
-        return None
+        Locked: called from both scheduler threads (via on_poll_finished)
+        and the paho network thread (via _republish_snapshot, from
+        _on_connect), and the check-then-set on ``_object_id_owner`` below
+        isn't atomic on its own.
+        """
+        with self._lock:
+            object_id = "ngu_" + metric_key.replace(".", "_")
+            owner = self._object_id_owner.get(object_id)
+            if owner is None:
+                self._object_id_owner[object_id] = metric_key
+                return object_id
+            if owner == metric_key:
+                return object_id
+
+            if metric_key not in self._collision_logged:
+                logger.error(
+                    "MQTT discovery: metric %r and %r both map to object_id %r; "
+                    "keeping %r, skipping %r",
+                    owner,
+                    metric_key,
+                    object_id,
+                    owner,
+                    metric_key,
+                )
+                self._collision_logged.add(metric_key)
+            return None
 
     def _expire_after(self, plugin_name: str) -> int:
         # Same rule as api.py's _is_stale: 3x the plugin's poll interval.
@@ -479,22 +489,26 @@ class MqttPublisher:
         )
 
     def _maybe_publish_discovery(self, row: Any, force: bool = False) -> None:
-        key = row["metric_key"]
-        object_id = self._object_id_for(key)
-        if object_id is None:
-            return
+        # Locked for the same reason as _object_id_for: this mutates
+        # _discovery_fingerprints/_known_active from both scheduler
+        # threads and the paho network thread.
+        with self._lock:
+            key = row["metric_key"]
+            object_id = self._object_id_for(key)
+            if object_id is None:
+                return
 
-        fingerprint = self._discovery_fingerprint(row)
-        if not force and self._discovery_fingerprints.get(key) == fingerprint:
+            fingerprint = self._discovery_fingerprint(row)
+            if not force and self._discovery_fingerprints.get(key) == fingerprint:
+                self._known_active.add(key)
+                return
+
+            payload = self._discovery_payload(row, object_id)
+            self._publish(
+                self._discovery_topic(object_id), json.dumps(payload), retain=True
+            )
+            self._discovery_fingerprints[key] = fingerprint
             self._known_active.add(key)
-            return
-
-        payload = self._discovery_payload(row, object_id)
-        self._publish(
-            self._discovery_topic(object_id), json.dumps(payload), retain=True
-        )
-        self._discovery_fingerprints[key] = fingerprint
-        self._known_active.add(key)
 
     def _publish_state(self, row: Any) -> None:
         if row["last_value"] is None:
@@ -507,13 +521,15 @@ class MqttPublisher:
         self._publish(self._attrs_topic(key), attrs_json, retain=True)
 
     def _publish_removal(self, metric_key: str) -> None:
-        object_id = self._object_id_for(metric_key)
-        if object_id is not None:
-            self._publish(self._discovery_topic(object_id), b"", retain=True)
-        self._publish(self._state_topic(metric_key), b"", retain=True)
-        self._publish(self._attrs_topic(metric_key), b"", retain=True)
-        self._discovery_fingerprints.pop(metric_key, None)
-        self._known_active.discard(metric_key)
+        # Locked: same shared state as _maybe_publish_discovery.
+        with self._lock:
+            object_id = self._object_id_for(metric_key)
+            if object_id is not None:
+                self._publish(self._discovery_topic(object_id), b"", retain=True)
+            self._publish(self._state_topic(metric_key), b"", retain=True)
+            self._publish(self._attrs_topic(metric_key), b"", retain=True)
+            self._discovery_fingerprints.pop(metric_key, None)
+            self._known_active.discard(metric_key)
 
     # -- snapshots ----------------------------------------------------
 
@@ -550,23 +566,30 @@ class MqttPublisher:
             if not row["active"] and self._is_selected(row["metric_key"])
         ]
 
-        for row in active_rows:
-            self._maybe_publish_discovery(row, force=True)
-        for row in active_rows:
-            # A collision loser (no object_id) has no entity to carry its
-            # state -- nothing to publish it to.
-            if self._object_id_for(row["metric_key"]) is not None:
-                self._publish_state(row)
+        # Locked for the whole reconciliation, not just the individual
+        # bookkeeping calls inside it: this runs on the paho network
+        # thread (from _on_connect) while scheduler threads are calling
+        # on_poll_finished concurrently, and the two must not interleave
+        # mid-snapshot (e.g. a poll deactivating a series between this
+        # method reading `rows` and reaching that series' removal).
+        with self._lock:
+            for row in active_rows:
+                self._maybe_publish_discovery(row, force=True)
+            for row in active_rows:
+                # A collision loser (no object_id) has no entity to carry
+                # its state -- nothing to publish it to.
+                if self._object_id_for(row["metric_key"]) is not None:
+                    self._publish_state(row)
 
-        # Removal is idempotent (an empty retained payload to an
-        # already-empty topic is a no-op in HA) and reconciled against the
-        # DB -- not gated on the in-memory _known_active set, which starts
-        # empty on every process restart. Without this, a series
-        # deactivated while the process was down (or before it ever
-        # published that series this run) would keep its stale retained
-        # discovery config and state/attrs in HA indefinitely.
-        for row in inactive_rows:
-            self._publish_removal(row["metric_key"])
+            # Removal is idempotent (an empty retained payload to an
+            # already-empty topic is a no-op in HA) and reconciled against
+            # the DB -- not gated on the in-memory _known_active set,
+            # which starts empty on every process restart. Without this, a
+            # series deactivated while the process was down (or before it
+            # ever published that series this run) would keep its stale
+            # retained discovery config and state/attrs in HA indefinitely.
+            for row in inactive_rows:
+                self._publish_removal(row["metric_key"])
 
     # -- scheduler hook ----------------------------------------------------
 
@@ -612,14 +635,23 @@ class MqttPublisher:
             )
             return
 
-        for key, row in rows.items():
-            if row["active"]:
-                if status == "ok" and key in returned_keys and self._is_selected(key):
-                    self._maybe_publish_discovery(row)
-                    if self._object_id_for(key) is not None:
-                        self._publish_state(row)
-            elif key in self._known_active:
-                self._publish_removal(key)
+        # Same reconciliation-atomicity reasoning as _republish_snapshot:
+        # this runs on a scheduler thread, concurrently with other
+        # plugins' polls and a possible _republish_snapshot on the paho
+        # thread.
+        with self._lock:
+            for key, row in rows.items():
+                if row["active"]:
+                    if (
+                        status == "ok"
+                        and key in returned_keys
+                        and self._is_selected(key)
+                    ):
+                        self._maybe_publish_discovery(row)
+                        if self._object_id_for(key) is not None:
+                            self._publish_state(row)
+                elif key in self._known_active:
+                    self._publish_removal(key)
 
     @property
     def status(self) -> dict[str, Any]:

@@ -24,11 +24,16 @@ VALID_RUN_STATUSES = {"ok", "error"}
 
 # plugin_runs.status has NOT NULL + CHECK(status IN ('ok', 'error')), so
 # there's no schema-level "running" state. start_run() inserts this sentinel
-# into `error` and status='error'; finish_run() overwrites both. The nice
-# side effect: a run that crashes mid-flight, and is never finished, already
-# reads as a failure. #19's consecutive_failures and the /api/plugins
-# endpoint both rely on this convention.
+# into `error` and status='error'; finish_run() overwrites both.
 _RUN_IN_PROGRESS = "run in progress"
+
+# Recognizable sentinel for a run close_interrupted_runs() closed out at
+# startup -- a restart or crash mid-poll, not a real failure. Recorded as
+# status='error' (the schema has no third state) but with this specific
+# error text, so consecutive_failures()/latest_finished_run() can tell it
+# apart from an ordinary failure and skip it: neither success nor failure,
+# and never held against the plugin.
+_INTERRUPTED_ERROR = "interrupted: service stopped mid-poll"
 
 _ERROR_TAIL_CHARS = 500
 
@@ -252,6 +257,30 @@ def finish_run(
         conn.commit()
 
 
+def close_interrupted_runs(db_path: str | Path, now: int) -> int:
+    """Close every ``plugin_runs`` row still in flight (``finished_at IS
+    NULL``) as interrupted. Call once at startup, after migrations.
+
+    ``main.py``'s shutdown is ``scheduler.shutdown(wait=False)`` -- a
+    ``docker stop`` or crash mid-poll otherwise leaves a row with
+    ``finished_at IS NULL`` permanently: after restart, ``/api/plugins``
+    would report that plugin as still "polling" until its next scheduled
+    run starts (up to ~60s at boot), and the orphaned row would count
+    toward ``consecutive_failures`` forever. Closing it here, with the
+    recognizable ``_INTERRUPTED_ERROR`` sentinel, means a restart never
+    shows up as a plugin failure. Returns the number of rows closed.
+    """
+    with contextlib.closing(connect(db_path)) as conn:
+        cursor = conn.execute(
+            "UPDATE plugin_runs SET finished_at = ?, status = 'error', "
+            "error = ?, duration_ms = (? - started_at) * 1000 "
+            "WHERE finished_at IS NULL",
+            (now, _INTERRUPTED_ERROR, now),
+        )
+        conn.commit()
+        return cursor.rowcount
+
+
 def prune_plugin_runs(db_path: str | Path, days: int, now: int) -> int:
     """Delete plugin_runs rows older than ``days`` days before ``now``.
 
@@ -378,17 +407,29 @@ def wal_checkpoint_truncate(db_path: str | Path) -> None:
 
 
 def consecutive_failures(db_path: str | Path, plugin_name: str) -> int:
-    """Count of the most recent runs for ``plugin_name`` that errored,
-    counting back until (and not including) the last success.
+    """Count of the most recent *finished* runs for ``plugin_name`` that
+    errored, counting back until (and not including) the last success.
+
+    Only finished runs are counted (``finished_at IS NOT NULL``): a poll
+    currently in flight is liveness, not a failure, so it no longer moves
+    this count while it runs. An interrupted run (see
+    :data:`_INTERRUPTED_ERROR`) is skipped outright -- neither a success
+    nor a failure, it's excluded from the sequence as if it never
+    happened, so a restart never shows up here either. Ties on
+    ``started_at`` (same-second runs) are broken by ``id`` so the ordering
+    is deterministic.
 
     Derived from ``plugin_runs`` via ``idx_runs_plugin_time``; no new
-    column. A plugin with no runs at all has 0 consecutive failures.
+    column. A plugin with no finished runs at all has 0 consecutive
+    failures.
     """
     with contextlib.closing(connect(db_path)) as conn:
         rows = conn.execute(
             "SELECT status FROM plugin_runs WHERE plugin_name = ? "
-            "ORDER BY started_at DESC",
-            (plugin_name,),
+            "AND finished_at IS NOT NULL "
+            "AND NOT (status = 'error' AND error = ?) "
+            "ORDER BY started_at DESC, id DESC",
+            (plugin_name, _INTERRUPTED_ERROR),
         ).fetchall()
 
     count = 0
@@ -401,23 +442,25 @@ def consecutive_failures(db_path: str | Path, plugin_name: str) -> int:
 
 
 def latest_finished_run(db_path: str | Path, plugin_name: str) -> sqlite3.Row | None:
-    """The newest plugin_runs row for ``plugin_name`` with a known outcome,
-    or None if the plugin has never finished a run.
+    """The newest plugin_runs row for ``plugin_name`` with a known, real
+    outcome, or None if the plugin has never finished such a run.
 
     Rows still in flight (``finished_at IS NULL`` -- start_run's
     ``_RUN_IN_PROGRESS`` sentinel, overwritten by ``finish_run``) are
     skipped rather than read as failures: a poll in flight means the
-    plugin is alive. Deliberately the opposite of
-    :func:`consecutive_failures`, whose liveness convention (#19) counts
-    an unfinished run as a failure.
+    plugin is alive. An interrupted run (see :data:`_INTERRUPTED_ERROR`)
+    is skipped too, so a restart doesn't surface as an "error" status
+    right after startup -- the row behind it (or None) is what's reported
+    instead.
     """
     with contextlib.closing(connect(db_path)) as conn:
         conn.row_factory = sqlite3.Row
         return conn.execute(
             "SELECT started_at, finished_at, status, error FROM plugin_runs "
             "WHERE plugin_name = ? AND finished_at IS NOT NULL "
+            "AND NOT (status = 'error' AND error = ?) "
             "ORDER BY started_at DESC LIMIT 1",
-            (plugin_name,),
+            (plugin_name, _INTERRUPTED_ERROR),
         ).fetchone()
 
 
