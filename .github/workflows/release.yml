@@ -22,7 +22,7 @@
 # GitHub-owned and verified-creator publishers, and a tag can be moved by its
 # owner. Dependabot updates these pins.
 
-name: Release
+name: Release / Tag
 
 on:
   push:

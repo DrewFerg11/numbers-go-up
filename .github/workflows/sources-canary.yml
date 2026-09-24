@@ -20,7 +20,7 @@
 # The probe's own UID secret must never reach a public issue: its value is
 # scrubbed out of any captured output before it's used in an issue body.
 
-name: Sources Canary
+name: Monitor / Sources Canary
 
 on:
   schedule:
