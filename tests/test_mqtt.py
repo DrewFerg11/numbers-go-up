@@ -920,18 +920,41 @@ class TestConcurrentBookkeeping:
         # crashed, but nothing guaranteed it wouldn't. This hammers both
         # paths from real threads and asserts the bookkeeping ends up
         # internally consistent rather than merely "didn't raise".
+        #
+        # 20 plain keys exercise the discovery/state path under contention;
+        # a colliding pair ("acme.a.b"/"acme.a_b", both -> object_id
+        # "ngu_acme_a_b") exercises _object_id_for's collision branch under the
+        # same contention, and "acme.retired" (active when first published,
+        # then deactivated before the hammer starts) exercises
+        # _publish_removal under contention too -- a torn/partial update
+        # from an unlocked race would show up as the collision loser
+        # leaking into _known_active/_discovery_fingerprints, or the
+        # retired key surviving in either.
         for i in range(20):
             _seed_series(db_path, f"acme.item{i}", value=i)
+        _seed_series(db_path, "acme.a.b", value=1)
+        _seed_series(db_path, "acme.a_b", value=2)
+        retired_id = _seed_series(db_path, "acme.retired", value=3)
+
         publisher, _fake = _publisher(db_path, plugin_intervals={"acme": 1800})
+        all_keys = frozenset(
+            {f"acme.item{i}" for i in range(20)}
+            | {"acme.a.b", "acme.a_b", "acme.retired"}
+        )
+        # Publish once so "acme.retired" is known-active before it's
+        # deactivated -- otherwise its removal path never has anything to
+        # remove (on_poll_finished only calls _publish_removal for a key
+        # already in _known_active).
+        publisher.on_poll_finished("acme", "ok", all_keys)
+        assert "acme.retired" in publisher._known_active
+        storage.set_series_active_bulk(db_path, [], [retired_id])
 
         errors: list[Exception] = []
 
         def hammer_poll_finished():
             try:
                 for _ in range(25):
-                    publisher.on_poll_finished(
-                        "acme", "ok", frozenset(f"acme.item{i}" for i in range(20))
-                    )
+                    publisher.on_poll_finished("acme", "ok", all_keys)
             except Exception as exc:  # pragma: no cover - assertion below fails first
                 errors.append(exc)
 
@@ -959,3 +982,15 @@ class TestConcurrentBookkeeping:
         # owner points back at a key that's actually known-active or was
         # at some point -- no torn/partial updates from an unlocked race.
         assert set(publisher._object_id_owner.values()) >= publisher._known_active
+        # The collision: "acme.a.b" sorts first (list_all_series orders by
+        # metric_key, and "." < "_"), so it deterministically wins the
+        # shared object_id "ngu_acme_a_b" every time; "acme.a_b" never claims
+        # discovery/state under any interleaving of the hammer.
+        assert publisher._object_id_owner["ngu_acme_a_b"] == "acme.a.b"
+        assert "acme.a.b" in publisher._known_active
+        assert "acme.a_b" not in publisher._known_active
+        assert "acme.a_b" not in publisher._discovery_fingerprints
+        # The retired series never re-enters known-active once deactivated,
+        # even under concurrent snapshot/poll-finished contention.
+        assert "acme.retired" not in publisher._known_active
+        assert "acme.retired" not in publisher._discovery_fingerprints

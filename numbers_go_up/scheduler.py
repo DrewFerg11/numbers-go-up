@@ -612,7 +612,10 @@ def _run_scheduled_plugin(
         # one does anyway, it must still go through the normal failure
         # path -- logged via _log_failure, backoff reset, both hooks
         # called -- rather than bypass all of that and land only in
-        # APScheduler's generic "Job raised an exception" log.
+        # APScheduler's generic "Job raised an exception" log. This
+        # handler has no run_id, though, so it can't call finish_run: the
+        # run row, if one exists, stays unfinished until
+        # close_interrupted_runs() at the next startup.
         signature, detail = describe_failure(exc)
         _log_failure(failure_streaks, plugin.name, signature, detail, exc)
         backoff_state[plugin.name] = 0
