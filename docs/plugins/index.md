@@ -7,7 +7,10 @@ polls on an interval.
 outbound requests to any platform until you configure one, and no user IDs or
 handles are baked into the image.
 
-Built-in plugins:
+The image ships more built-in plugins than are documented here so far —
+the full set is in
+[`numbers_go_up/plugins/`](https://github.com/DrewFerg11/numbers-go-up/tree/main/numbers_go_up/plugins).
+Pages so far:
 
 - [MakerWorld](makerworld.md)
 - [GitHub](github.md)
@@ -16,4 +19,4 @@ Built-in plugins:
 Want a source that isn't here? See [Writing a plugin](writing-a-plugin.md).
 
 !!! note "More to come"
-    Per-plugin pages are written in [#106](https://github.com/DrewFerg11/numbers-go-up/issues/106).
+    Per-plugin pages are tracked in [#106](https://github.com/DrewFerg11/numbers-go-up/issues/106).
