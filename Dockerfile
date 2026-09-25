@@ -6,10 +6,17 @@ ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
 
 COPY requirements.txt ./
 # util-linux: setpriv, used by docker-entrypoint.sh to drop root privileges.
+# --require-hashes: refuse to install anything that doesn't match the hash
+# pinned in requirements.txt (a generated, locked file -- see its own
+# header), so a build is reproducible and a compromised/typosquatted
+# package on the index can't silently substitute in. A couple of this
+# project's pure-Python deps have no arm/v7 wheel on PyPI and build from
+# their hashed sdist under QEMU on that platform; requirements.txt's
+# header explains which CI job proves that still works.
 RUN apt-get update \
     && apt-get install --no-install-recommends -y util-linux \
     && rm -rf /var/lib/apt/lists/* \
-    && pip install --no-cache-dir -r requirements.txt
+    && pip install --no-cache-dir --require-hashes -r requirements.txt
 
 COPY pyproject.toml ./
 COPY numbers_go_up ./numbers_go_up

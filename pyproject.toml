@@ -9,18 +9,29 @@ description = "Self-hosted, plugin-based tracker for the counters you care about
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.12"
+# This is the single, human-edited dependency list. requirements.txt is
+# generated from it (a hashed, cross-platform lock -- see its own header)
+# and must never be hand-edited; run the regeneration command in that
+# header after changing anything here.
 dependencies = [
-    "fastapi",
-    # Offline /docs and /redoc -- see the comment in requirements.txt. Keep
-    # both declarations in sync.
-    "fastapi-offline",
-    # Plain uvicorn, not uvicorn[standard] -- see the comment in
-    # requirements.txt. Keep both declarations in sync.
-    "uvicorn",
-    "pyyaml",
+    "fastapi>=0.115,<1",
+    # Offline /docs and /redoc -- see the comment below on plain uvicorn.
+    "fastapi-offline>=1.7,<2",
+    # Plain uvicorn, not uvicorn[standard]: the [standard] extra pulls in
+    # uvloop and httptools, which have no prebuilt linux/arm/v7 wheel and
+    # would compile from source under QEMU on that platform's
+    # release/publish build. Neither is measurable for this app's workload
+    # (I/O-bound polling plus a handful of local dashboard requests, not a
+    # high-QPS server). Do not restore the extra.
+    "uvicorn>=0.34,<1",
+    "pyyaml>=6,<7",
     "apscheduler>=3.11,<4",
-    "httpx",
-    "jinja2",
+    "httpx>=0.28,<1",
+    "jinja2>=3,<4",
+    # Only ever imported transitively via fastapi until now (api.py) --
+    # declared explicitly so its version is pinned by name, not by
+    # accident of whatever fastapi happens to pull in.
+    "pydantic>=2,<3",
     "paho-mqtt>=2,<3",
 ]
 
