@@ -65,7 +65,20 @@ jobs:
           cache-dependency-path: docs/requirements.txt
 
       - name: Install dependencies
-        run: pip install -r docs/requirements.txt
+        # -e . in addition to the docs-only requirements: the OpenAPI export
+        # below imports the app itself, which docs/requirements.txt does
+        # not pull in.
+        run: |
+          pip install -r docs/requirements.txt
+          pip install -e .
+
+      - name: Export OpenAPI schema
+        # Not gated on anything -- a bare `pip install -e .` import with no
+        # config, database or server, so it always applies. A failure here
+        # must fail the whole build rather than deploy a stale or missing
+        # spec (the script exits non-zero on any exception already; `set -e`
+        # is the default for a single-line run step).
+        run: python scripts/export_openapi.py
 
       - name: Build site
         run: mkdocs build --strict
