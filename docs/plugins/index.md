@@ -61,8 +61,11 @@ Hover it to see the last error:
 | Green | The last poll succeeded, or a poll is running now |
 | Amber | The last one or two polls failed |
 | Red | Three or more polls in a row failed, **or** the source answered `403` |
+| Grey | Enabled, but no poll has finished yet |
 
-**In the API**, `GET /api/plugins` returns each plugin's `status`:
+**In the API**, `GET /api/plugins` returns the same verdict as `health`
+(`ok`, `warn`, `error`, or `pending`/`disabled`), alongside each plugin's
+`status`:
 
 | `status` | Meaning |
 |---|---|

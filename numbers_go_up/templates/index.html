@@ -116,6 +116,6 @@
 {% block scripts %}
 <link rel="stylesheet" href="/static/vendor/uplot/uPlot.min.css" />
 <script src="/static/vendor/uplot/uPlot.iife.min.js"></script>
-<script src="/static/js/chart.js"></script>
-<script src="/static/js/dashboard.js"></script>
+<script src="/static/js/chart.js?v={{ asset_version }}"></script>
+<script src="/static/js/dashboard.js?v={{ asset_version }}"></script>
 {% endblock %}

@@ -2,7 +2,7 @@
 (function () {
   "use strict";
 
-  var THEME_KEY = "ngu.theme";
+  var Ngu = window.Ngu;
   var app = document.querySelector(".detail-page");
   var metricKey = app.dataset.metricKey;
   var isStale = app.dataset.stale === "true";
@@ -11,28 +11,10 @@
 
   var chart = new window.NguChart(document.getElementById("big-chart"));
 
-  function formatValue(value) {
-    if (value === null || value === undefined) return "—";
-    return Number(value).toLocaleString();
-  }
-
-  function directionOf(change) {
-    if (change > 0) return "up";
-    if (change < 0) return "down";
-    return "flat";
-  }
-
   function renderChangePill(change, changePct) {
     var el = document.getElementById("detail-change");
-    var dir = directionOf(change);
-    var arrow = dir === "up" ? "▲" : dir === "down" ? "▼" : "●";
-    var sign = change > 0 ? "+" : "";
-    var pct =
-      changePct === null || changePct === undefined
-        ? ""
-        : " (" + (changePct > 0 ? "+" : "") + changePct + "%)";
-    el.textContent = arrow + " " + sign + formatValue(change) + pct;
-    el.className = "detail-change value-" + dir;
+    el.textContent = Ngu.formatChange(change, changePct);
+    el.className = "detail-change value-" + Ngu.directionOf(change);
   }
 
   function fetchHistory(range) {
@@ -55,11 +37,11 @@
 
     var open = points[0][1];
     var value = points[points.length - 1][1];
-    document.getElementById("detail-value").textContent = formatValue(value);
+    document.getElementById("detail-value").textContent = Ngu.formatValue(value);
     renderChangePill(value - open, open === 0 ? null : Math.round(((value - open) / open) * 10000) / 100);
 
     chart.render(points, {
-      direction: directionOf(value - open),
+      direction: Ngu.directionOf(value - open),
       unit: "",
       staleSinceTs: staleSinceTs,
     });
@@ -67,11 +49,11 @@
     // synthesized tail point), so the bar strip's domain must match --
     // otherwise every bar maps too far right, worst at the last one,
     // which ends up drawn under the dashed "no data" tail.
-    var barsEnd = staleSinceTs != null ? Date.now() / 1000 : points[points.length - 1][0];
-    window.renderChangeBars(document.getElementById("chart-bars"), data.bars, {
-      start: points[0][0],
-      end: barsEnd,
-    });
+    window.renderChangeBars(
+      document.getElementById("chart-bars"),
+      data.bars,
+      Ngu.barsDomain(points, staleSinceTs)
+    );
   }
 
   function load() {
@@ -104,29 +86,10 @@
 
   var themeToggle = document.getElementById("theme-toggle");
 
-  function applyTheme(theme) {
-    document.documentElement.setAttribute("data-theme", theme);
-  }
-
-  (function initTheme() {
-    var stored = null;
-    try {
-      stored = localStorage.getItem(THEME_KEY);
-    } catch (e) {
-      /* ignore */
-    }
-    applyTheme(stored || "dark");
-  })();
-
-  themeToggle.addEventListener("click", function () {
-    var current = document.documentElement.getAttribute("data-theme");
-    var next = current === "dark" ? "light" : "dark";
-    applyTheme(next);
-    try {
-      localStorage.setItem(THEME_KEY, next);
-    } catch (e) {
-      /* ignore */
-    }
+  // The initial theme is already applied by an inline <script> in
+  // base.html's <head>, synchronously before first paint -- this only
+  // needs to handle the toggle.
+  Ngu.initThemeToggle(themeToggle, function () {
     load();
   });
 
