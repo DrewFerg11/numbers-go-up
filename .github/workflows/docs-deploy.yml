@@ -83,6 +83,25 @@ jobs:
       - name: Build site
         run: mkdocs build --strict
 
+      # Cached on a hash of everything the crawl can observe: the app
+      # itself, and the two scripts that build and crawl it. A docs-only
+      # push (a prose typo, no app change) hits this cache and skips the
+      # export entirely -- the crawl's cost is in booting the app and
+      # replaying ~20 series x 9 ranges, not in anything docs/ changes.
+      - name: Cache demo export
+        id: demo-cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: site/demo/live
+          key: demo-export-${{ hashFiles('numbers_go_up/**', 'scripts/demo/**') }}
+
+      - name: Build demo
+        if: steps.demo-cache.outputs.cache-hit != 'true'
+        run: |
+          python scripts/demo/seed.py demo-seed.db
+          python scripts/demo/export.py demo-seed.db site/demo/live
+          rm -f demo-seed.db
+
       - name: Set deploy path
         id: path
         run: |

@@ -103,3 +103,27 @@ def test_export_produces_every_range_and_no_third_party_urls(tmp_path):
 
     assert not (output / "static" / "img" / "icon-512.png").exists()
     assert (output / "static" / "css" / "dashboard.css").exists()
+
+
+def test_export_injects_the_shim_and_banner_at_the_right_depth(tmp_path):
+    db_path = tmp_path / "seed.db"
+    output = tmp_path / "dist"
+    seed.seed(db_path, now=1_800_000_000, days=DAYS)
+
+    asyncio.run(export.export(db_path, output))
+
+    assert (output / "demo-shim.js").exists()
+
+    index_html = (output / "index.html").read_text()
+    assert 'src="demo-shim.js"' in index_html
+    assert index_html.index('src="demo-shim.js"') < index_html.index(
+        "static/js/dashboard.js"
+    )
+    assert 'id="demo-snapshot-banner"' in index_html
+
+    detail_html = (output / "m" / "counter.orders" / "index.html").read_text()
+    assert 'src="../../demo-shim.js"' in detail_html
+    assert detail_html.index('src="../../demo-shim.js"') < detail_html.index(
+        "static/js/detail.js"
+    )
+    assert 'id="demo-snapshot-banner"' in detail_html
