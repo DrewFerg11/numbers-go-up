@@ -1023,10 +1023,11 @@ folders on the host, so the container itself is disposable.</p>
 <a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="nb">cd</span><span class="w"> </span>numbers-go-up
 </code></pre></div>
 <p>The <a href="https://github.com/DrewFerg11/numbers-go-up/blob/main/docker-compose.yml"><code>docker-compose.yml</code></a>
-at the repo root is the supported way to run it. It runs the published
-<code>ghcr.io/drewferg11/numbers-go-up:latest</code> image (its <code>build: .</code> also lets
-you build from the checkout), publishes port <code>8080</code>, rotates logs, and sets
-up the bind mounts below.</p>
+at the repo root is the supported way to run it. It names the published
+<code>ghcr.io/drewferg11/numbers-go-up:latest</code> image, publishes port <code>8080</code>,
+rotates logs, and sets up the bind mounts below. It also has <code>build: .</code>, so
+Compose can build the image from the checkout instead. Step 5 pulls the
+published image first, so you run the release rather than a local build.</p>
 <h2 id="2-create-the-folders">2. Create the folders<a class="headerlink" href="#2-create-the-folders" title="Permanent link">&para;</a></h2>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>mkdir<span class="w"> </span>-p<span class="w"> </span>data<span class="w"> </span>config<span class="w"> </span>user-plugins
 </code></pre></div>
@@ -1089,8 +1090,9 @@ under <code>environment:</code>. It decides where the daily heartbeat boundary f
 <div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">TZ=America/New_York</span>
 </code></pre></div>
 <h2 id="5-start-it">5. Start it<a class="headerlink" href="#5-start-it" title="Permanent link">&para;</a></h2>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>docker<span class="w"> </span>compose<span class="w"> </span>up<span class="w"> </span>-d
-<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>curl<span class="w"> </span>localhost:8080/health
+<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>docker<span class="w"> </span>compose<span class="w"> </span>pull
+<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>docker<span class="w"> </span>compose<span class="w"> </span>up<span class="w"> </span>-d
+<a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a>curl<span class="w"> </span>localhost:8080/health
 </code></pre></div>
 <p>Then open <code>http://&lt;host&gt;:8080</code> for the dashboard. The container listens on
 <code>8080</code> inside; to use a different port outside, change the mapping in
