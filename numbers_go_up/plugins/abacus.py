@@ -77,6 +77,8 @@ from urllib.parse import quote, urlparse
 
 import httpx
 
+from numbers_go_up.plugins import _helpers
+
 logger = logging.getLogger(__name__)
 
 POLL_INTERVAL_SECONDS = 1800  # 30 min
@@ -94,12 +96,6 @@ METRICS = {
 }
 
 _DEFAULT_MAX_COUNTERS = 20
-
-# Metric-key slug: Home-Assistant-entity-id-safe, permanent once picked --
-# same convention as youtube.py's channel `key` (#62/#95 precedent),
-# because Abacus namespaces are hostnames (dots) and names may contain
-# characters outside this charset.
-_KEY_PATTERN = re.compile(r"^[a-z0-9_-]+$")
 
 # namespace/name: non-empty, no '/' (would split the URL path into extra
 # segments -- the one way a config value could otherwise reshape the
@@ -122,16 +118,6 @@ _INFO_URL_TEMPLATE = "{base_url}/info/{namespace}/{key}"
 # below, per-counter, independent of whether the rest of this poll
 # succeeds -- see the module docstring.
 _last_known_values: dict[str, int | float] = {}
-
-
-def _validate_max_counters(value: object) -> int:
-    """Same convention as github.py's ``_validate_max_repos``: a plain int
-    (bools are int subclasses but not counts), at least 1."""
-    if isinstance(value, bool) or not isinstance(value, int):
-        raise ValueError(f"max must be an int, got {value!r}")
-    if value < 1:
-        raise ValueError(f"max must be at least 1, got {value!r}")
-    return value
 
 
 def _validate_base_url(config: dict) -> str:
@@ -178,7 +164,9 @@ def _validate_counters(config: dict) -> list[dict]:
     if not isinstance(counters, list):
         raise ValueError(f"counters must be a list, got {type(counters).__name__}")
 
-    max_counters = _validate_max_counters(config.get("max", _DEFAULT_MAX_COUNTERS))
+    max_counters = _helpers.validate_max(
+        config.get("max", _DEFAULT_MAX_COUNTERS), "max"
+    )
 
     validated: list[dict] = []
     seen_keys: set[str] = set()
@@ -187,7 +175,7 @@ def _validate_counters(config: dict) -> list[dict]:
             raise ValueError(f"counters entry must be a mapping, got {entry!r}")
 
         key = entry.get("key")
-        if not isinstance(key, str) or not _KEY_PATTERN.fullmatch(key):
+        if not isinstance(key, str) or not _helpers.KEY_SLUG.fullmatch(key):
             raise ValueError(f"counters entry key {key!r} must match [a-z0-9_-]+")
         if key in seen_keys:
             raise ValueError(f"counters key {key!r} is a duplicate")

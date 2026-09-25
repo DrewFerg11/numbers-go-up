@@ -81,6 +81,58 @@ class TestValidatePluginContract:
             metrics = plugins.validate_plugin_contract("no_metrics", module)
         assert metrics is None
 
+    def test_non_string_key_is_rejected_without_crashing(self, caplog):
+        # A malformed user plugin's METRICS = {1: {...}} used to crash
+        # discovery for the whole app with AttributeError ('int' object has
+        # no attribute 'startswith') instead of being logged and skipped.
+        module = ModuleType("bad")
+        module.collect = lambda config, http: {}
+        module.METRICS = {1: {"kind": "gauge", "label": "X", "unit": ""}}
+        with caplog.at_level(logging.WARNING):
+            metrics = plugins.validate_plugin_contract("bad", module)
+        assert metrics is None
+
+    def test_unhashable_kind_is_rejected_without_crashing(self, caplog):
+        # {"kind": ["gauge"]} used to crash with TypeError (unhashable type:
+        # 'list') at the VALID_METRIC_KINDS membership test.
+        module = ModuleType("bad")
+        module.collect = lambda config, http: {}
+        module.METRICS = {"bad.x": {"kind": ["gauge"], "label": "X", "unit": ""}}
+        with caplog.at_level(logging.WARNING):
+            metrics = plugins.validate_plugin_contract("bad", module)
+        assert metrics is None
+
+    def test_missing_label_is_rejected(self, caplog):
+        module = ModuleType("bad")
+        module.collect = lambda config, http: {}
+        module.METRICS = {"bad.x": {"kind": "gauge", "unit": ""}}
+        with caplog.at_level(logging.WARNING):
+            metrics = plugins.validate_plugin_contract("bad", module)
+        assert metrics is None
+
+    def test_empty_label_is_rejected(self, caplog):
+        module = ModuleType("bad")
+        module.collect = lambda config, http: {}
+        module.METRICS = {"bad.x": {"kind": "gauge", "label": "", "unit": ""}}
+        with caplog.at_level(logging.WARNING):
+            metrics = plugins.validate_plugin_contract("bad", module)
+        assert metrics is None
+
+    def test_missing_unit_is_rejected(self, caplog):
+        module = ModuleType("bad")
+        module.collect = lambda config, http: {}
+        module.METRICS = {"bad.x": {"kind": "gauge", "label": "X"}}
+        with caplog.at_level(logging.WARNING):
+            metrics = plugins.validate_plugin_contract("bad", module)
+        assert metrics is None
+
+    def test_empty_unit_is_accepted(self):
+        module = ModuleType("ok")
+        module.collect = lambda config, http: {}
+        module.METRICS = {"ok.x": {"kind": "gauge", "label": "X", "unit": ""}}
+        metrics = plugins.validate_plugin_contract("ok", module)
+        assert metrics == module.METRICS
+
     def test_pattern_key_with_one_whole_segment_placeholder_is_accepted(self):
         module = ModuleType("mw")
         module.collect = lambda config, http: {}
@@ -475,6 +527,56 @@ class TestDiscoverPlugins:
         loaded = plugins.discover_plugins(_config())
 
         assert loaded == []
+
+
+class TestDiscover:
+    """:func:`discover` is the single-import pass discover_plugins() and
+    discover_plugin_names() are both now thin filters over."""
+
+    def test_returns_both_enabled_and_disabled_plugins_with_the_flag_set(self):
+        config = _config(
+            plugins_config={
+                "valid": {"enabled": True},
+                "bad_kind": {"enabled": False},
+            }
+        )
+
+        found = {
+            p.name: p.enabled
+            for p in plugins.discover(config, builtin_dir=FIXTURES_DIR)
+        }
+
+        # bad_kind is contract-invalid regardless of "enabled", so it's not
+        # in the result at all -- only valid.
+        assert found == {"valid": True}
+
+    def test_discover_plugins_and_discover_plugin_names_agree_with_discover(self):
+        config = _config(plugins_config={"valid": {"enabled": True}})
+
+        all_plugins = plugins.discover(config, builtin_dir=FIXTURES_DIR)
+        enabled = plugins.discover_plugins(config, builtin_dir=FIXTURES_DIR)
+        names = plugins.discover_plugin_names(config, builtin_dir=FIXTURES_DIR)
+
+        assert [p.name for p in all_plugins] == names
+        assert [p.name for p in all_plugins if p.enabled] == [p.name for p in enabled]
+
+    def test_a_contract_check_that_raises_is_logged_and_skipped(
+        self, caplog, monkeypatch
+    ):
+        # Defense in depth: validate_plugin_contract type-checks its inputs,
+        # but discover() must survive it raising anyway, rather than take
+        # every other plugin's discovery down too.
+        def _boom(name, module):
+            raise RuntimeError("boom")
+
+        monkeypatch.setattr(plugins, "validate_plugin_contract", _boom)
+        config = _config(plugins_config={"valid": {"enabled": True}})
+
+        with caplog.at_level(logging.ERROR):
+            found = plugins.discover(config, builtin_dir=FIXTURES_DIR)
+
+        assert found == []
+        assert "contract check raised unexpectedly" in caplog.text
 
 
 class TestNonMappingPluginConfigEntry:

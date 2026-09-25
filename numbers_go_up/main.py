@@ -20,7 +20,7 @@ from numbers_go_up import (
 )
 from numbers_go_up.api import HealthResponse
 from numbers_go_up.config import load_config
-from numbers_go_up.plugins import discover_plugin_names, discover_plugins
+from numbers_go_up.plugins import LoadedPlugin, discover
 
 ENV_LOG_LEVEL = "NGU_LOG_LEVEL"
 LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s: %(message)s"
@@ -93,28 +93,40 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     migrate.run_migrations(config["storage"]["path"])
 
     app.state.config = config
-    # Computed once at startup and read by the API routes rather than
-    # recomputed per request -- discover_plugins() only returns *enabled*
-    # plugins, so this covers exactly the ones the stale rule needs an
-    # interval for. build_scheduler() below discovers again to build its
-    # jobs; the duplicate work happens once at startup, not per request.
-    enabled_plugins = discover_plugins(config)
+    # One discovery pass for the whole process: every consumer below
+    # (plugin_intervals/plugin_metrics, plugin_names, the scheduler, MQTT,
+    # milestones) derives from this same list instead of calling discover()
+    # again -- each call re-imports every plugin file (module-level code,
+    # including user plugins from NGU_PLUGIN_DIR) from scratch, which used
+    # to mean three separate module objects per plugin (one per call site),
+    # splitting a plugin's own module-level state across them and logging
+    # every contract-violation warning three times.
+    all_plugins = discover(config)
+    enabled_plugins = [
+        LoadedPlugin(
+            name=p.name,
+            module=p.module,
+            metrics=p.metrics,
+            interval_seconds=p.interval_seconds,
+            config=p.config,
+            source=p.source,
+        )
+        for p in all_plugins
+        if p.enabled
+    ]
+    # Read by the API routes rather than recomputed per request --
+    # enabled_plugins covers exactly the ones the stale rule needs an
+    # interval for.
     app.state.plugin_intervals = {
         plugin.name: plugin.interval_seconds for plugin in enabled_plugins
     }
     # The dashboard overview needs each plugin's METRICS to tell a pattern
-    # series (e.g. per-model) from a static one -- same one-time discovery,
-    # no extra module execution per request.
+    # series (e.g. per-model) from a static one.
     app.state.plugin_metrics = {
         plugin.name: plugin.metrics for plugin in enabled_plugins
     }
-    # /api/plugins reports on every discovered plugin, enabled or not, but
-    # must not discover per request: discovery executes every plugin module
-    # (module-level code, including user plugins from NGU_PLUGIN_DIR), and
-    # a mid-flight file edit would otherwise let the endpoint diverge from
-    # the scheduler's startup snapshot. Same one-time scan, read by the
-    # route off app.state.
-    app.state.plugin_names = discover_plugin_names(config)
+    # /api/plugins reports on every discovered plugin, enabled or not.
+    app.state.plugin_names = [p.name for p in all_plugins]
 
     shared_http_client = http.build_client()
 
@@ -149,6 +161,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         http=shared_http_client,
         publisher=mqtt_publisher,
         milestone_evaluator=milestone_evaluator,
+        enabled_plugins=enabled_plugins,
     )
     app.state.scheduler = job_scheduler
     job_scheduler.start()

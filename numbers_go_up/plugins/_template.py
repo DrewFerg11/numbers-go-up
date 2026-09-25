@@ -51,8 +51,3 @@ def collect(config: dict, http) -> dict[str, int | float | dict]:
     again reactivates it.
     """
     raise NotImplementedError
-
-
-def health(config: dict) -> bool:  # optional; not called by the scheduler yet
-    """Optional: cheap reachability/config check, no plugin-specific value."""
-    raise NotImplementedError

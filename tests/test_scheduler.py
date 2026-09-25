@@ -579,6 +579,37 @@ class TestBuildScheduler:
             ["plugin:valid", scheduler.MAINTENANCE_JOB_ID]
         )
 
+    def test_passing_enabled_plugins_skips_internal_rediscovery(
+        self, tmp_path, monkeypatch
+    ):
+        # main.lifespan discovers once and hands the enabled-plugin list to
+        # build_scheduler directly -- it must not re-import every plugin
+        # file by calling discover_plugins() itself when given one.
+        def _boom(*a, **k):
+            raise AssertionError("discover_plugins must not be called")
+
+        monkeypatch.setattr(scheduler, "discover_plugins", _boom)
+
+        config = self._config(tmp_path, plugins_config={"valid": {"enabled": True}})
+        enabled_plugins = [
+            plugins.LoadedPlugin(
+                name="valid",
+                module=ModuleType("valid"),
+                metrics={"valid.thing.count": {"kind": "cumulative"}},
+                interval_seconds=1800,
+                config={"enabled": True},
+                source="built-in",
+            )
+        ]
+
+        job_scheduler = scheduler.build_scheduler(
+            config, enabled_plugins=enabled_plugins
+        )
+
+        assert sorted(job.id for job in job_scheduler.get_jobs()) == sorted(
+            ["plugin:valid", scheduler.MAINTENANCE_JOB_ID]
+        )
+
     def test_job_has_max_instances_1_and_coalesce_true(self, tmp_path):
         config = self._config(tmp_path, plugins_config={"valid": {"enabled": True}})
 
