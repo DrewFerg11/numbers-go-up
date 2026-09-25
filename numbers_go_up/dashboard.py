@@ -18,17 +18,9 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 
-from numbers_go_up import storage
-from numbers_go_up.api import (
-    DEFAULT_UNHEALTHY_FAILURES,
-    RANGE_HOURS,
-    VALID_RANGES,
-    _is_stale,
-    _parse_attrs,
-    _plugin_statuses,
-)
-from numbers_go_up.http import BLOCKED_ERROR_PREFIX
+from numbers_go_up import queries, storage
 from numbers_go_up.plugins import is_pattern_key, resolve_metric
+from numbers_go_up.queries import VALID_RANGES, RangeKey
 
 logger = logging.getLogger(__name__)
 
@@ -64,14 +56,6 @@ def _format_number(value: float) -> float | int:
     return int(value) if value == int(value) else value
 
 
-def _format_iso(ts: int | None) -> str | None:
-    if ts is None:
-        return None
-    from datetime import UTC, datetime
-
-    return datetime.fromtimestamp(ts, tz=UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-
 def _bucket_spark(
     points: list[tuple[int, float]],
     start: int,
@@ -102,16 +86,6 @@ def _bucket_spark(
     return result
 
 
-def _range_bounds(range_key: str, now: int, earliest: int | None) -> int:
-    """The ``start`` timestamp for ``range_key``. For ``ALL``, that's the
-    earliest first-sample across the included series, or ``now`` if there
-    are none yet.
-    """
-    if range_key == "ALL":
-        return earliest if earliest is not None else now
-    return now - RANGE_HOURS[range_key] * 3600
-
-
 def _plugin_metrics_for(
     request: Request, plugin_name: str
 ) -> dict[str, dict[str, Any]]:
@@ -131,31 +105,17 @@ def _build_metric(
     if row["last_value"] is None:
         return None
 
-    if range_key == "ALL":
-        start = row["first_seen"]
-    else:
-        start = now - RANGE_HOURS[range_key] * 3600
-
-    open_value = stats["open"]
+    start = queries.range_start(range_key, now, row["first_seen"])
     value = row["last_value"]
-    if open_value is None:
-        open_value = value
-
+    open_value = value if stats["open"] is None else stats["open"]
     points = list(stats["points"])
-
-    high = stats["high"] if stats["high"] is not None else value
-    low = stats["low"] if stats["low"] is not None else value
-    high = max(high, value)
-    low = min(low, value)
-
-    change = value - open_value
-    change_pct = None if open_value == 0 else round((change / open_value) * 100, 2)
-    span_days = max((now - start) / 86400, 1)
-    avg_per_day = round(change / span_days, 2)
+    summary = queries.summarize(
+        stats["open"], value, stats["high"], stats["low"], start, now
+    )
 
     interval = intervals.get(row["plugin_name"], default_interval)
-    stale = _is_stale(row["plugin_name"], interval, now, last_ok)
-    stale_since = _format_iso(last_ok.get(row["plugin_name"]))
+    stale = queries.is_stale(row["plugin_name"], interval, now, last_ok)
+    stale_since = queries.iso(last_ok.get(row["plugin_name"]))
 
     metrics_for_plugin = _plugin_metrics_for(request, row["plugin_name"])
     resolved = resolve_metric(row["metric_key"], metrics_for_plugin)
@@ -169,16 +129,16 @@ def _build_metric(
         "kind": row["kind"],
         "unit": row["unit"],
         "icon": row["icon"],
-        "attrs": _parse_attrs(row["attrs"]),
+        "attrs": queries.parse_attrs(row["attrs"]),
         "value": value,
         "open": open_value,
-        "change": change,
-        "change_pct": change_pct,
-        "high": high,
-        "low": low,
-        "avg_per_day": avg_per_day,
+        "change": summary["change"],
+        "change_pct": summary["change_pct"],
+        "high": summary["high"],
+        "low": summary["low"],
+        "avg_per_day": summary["avg_per_day"],
         "changes": stats["changes"],
-        "updated": _format_iso(row["last_seen"]),
+        "updated": queries.iso(row["last_seen"]),
         "stale": stale,
         "stale_since": stale_since,
         "spark": _bucket_spark(points, start, now, open_value, value),
@@ -231,7 +191,7 @@ def build_overview(request: Request, range_key: str) -> dict[str, Any]:
         (row["first_seen"] for row in rows if row["last_value"] is not None),
         default=None,
     )
-    start = _range_bounds(range_key, now, earliest)
+    start = queries.range_start(range_key, now, earliest)
 
     active_rows = [row for row in rows if row["last_value"] is not None]
     starts_by_id = {
@@ -268,19 +228,19 @@ def build_overview(request: Request, range_key: str) -> dict[str, Any]:
     metrics_by_key = {metric["key"]: metric for metric in metrics}
     pinned = _resolve_pinned(config, metrics_by_key)
 
-    changes = storage.recent_changes(db_path, RECENT_CHANGES_LIMIT)
+    changes = storage.recent_changes(db_path, RECENT_CHANGES_LIMIT, now)
 
     return {
-        "timestamp": _format_iso(now),
+        "timestamp": queries.iso(now),
         "range": range_key,
-        "start": _format_iso(start),
+        "start": queries.iso(start),
         "pinned": pinned,
-        "plugins": _plugin_statuses(request),
+        "plugins": queries.plugin_statuses(request),
         "metrics": metrics,
         "recent_changes": [
             {
                 "key": row["metric_key"],
-                "ts": _format_iso(row["ts"]),
+                "ts": queries.iso(row["ts"]),
                 "value": row["value"],
                 "change": row["change"],
             }
@@ -298,15 +258,10 @@ def build_overview(request: Request, range_key: str) -> dict[str, Any]:
 # documented API alongside api.py's tagged, schema'd routes.
 @router.get("/api/stats/overview", include_in_schema=False)
 def stats_overview(
-    request: Request, range: str = Query(DEFAULT_RANGE)
+    request: Request,
+    range: RangeKey = Query(DEFAULT_RANGE),  # noqa: B008
 ) -> dict[str, Any]:
-    range_key = range
-    if range_key not in VALID_RANGES:
-        raise HTTPException(
-            status_code=422,
-            detail=f"range must be one of {VALID_RANGES}, got {range_key!r}",
-        )
-    return build_overview(request, range_key)
+    return build_overview(request, range)
 
 
 @router.get("/", response_class=HTMLResponse, include_in_schema=False)
@@ -325,8 +280,6 @@ def dashboard_index(
             "range": range_key,
             "ranges": VALID_RANGES,
             "any_enabled": any_enabled,
-            "unhealthy_failure_threshold": DEFAULT_UNHEALTHY_FAILURES,
-            "blocked_error_prefix": BLOCKED_ERROR_PREFIX,
         },
     )
 
@@ -375,22 +328,16 @@ def metric_detail(
         raise HTTPException(status_code=404, detail=f"Unknown metric {metric_key!r}")
 
     now = int(time.time())
-    if range_key == "ALL":
-        start = row["first_seen"]
-    else:
-        start = now - RANGE_HOURS[range_key] * 3600
+    start = queries.range_start(range_key, now, row["first_seen"])
     stats = storage.range_stats(db_path, row["id"], start, now)
 
-    open_value = stats["open"] if stats["open"] is not None else row["last_value"]
     value = row["last_value"]
-    change = value - open_value
-    change_pct = None if open_value == 0 else round((change / open_value) * 100, 2)
+    open_value = value if stats["open"] is None else stats["open"]
+    summary = queries.summarize(
+        stats["open"], value, stats["high"], stats["low"], start, now
+    )
 
     points = list(stats["points"])
-    values = [v for _, v in points] or [value]
-    high = max(max(values), value)
-    span_days = max((now - start) / 86400, 1)
-    avg_per_day = round((value - open_value) / span_days, 2)
     best_day_change = None
     if len(points) >= 2:
         by_day: dict[int, float] = {}
@@ -411,42 +358,40 @@ def metric_detail(
     default_interval = config["poll"]["default_interval"]
     interval = intervals.get(row["plugin_name"], default_interval)
     last_ok = storage.last_ok_runs(db_path)
-    stale = _is_stale(row["plugin_name"], interval, now, last_ok)
-    stale_since = _format_iso(last_ok.get(row["plugin_name"]))
+    stale = queries.is_stale(row["plugin_name"], interval, now, last_ok)
+    stale_since = queries.iso(last_ok.get(row["plugin_name"]))
 
-    attrs = _parse_attrs(row["attrs"])
+    attrs = queries.parse_attrs(row["attrs"])
     recorded = storage.recorded_changes(
         db_path, row["id"], start, now, RECORDED_CHANGES_LIMIT
     )
 
+    # change/change_pct/changes/kind/the whole attrs dict aren't rendered by
+    # detail.html (it only uses attrs.url, computed below) -- dropped from
+    # this dict rather than kept alongside detail.js's own recompute (#128).
     metric = {
         "key": row["metric_key"],
         "plugin": row["plugin_name"],
         "pattern": pattern,
         "breadcrumb_group": _breadcrumb_group(pattern),
         "label": row["label"],
-        "kind": row["kind"],
         "unit": row["unit"],
-        "attrs": attrs,
         "url": _safe_url(attrs),
         "value": _format_number(value),
         "open": _format_number(open_value),
-        "change": _format_number(change),
-        "change_pct": change_pct,
-        "high": _format_number(high),
-        "avg_per_day": avg_per_day,
+        "high": _format_number(summary["high"]),
+        "avg_per_day": summary["avg_per_day"],
         "best_day_change": (
             None if best_day_change is None else _format_number(best_day_change)
         ),
-        "changes": stats["changes"],
-        "first_seen": _format_iso(row["first_seen"]),
-        "updated": _format_iso(row["last_seen"]),
+        "first_seen": queries.iso(row["first_seen"]),
+        "updated": queries.iso(row["last_seen"]),
         "stale": stale,
         "stale_since": stale_since,
         "active": bool(row["active"]),
         "recorded_changes": [
             {
-                "ts": _format_iso(r["ts"]),
+                "ts": queries.iso(r["ts"]),
                 "value": _format_number(r["value"]),
                 "change": _format_number(r["change"]),
             }

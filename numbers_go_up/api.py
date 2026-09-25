@@ -9,16 +9,16 @@ recomputed per request or imported as a module-level global.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import time
-from datetime import UTC, datetime
 from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException, Query, Request, Response
 from pydantic import BaseModel, ValidationError
 
-from numbers_go_up import scheduler, storage
-from numbers_go_up.http import BLOCKED_ERROR_PREFIX
+from numbers_go_up import queries, scheduler, storage
+from numbers_go_up.queries import RangeKey
 
 router = APIRouter(prefix="/api")
 # Mounted at the root next to /health, not under /api: it's for uptime
@@ -101,6 +101,7 @@ class PluginStatus(BaseModel):
     name: str
     status: PluginStatusName
     enabled: bool
+    health: queries.PluginHealth
     last_poll: str | None
     next_poll: str | None
     consecutive_failures: int
@@ -178,31 +179,9 @@ class IntegrationsResponse(BaseModel):
     milestones: MilestoneStatus
 
 
-# Matches the dashboard footer's "red" (Failure Handling #2).
-DEFAULT_UNHEALTHY_FAILURES = 3
-
 # A full year of one series was measured at 4.9ms, so this cap is about
 # keeping responses reasonable, not performance.
 MAX_HOURS = 8760
-
-# Range bounds in hours, shared by /api/stats/overview, /api/stats/history,
-# and /m/{key} -- the same named ranges everywhere in the app. ALL has
-# no fixed bound: each series starts at its own first sample.
-#
-# 1H/6H/12H are here temporarily for testing -- more frequent checking while
-# the app is being shaken out. Revisit per issue #116 (button row vs.
-# dropdown) once that settles down.
-RANGE_HOURS = {
-    "1H": 1,
-    "6H": 6,
-    "12H": 12,
-    "1D": 24,
-    "1W": 24 * 7,
-    "1M": 24 * 30,
-    "3M": 24 * 90,
-    "1Y": 24 * 365,
-}
-VALID_RANGES = (*RANGE_HOURS, "ALL")
 
 # Change-bar bucket width in seconds, keyed by named range: 1H/6H->5m,
 # 12H->15m, 1D->1h, 1W->6h, 1M/3M->1d, 1Y/ALL->1w, per the big chart's
@@ -223,8 +202,7 @@ BAR_BUCKET_SECONDS = {
 def _bar_bucket_seconds(range_key: str | None, hours: int | None) -> int:
     """The change-bar bucket width for this request: exact per
     :data:`BAR_BUCKET_SECONDS` when a named ``range`` was given, else the
-    same table applied to the closest range by span for a legacy ``hours``
-    call.
+    same table applied to the closest range by span for an ``hours`` call.
     """
     if range_key is not None:
         return BAR_BUCKET_SECONDS[range_key]
@@ -271,37 +249,6 @@ def _bucket_changes(
     return bars
 
 
-def _iso(ts: int | None) -> str | None:
-    if ts is None:
-        return None
-    return datetime.fromtimestamp(ts, tz=UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-
-def _is_stale(
-    plugin_name: str,
-    interval_seconds: int,
-    now: int,
-    last_ok: dict[str, int],
-) -> bool:
-    """A series is stale when its plugin has had no successful poll within
-    3x its interval -- exactly Home Assistant's own ``expire_after`` rule
-    (mqtt.py's ``_expire_after``), per the README and #133's decision.
-
-    Not "the plugin's newest run failed": for a flat, store-on-change
-    series that only writes on the heartbeat, that older rule collapsed to
-    just the newest-run check, so a single failed poll could mark it stale
-    for up to a full heartbeat interval even though HA still saw it as
-    fresh.
-
-    ``last_ok`` is :func:`storage.last_ok_runs`'s ``{plugin_name:
-    finished_at}`` result -- one grouped query shared across every series
-    in a request (the dashboard overview, ``/api/stats/latest``) instead of
-    one query per series.
-    """
-    finished_at = last_ok.get(plugin_name)
-    return finished_at is None or now - finished_at > 3 * interval_seconds
-
-
 @router.get(
     "/stats/latest",
     tags=["stats"],
@@ -309,6 +256,11 @@ def _is_stale(
     response_model=StatsLatestResponse,
 )
 def stats_latest(request: Request) -> dict[str, Any]:
+    """Batched (#128): one connection for the whole request rather than
+    2-3 fresh connections (5 PRAGMAs each) per series -- with 500 active
+    series this endpoint was measurably slower than /api/stats/overview,
+    which does far more work but was already batched (#91).
+    """
     config = request.app.state.config
     db_path = config["storage"]["path"]
     default_interval = config["poll"]["default_interval"]
@@ -316,16 +268,22 @@ def stats_latest(request: Request) -> dict[str, Any]:
     now = int(time.time())
     last_ok = storage.last_ok_runs(db_path)
 
+    rows = [
+        row for row in storage.list_series(db_path) if row["last_value"] is not None
+    ]
+    series_ids = [row["id"] for row in rows]
+
+    with contextlib.closing(storage.connect(db_path)) as conn:
+        values_1h = storage.values_as_of_bulk(conn, series_ids, now - 3600)
+        values_24h = storage.values_as_of_bulk(conn, series_ids, now - 86400)
+
     metrics: dict[str, Any] = {}
-    for row in storage.list_series(db_path):
-        if row["last_value"] is None:
-            continue
-
+    for row in rows:
         interval = intervals.get(row["plugin_name"], default_interval)
-        stale = _is_stale(row["plugin_name"], interval, now, last_ok)
+        stale = queries.is_stale(row["plugin_name"], interval, now, last_ok)
 
-        value_1h = storage.value_as_of(db_path, row["id"], now - 3600)
-        value_24h = storage.value_as_of(db_path, row["id"], now - 86400)
+        value_1h = values_1h.get(row["id"])
+        value_24h = values_24h.get(row["id"])
 
         metrics[row["metric_key"]] = {
             "value": row["last_value"],
@@ -333,13 +291,13 @@ def stats_latest(request: Request) -> dict[str, Any]:
             "kind": row["kind"],
             "unit": row["unit"],
             "icon": row["icon"],
-            "updated": _iso(row["last_seen"]),
+            "updated": queries.iso(row["last_seen"]),
             "stale": stale,
             "delta_1h": None if value_1h is None else row["last_value"] - value_1h,
             "delta_24h": None if value_24h is None else row["last_value"] - value_24h,
         }
 
-    return {"timestamp": _iso(now), "metrics": metrics}
+    return {"timestamp": queries.iso(now), "metrics": metrics}
 
 
 @router.get(
@@ -352,17 +310,18 @@ def stats_history(
     request: Request,
     metric: str,
     hours: int | None = Query(None, gt=0, le=MAX_HOURS),
-    range: str | None = Query(None),
+    # ruff's Query-in-default exemption only recognizes an inline
+    # Literal[...], not an imported type alias -- RangeKey is exactly that
+    # alias (queries.py), kept as the one place its members are listed.
+    range: RangeKey | None = Query(None),  # noqa: B008
 ) -> dict[str, Any]:
+    # range's Literal type (#128) already gets FastAPI to 422 an invalid
+    # value -- and document it as an enum on /docs -- before this handler
+    # ever runs; only the hours/range interaction needs a manual check.
     if (hours is None) == (range is None):
         raise HTTPException(
             status_code=422,
             detail="Exactly one of `hours` or `range` is required",
-        )
-    if range is not None and range not in VALID_RANGES:
-        raise HTTPException(
-            status_code=422,
-            detail=f"range must be one of {VALID_RANGES}, got {range!r}",
         )
 
     db_path = request.app.state.config["storage"]["path"]
@@ -377,13 +336,12 @@ def stats_history(
     now = int(time.time())
     if hours is not None:
         start = now - hours * 3600
-    elif range == "ALL":
-        # Everything from the series' first sample: history() already
-        # returns nothing before whatever samples exist, so a start of 0
-        # (long before any real timestamp) is exactly "from the beginning".
-        start = 0
     else:
-        start = now - RANGE_HOURS[range] * 3600
+        # ALL: 0 (long before any real timestamp), not a query for the
+        # series' first_seen -- history() already returns nothing before
+        # whatever samples exist, so 0 is exactly "from the beginning"
+        # without the extra lookup.
+        start = queries.range_start(range, now, earliest=0)
 
     points = storage.history(db_path, series["id"], start, now)
     bucket_seconds = _bar_bucket_seconds(range, hours)
@@ -428,29 +386,6 @@ def stats_delta(
     }
 
 
-def _parse_attrs(attrs_json: str | None) -> dict[str, Any]:
-    """Best-effort parse of ``metric_series.attrs``.
-
-    The column is ``NOT NULL DEFAULT '{}'`` and every writer
-    (``get_or_create_series``) validates before storing, so this should
-    never actually be invalid JSON -- but this is the one endpoint that
-    reports on every series that ever existed, including ones no plugin
-    will ever rewrite, so a corrupt row (a hand-edited DB, a bug in some
-    future writer) degrades to an empty dict rather than 500ing the whole
-    catalogue. That includes valid JSON that isn't an object ("5", "[]") --
-    ``json.loads`` accepts those without complaint, and MetricCatalogueEntry
-    (#92) requires a dict, so passing one through would 500 every row in
-    the response, not just the corrupt one.
-    """
-    if not attrs_json:
-        return {}
-    try:
-        parsed = json.loads(attrs_json)
-    except json.JSONDecodeError:
-        return {}
-    return parsed if isinstance(parsed, dict) else {}
-
-
 @router.get(
     "/metrics",
     tags=["metrics"],
@@ -469,88 +404,13 @@ def list_metrics(request: Request) -> dict[str, Any]:
             "unit": row["unit"],
             "icon": row["icon"],
             "last_value": row["last_value"],
-            "last_seen": _iso(row["last_seen"]),
+            "last_seen": queries.iso(row["last_seen"]),
             "active": bool(row["active"]),
-            "attrs": _parse_attrs(row["attrs"]),
+            "attrs": queries.parse_attrs(row["attrs"]),
         }
         for row in storage.list_all_series(db_path)
     ]
     return {"metrics": metrics}
-
-
-def _plugin_statuses(request: Request) -> list[dict[str, Any]]:
-    """One status report per discovered plugin, shared by /api/plugins and
-    /health/plugins so the two can never disagree."""
-    config = request.app.state.config
-    db_path = config["storage"]["path"]
-    # All read off app.state, not module-level globals, so a test can
-    # build an app with no scheduler running and no plugin discovery at
-    # all (main.lifespan prepares both once at startup).
-    job_scheduler = getattr(request.app.state, "scheduler", None)
-    plugin_names = getattr(request.app.state, "plugin_names", [])
-    plugins_config = config.get("plugins") or {}
-
-    plugins = []
-    for name in plugin_names:
-        plugin_config = plugins_config.get(name)
-        enabled = isinstance(plugin_config, dict) and bool(plugin_config.get("enabled"))
-
-        last_poll = None
-        next_poll = None
-        last_error = None
-
-        if not enabled:
-            status = "disabled"
-        else:
-            if job_scheduler is not None:
-                job = job_scheduler.get_job(f"plugin:{name}")
-                if job is not None and job.next_run_time is not None:
-                    next_poll = _iso(int(job.next_run_time.timestamp()))
-
-            # The newest *finished* run, not latest_run(): start_run()
-            # inserts every run as status='error' (the _RUN_IN_PROGRESS
-            # sentinel) and only finish_run() overwrites it, so reading the
-            # newest row outright reports a healthy in-flight poll as an
-            # error -- the trap _is_stale() already avoids via
-            # latest_finished_run().
-            run = storage.latest_finished_run(db_path, name)
-            if run is None:
-                status = "pending"
-            else:
-                last_poll = _iso(run["started_at"])
-                if run["status"] == "ok":
-                    status = "ok"
-                else:
-                    last_error = run["error"]
-                    # A 403 is recorded as status='error' (the CHECK
-                    # constraint allows only ok/error) with the Blocked
-                    # prefix. Surface it as its own state: a source refusing
-                    # this client needs a different fix than a broken plugin.
-                    blocked = (last_error or "").startswith(BLOCKED_ERROR_PREFIX)
-                    status = "blocked" if blocked else "error"
-
-            # A poll currently in flight is liveness, not an error: report
-            # it as its own state, keeping last_poll/last_error from the
-            # newest finished run so the endpoint doesn't flip
-            # ok -> error -> ok as runs start and finish.
-            newest = storage.latest_run(db_path, name)
-            if newest is not None and newest["finished_at"] is None:
-                status = "polling"
-
-        plugins.append(
-            {
-                "name": name,
-                "status": status,
-                "enabled": enabled,
-                "last_poll": last_poll,
-                "next_poll": next_poll,
-                "consecutive_failures": storage.consecutive_failures(db_path, name),
-                "last_error": last_error,
-                "metrics": storage.metric_keys_for_plugin(db_path, name),
-            }
-        )
-
-    return plugins
 
 
 @router.get(
@@ -560,7 +420,7 @@ def _plugin_statuses(request: Request) -> list[dict[str, Any]]:
     response_model=ListPluginsResponse,
 )
 def list_plugins(request: Request) -> dict[str, Any]:
-    return {"plugins": _plugin_statuses(request)}
+    return {"plugins": queries.plugin_statuses(request)}
 
 
 def _unhealthy_reason(plugin: dict[str, Any], failure_threshold: int) -> str | None:
@@ -573,8 +433,7 @@ def _unhealthy_reason(plugin: dict[str, Any], failure_threshold: int) -> str | N
     in-flight or interrupted run (see its docstring), so there's no
     "currently polling" adjustment to make here.
     """
-    last_error = plugin["last_error"]
-    if last_error is not None and last_error.startswith(BLOCKED_ERROR_PREFIX):
+    if queries.is_blocked(plugin["last_error"]):
         return "blocked"
 
     finished_failures = plugin["consecutive_failures"]
@@ -615,7 +474,7 @@ def integrations(request: Request) -> dict[str, Any]:
     if job_scheduler is not None:
         job = job_scheduler.get_job(scheduler.MAINTENANCE_JOB_ID)
         if job is not None and job.next_run_time is not None:
-            next_run = _iso(int(job.next_run_time.timestamp()))
+            next_run = queries.iso(int(job.next_run_time.timestamp()))
 
     publisher = getattr(request.app.state, "mqtt_publisher", None)
     mqtt_status = (
@@ -648,7 +507,7 @@ def integrations(request: Request) -> dict[str, Any]:
         {
             "metric": item["metric"],
             "threshold": item["threshold"],
-            "since": _iso(int(item["since"])) if item.get("since") else None,
+            "since": queries.iso(int(item["since"])) if item.get("since") else None,
         }
         for item in milestone_status.get("pending", [])
     ]
@@ -662,14 +521,14 @@ def integrations(request: Request) -> dict[str, Any]:
             "enabled": mqtt_status["enabled"],
             "connected": mqtt_status["connected"],
             "broker": mqtt_status["broker"],
-            "last_publish": _iso(int(last_publish)) if last_publish else None,
+            "last_publish": queries.iso(int(last_publish)) if last_publish else None,
             "last_error": mqtt_status["last_error"],
         },
         "milestones": {
             "enabled": milestone_status["enabled"],
             "rules": milestone_status["rules"],
             "pending": pending,
-            "last_sent": _iso(int(last_sent)) if last_sent else None,
+            "last_sent": queries.iso(int(last_sent)) if last_sent else None,
             "last_error": milestone_status["last_error"],
         },
     }
@@ -684,7 +543,7 @@ def integrations(request: Request) -> dict[str, Any]:
 def plugins_health(
     request: Request,
     response: Response,
-    failures: int = Query(DEFAULT_UNHEALTHY_FAILURES, ge=1),
+    failures: int = Query(queries.DEFAULT_UNHEALTHY_FAILURES, ge=1),
 ) -> dict[str, Any]:
     """Plugin health for uptime monitors: 200 when every enabled plugin is
     polling successfully, 503 when any is blocked or has failed ``failures``
@@ -695,7 +554,7 @@ def plugins_health(
     being down is no reason for Docker to restart the container.
     """
     unhealthy = []
-    for plugin in _plugin_statuses(request):
+    for plugin in queries.plugin_statuses(request):
         if not plugin["enabled"]:
             continue
         reason = _unhealthy_reason(plugin, failures)

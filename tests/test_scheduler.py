@@ -469,9 +469,12 @@ class TestReviewFixes:
         assert result.status == "error"
         assert result.samples_written == 0
 
-    def test_storage_failure_mid_loop_is_contained_and_samples_stay_honest(
-        self, db_path
-    ):
+    def test_storage_failure_mid_batch_is_contained_and_all_or_nothing(self, db_path):
+        # #128: store_poll batches a whole poll's keys into one connection
+        # and one transaction, so a mid-batch storage failure (sqlite
+        # contention, a full disk) rolls back the whole poll -- not just
+        # the one key that raised. This replaces the old per-key
+        # partial-write-stays-written behavior with all-or-nothing.
         module = ModuleType("flaky_storage")
         module.METRICS = {
             "flaky_storage.a": {"kind": "gauge", "label": "A", "unit": ""},
@@ -479,15 +482,16 @@ class TestReviewFixes:
         }
         order = iter(["a", "b"])
 
-        real_get_or_create = storage.get_or_create_series
-        real_record_sample = storage.record_sample
+        real_record_sample_conn = storage._record_sample_conn
 
-        def flaky_record_sample(db, series_id, ts, value, heartbeat_seconds):
+        def flaky_record_sample_conn(conn, series_id, ts, value, heartbeat_seconds):
             # The first write succeeds; the second blows up, simulating
             # sqlite contention (busy_timeout expiry) or a full disk.
             if next(order) == "b":
                 raise sqlite3.OperationalError("database is locked")
-            return real_record_sample(db, series_id, ts, value, heartbeat_seconds)
+            return real_record_sample_conn(
+                conn, series_id, ts, value, heartbeat_seconds
+            )
 
         def collect(config, http):
             return {"flaky_storage.a": 1, "flaky_storage.b": 2}
@@ -495,10 +499,7 @@ class TestReviewFixes:
         module.collect = collect
         plugin = _plugin_from_module("flaky_storage", module, module.METRICS)
 
-        with (
-            patch.object(storage, "record_sample", flaky_record_sample),
-            patch.object(storage, "get_or_create_series", real_get_or_create),
-        ):
+        with patch.object(storage, "_record_sample_conn", flaky_record_sample_conn):
             result = scheduler.run_plugin_once(
                 db_path, plugin, http=None, now=1000, heartbeat_seconds=86400
             )
@@ -506,9 +507,9 @@ class TestReviewFixes:
         # The run is finished and marked error...
         assert result.status == "error"
         assert "database is locked" in result.error
-        # ...and samples_written is honest: the row written before the
-        # crash is still counted.
-        assert result.samples_written == 1
+        # ...and samples_written is 0: all-or-nothing means the row
+        # written before the crash was rolled back along with it.
+        assert result.samples_written == 0
 
         conn = sqlite3.connect(str(db_path))
         try:
@@ -518,14 +519,20 @@ class TestReviewFixes:
                 (result.run_id,),
             ).fetchone()
             samples = conn.execute("SELECT COUNT(*) FROM samples").fetchone()[0]
+            series_rows = conn.execute("SELECT COUNT(*) FROM metric_series").fetchone()[
+                0
+            ]
         finally:
             conn.close()
 
         assert row[0] == "error"
         assert row[1] is not None
-        assert row[2] == 1
+        assert row[2] == 0
         assert row[3] == 1000  # finished_at
-        assert samples == 1
+        assert samples == 0
+        # Neither series row survives either -- the INSERT for "a" rolled
+        # back along with its sample when "b" raised.
+        assert series_rows == 0
 
     def test_dict_like_result_is_iterated_normally(self, db_path):
         class Mapping:
@@ -649,6 +656,121 @@ class TestBuildScheduler:
             <= next_run
             <= after + timedelta(seconds=scheduler.FIRST_RUN_MAX_DELAY_SECONDS)
         )
+
+    def test_a_plugin_polled_recently_resumes_its_own_interval(self, tmp_path):
+        # #127b: without this, a plugin 5 minutes into a 30-minute interval
+        # would get re-polled again within the usual 0-60s startup jitter
+        # on every restart.
+        config = self._config(
+            tmp_path, plugins_config={"valid": {"enabled": True, "poll_interval": 1800}}
+        )
+        db_path = config["storage"]["path"]
+        now = int(time.time())
+        run_id = storage.start_run(db_path, "valid", now - 5 * 60)
+        storage.finish_run(
+            db_path, run_id, "ok", None, samples_written=1, finished_at=now - 5 * 60
+        )
+        before = datetime.now(UTC)
+
+        job_scheduler = scheduler.build_scheduler(config)
+
+        after = datetime.now(UTC)
+        job = job_scheduler.get_job("plugin:valid")
+        next_run = job.next_run_time.astimezone(UTC)
+
+        # ~25 minutes out (1800s interval - 300s elapsed), not within the
+        # 60s startup jitter window.
+        assert next_run > before + timedelta(
+            seconds=scheduler.FIRST_RUN_MAX_DELAY_SECONDS
+        )
+        assert (
+            before + timedelta(seconds=1800 - 300 - 5)
+            <= next_run
+            <= after + timedelta(seconds=1800 - 300 + 5)
+        )
+
+    def test_a_plugin_already_due_gets_the_usual_startup_jitter(self, tmp_path):
+        config = self._config(
+            tmp_path, plugins_config={"valid": {"enabled": True, "poll_interval": 1800}}
+        )
+        db_path = config["storage"]["path"]
+        now = int(time.time())
+        run_id = storage.start_run(db_path, "valid", now - 2 * 3600)
+        storage.finish_run(
+            db_path, run_id, "ok", None, samples_written=1, finished_at=now - 2 * 3600
+        )
+        before = datetime.now(UTC)
+
+        job_scheduler = scheduler.build_scheduler(config)
+
+        after = datetime.now(UTC)
+        job = job_scheduler.get_job("plugin:valid")
+        next_run = job.next_run_time.astimezone(UTC)
+
+        assert (
+            before
+            <= next_run
+            <= after + timedelta(seconds=scheduler.FIRST_RUN_MAX_DELAY_SECONDS)
+        )
+
+    def test_a_plugin_mid_backoff_resumes_it_instead_of_polling_immediately(
+        self, tmp_path
+    ):
+        config = self._config(
+            tmp_path, plugins_config={"valid": {"enabled": True, "poll_interval": 1800}}
+        )
+        db_path = config["storage"]["path"]
+        now = int(time.time())
+        for offset in (2, 1):
+            run_id = storage.start_run(db_path, "valid", now - offset * 60)
+            storage.finish_run(
+                db_path,
+                run_id,
+                "error",
+                "blocked (HTTP 403) for url 'https://x'",
+                samples_written=0,
+                finished_at=now - offset * 60,
+            )
+
+        job_scheduler = scheduler.build_scheduler(config)
+
+        job = job_scheduler.get_job("plugin:valid")
+        # 2 trailing blocked runs -> compute_backoff_delay_seconds(1800, None, 2)
+        # = 1800 * 2**2 = 7200s from the last run's start (now - 60s).
+        expected = datetime.fromtimestamp(now - 60) + timedelta(seconds=7200)
+        assert job.next_run_time.replace(tzinfo=None) == expected
+        # backoff_state (job.args[2]) is seeded with the trailing count, so
+        # the next real 403/429 continues the exponential backoff instead
+        # of restarting it at count 1.
+        assert job.args[2]["valid"] == 2
+
+    def test_a_plugin_mid_backoff_resumes_the_last_runs_retry_after(self, tmp_path):
+        # A restart-resumed 429 backoff used to always pass retry_after=None
+        # to compute_backoff_delay_seconds, dropping the source's own
+        # Retry-After and re-polling earlier than it asked for -- see the
+        # gap between this test's expected 7200s (max(retry_after=7200,
+        # interval) capped) and the None-based exponential math the
+        # sibling 403 test above exercises (1800 * 2**1 = 3600s).
+        config = self._config(
+            tmp_path, plugins_config={"valid": {"enabled": True, "poll_interval": 1800}}
+        )
+        db_path = config["storage"]["path"]
+        now = int(time.time())
+        run_id = storage.start_run(db_path, "valid", now - 60)
+        storage.finish_run(
+            db_path,
+            run_id,
+            "error",
+            f"{scheduler.RATE_LIMITED_ERROR_PREFIX} (retry_after=7200.0)",
+            samples_written=0,
+            finished_at=now - 60,
+        )
+
+        job_scheduler = scheduler.build_scheduler(config)
+
+        job = job_scheduler.get_job("plugin:valid")
+        expected = datetime.fromtimestamp(now - 60) + timedelta(seconds=7200)
+        assert job.next_run_time.replace(tzinfo=None) == expected
 
     def test_maintenance_job_is_scheduled_daily_with_jitter_and_delayed_first_run(
         self, tmp_path
@@ -1206,6 +1328,25 @@ class TestComputeBackoffDelaySeconds:
         )
 
         assert retry_after_delay == scheduler.MAX_BACKOFF_SECONDS
+
+
+class TestRetryAfterFromError:
+    def test_extracts_the_retry_after_value(self):
+        error = f"{scheduler.RATE_LIMITED_ERROR_PREFIX} (retry_after=7200.0)"
+        assert scheduler._retry_after_from_error(error) == 7200.0
+
+    def test_no_retry_after_header_returns_none(self):
+        error = f"{scheduler.RATE_LIMITED_ERROR_PREFIX} (retry_after=None)"
+        assert scheduler._retry_after_from_error(error) is None
+
+    def test_blocked_error_returns_none(self):
+        assert (
+            scheduler._retry_after_from_error("blocked (HTTP 403) for url 'https://x'")
+            is None
+        )
+
+    def test_none_error_returns_none(self):
+        assert scheduler._retry_after_from_error(None) is None
 
 
 class _FakeSchedulerStub:
