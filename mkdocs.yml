@@ -1,0 +1,86 @@
+# MkDocs + Material site for GitHub Pages. docs/ is the source (MkDocs'
+# default docs_dir, so no override); site/ is the build output and is
+# gitignored. Build with: pip install -r docs/requirements.txt && mkdocs build --strict
+#
+# site_name / site_description / page titles describe the tool, never the
+# platforms it reads from -- see CONTRIBUTING.md and the Responsible Use rule.
+site_name: numbers-go-up
+site_description: >-
+  Self-hosted, plugin-based counter tracker with history, rate-of-change,
+  a REST API, and Home Assistant integration.
+site_url: https://drewferg11.github.io/numbers-go-up/
+site_author: DrewFerg11
+
+repo_url: https://github.com/DrewFerg11/numbers-go-up
+repo_name: DrewFerg11/numbers-go-up
+edit_uri: edit/main/docs/
+
+# Build inputs that live in docs/ but are not site content.
+exclude_docs: |
+  requirements.txt
+
+theme:
+  name: material
+  logo: assets/icon.png
+  favicon: assets/icon.png
+  features:
+    - navigation.sections
+    - navigation.top
+    - navigation.indexes
+    - toc.follow
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+    - content.action.edit
+  # The first palette entry is the default: dark, with a toggle to light.
+  palette:
+    - scheme: slate
+      primary: black
+      accent: light green
+      toggle:
+        icon: material/brightness-7
+        name: Switch to light mode
+    - scheme: default
+      primary: black
+      accent: green
+      toggle:
+        icon: material/brightness-4
+        name: Switch to dark mode
+  icon:
+    repo: fontawesome/brands/github
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.details
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.superfences
+
+plugins:
+  - search
+
+# Every page must be listed here: --strict fails on a page missing from the
+# nav, which is how "every page is reachable" is enforced. Stub pages are
+# placeholders for the Pages-site issues that fill them in.
+nav:
+  - Home: index.md
+  - Getting started:
+      - Install: getting-started/install.md
+      - Configuration: getting-started/configuration.md
+  - Plugins:
+      - plugins/index.md
+      - MakerWorld: plugins/makerworld.md
+      - GitHub: plugins/github.md
+      - YouTube: plugins/youtube.md
+      - Writing a plugin: plugins/writing-a-plugin.md
+  - Home Assistant: home-assistant/index.md
+  - Operations: operations.md
+  - Troubleshooting: troubleshooting.md
+  - API reference: api.md
+  - Demo: demo.md

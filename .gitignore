@@ -37,3 +37,6 @@ Thumbs.db
 
 # Claude Code agent worktree scratch space — never project content.
 .claude/
+
+# MkDocs build output (mkdocs.yml -> site_dir).
+/site/
