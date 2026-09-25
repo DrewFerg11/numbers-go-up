@@ -12,3 +12,12 @@ updates:
     directory: "/"
     schedule:
       interval: weekly
+  - package-ecosystem: pip
+    directory: "/docs"
+    schedule:
+      interval: weekly
+    # MkDocs 2.0 drops the plugin and theme systems Material depends on;
+    # stay on 1.x until Material supports it.
+    ignore:
+      - dependency-name: mkdocs
+        versions: [">=2"]
