@@ -1,7 +1,11 @@
 """Configuration loading: env vars, YAML file, and defaults.
 
-This is the only module that reads an ``NGU_*`` environment variable or
-resolves a filesystem path directly. Everything else — storage, plugins,
+This is the only module that resolves a filesystem path directly.
+A handful of other modules read their own ``NGU_*`` env var directly
+rather than through this module's dict, each documented at its own
+read: ``main.NGU_LOG_LEVEL``, ``mqtt.NGU_MQTT_PASSWORD`` (a secret,
+deliberately kept out of ``config.yaml``), and
+``netfs.NGU_ALLOW_NETWORK_FS``. Everything else — storage, plugins,
 the scheduler — gets its settings from the dict this module returns.
 
 The core sections (``poll``, ``storage``, ``server``, ``dashboard``) are

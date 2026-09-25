@@ -4,9 +4,8 @@
 #
 # Purely additive: it never removes labels, so a manual label always wins.
 #
-# Improvements over the Split-Flap-Display version:
 # - Full Conventional Commit type coverage (feat/fix/docs/style/refactor/perf/
-#   test/build/ci/chore/revert), not just feat/fix/docs/deps.
+#   test/build/ci/chore/revert).
 # - Handles the `(deps)` scope, not only a bare `deps:` type, so Dependabot's
 #   `chore(deps):` / `build(deps):` titles map to `dependencies`.
 # - Detects breaking changes (`feat!:` / `fix!:` / a `BREAKING CHANGE` footer)

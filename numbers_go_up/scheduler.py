@@ -1,14 +1,12 @@
-"""The plugin run wrapper: runs one plugin once, with per-poll isolation.
+"""Poll scheduling: one-shot plugin runs, and the APScheduler wiring that
+calls them on a recurring interval.
 
-Deliberately separate from APScheduler (#20's job): tests drive
-``run_plugin_once`` with ``now`` stepped forward by hand, so "N ticks"
-takes microseconds, not N poll intervals.
-
-Adjusted from the guide's ``run_plugin_once(plugin, http, now) -> RunResult``
-sketch: the storage layer built in Phase 1 takes ``db_path`` as its first
-argument (connection-per-operation, see #12), and the heartbeat interval
-lives in config rather than being a scheduler constant, so both are
-threaded through here too.
+``run_plugin_once`` takes ``now`` as an explicit argument rather than
+reading the clock itself, so tests drive it with ``now`` stepped forward
+by hand -- "N ticks" takes microseconds, not N poll intervals. It's the
+plugin-isolation core (start a run row, call ``collect()``, validate and
+store, always finish the run) that ``build_scheduler`` below wraps in an
+actual recurring `BackgroundScheduler` job per enabled plugin.
 """
 
 from __future__ import annotations
@@ -905,8 +903,8 @@ def build_scheduler(
     (``main.lifespan``) hand the result in directly, instead of this
     function calling :func:`discover_plugins` itself -- which would
     re-import every plugin file yet again. Defaults to ``None``, which
-    discovers internally exactly as before, for callers (mainly tests)
-    that don't already have a plugin list on hand.
+    discovers internally instead, for callers (mainly tests) that don't
+    already have a plugin list on hand.
 
     A pooled executor of ``ThreadPoolExecutor(10)`` runs polls concurrently
     (up to 10 at once) rather than serialized -- deliberate, not a leftover:

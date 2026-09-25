@@ -28,9 +28,10 @@ Self-hosted, plugin-based tracker for the counters you care about — with
 history, rate-of-change, a REST API, and Home Assistant integration.
 
 > **Status: usable.** Everything through hardening has landed — storage,
-> scheduler, the MakerWorld/GitHub/YouTube plugins, the REST API, the
-> dashboard, Home Assistant via MQTT discovery, milestone alerts, scheduled
-> maintenance, and multi-arch release images. No `v1.0.0` tag yet.
+> scheduler, all five plugins (MakerWorld, GitHub, YouTube, TikTok, Abacus),
+> the REST API, the dashboard, Home Assistant via MQTT discovery, milestone
+> alerts, scheduled maintenance, and multi-arch release images. No `v1.0.0`
+> tag yet.
 
 ## The idea
 
@@ -59,6 +60,7 @@ so you can ask what changed, how fast, and since when.
 | GitHub | Shipped |
 | YouTube | Shipped |
 | TikTok | Shipped |
+| Abacus | Shipped |
 | Anything else | Write a plugin — that's the point |
 
 **Every plugin is opt-in and inert by default.** A fresh install makes zero
@@ -101,7 +103,9 @@ against `/health`, so `docker ps`, `docker inspect`, and Portainer all show a
 - `./config` — drop a `config.yaml` here (see
   [`config.yaml.example`](config.yaml.example)). If it's missing, the service
   writes a commented example next to where it looked and starts with defaults
-  and zero plugins enabled.
+  and zero plugins enabled. **`config.yaml` is read once at startup** — edit
+  it on the host, then `docker compose restart` (no rebuild needed) to pick
+  up the change.
 - `./user-plugins` — optional plugins of your own. Named `user-plugins` on the
   host (not `plugins`, which is the repo's own built-in-plugin source
   directory) so a bind mount from a clone doesn't shadow the built-ins.
@@ -210,9 +214,11 @@ for unattended pulls.
 ### Timezone
 
 `TZ` is **not set by default** — the container falls back to UTC. Set it to
-your own zone in `docker-compose.yml` (e.g. `TZ=America/New_York`), because it
-affects timestamp correctness in the SQLite history and the daily heartbeat
-boundary.
+your own zone in `docker-compose.yml` (e.g. `TZ=America/New_York`) if you'd
+rather read log timestamps in local time. It has no effect on stored data:
+samples are recorded as UTC epoch seconds, the heartbeat is a relative
+interval (not a local-midnight boundary), and backup filenames use UTC —
+`TZ` only changes what timezone log lines are printed in.
 
 ### Backup & restore
 
@@ -260,8 +266,8 @@ build understands, by design.
 `/` is a lightweight overview page — a stock-watchlist view of your own
 counters: an index strip of pinned metrics, a watchlist grouped by plugin
 with sparklines, and a status line showing each plugin's polling health.
-It's server-rendered (no build step, no CDN — everything, including fonts,
-is served from the container) and refreshes itself every 60 seconds.
+It's server-rendered (no build step, no CDN, no web fonts — the CSS uses
+the system font stack) and refreshes itself every 60 seconds.
 
 ![Dashboard overview](docs/assets/dashboard.png)
 
@@ -279,14 +285,14 @@ API; the raw schema is at `/openapi.json`.
 
 The MVP — a service that builds and runs in Docker, collects from one real
 source, and exposes a REST API to inspect what it collected — shipped, and so
-did everything planned after it: the GitHub and YouTube plugins, the
-dashboard, Home Assistant via MQTT discovery, milestone alerts, and the
-hardening pass (scheduled maintenance, backups, PUID/PGID, multi-arch
+did everything planned after it: the GitHub, YouTube, TikTok, and Abacus
+plugins, the dashboard, Home Assistant via MQTT discovery, milestone alerts,
+and the hardening pass (scheduled maintenance, backups, PUID/PGID, multi-arch
 releases).
 
 What's left is tracked in
-[issues](https://github.com/DrewFerg11/numbers-go-up/issues): the TikTok
-plugin, and a `v1.0.0` tag once it has run long enough to earn one.
+[issues](https://github.com/DrewFerg11/numbers-go-up/issues): a pre-release
+audit pass, and a `v1.0.0` tag once it has run long enough to earn one.
 
 ## Contributing
 
@@ -310,8 +316,9 @@ This is a general-purpose counter tracker with a plugin folder. It is not
 affiliated with, endorsed by, or connected to any of the platforms its plugins
 can read. Those plugins read **public** data about **your own** accounts, they
 never require your credentials, and they're written to be polite about it:
-honest User-Agent, conservative intervals, one request per poll, and real
-backoff when asked to slow down.
+honest User-Agent, conservative intervals, one request per configured
+subject per poll (plus the documented paging exceptions below, all capped
+by that plugin's own `max`), and real backoff when asked to slow down.
 
 You are responsible for complying with the terms of any service you point this
 at. See [NOTICE.md](NOTICE.md) for the full statement.
@@ -322,10 +329,10 @@ models' counters, next to its eight profile counters
 It's opt-in and adds one paged listing request per poll — still public data
 about your own account, still no auth — on top of the one profile request.
 
-**Documented exception:** GitHub makes one request per configured repo plus
-paged release listings, against the official, documented API — the only
-source in this project with that status. Every other source here is
-unofficial.
+**Official vs. unofficial sources:** GitHub, YouTube, and Abacus each read
+a documented, official API. MakerWorld and TikTok have no public API for
+this data, so those two plugins read the same JSON a browser gets when it
+loads the page — no scraping tricks beyond that, no login, no cookies.
 
 **YouTube's unofficial path was evaluated and rejected (#62):** the
 originally-planned `unofficial-livecounts-api` library doesn't just need a
