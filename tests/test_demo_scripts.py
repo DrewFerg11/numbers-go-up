@@ -99,7 +99,7 @@ def test_export_produces_every_range_and_no_third_party_urls(tmp_path):
     assert "cdn." not in index_html
     detail_html = (output / "m" / "counter.orders" / "index.html").read_text()
     assert "cdn." not in detail_html
-    assert 'href="static/' in index_html or "href=\"/static/" not in index_html
+    assert 'href="static/' in index_html or 'href="/static/' not in index_html
 
     assert not (output / "static" / "img" / "icon-512.png").exists()
     assert (output / "static" / "css" / "dashboard.css").exists()
