@@ -918,9 +918,15 @@ Hover it to see the last error:</p>
 <td>Red</td>
 <td>Three or more polls in a row failed, <strong>or</strong> the source answered <code>403</code></td>
 </tr>
+<tr>
+<td>Grey</td>
+<td>Enabled, but no poll has finished yet</td>
+</tr>
 </tbody>
 </table>
-<p><strong>In the API</strong>, <code>GET /api/plugins</code> returns each plugin's <code>status</code>:</p>
+<p><strong>In the API</strong>, <code>GET /api/plugins</code> returns the same verdict as <code>health</code>
+(<code>ok</code>, <code>warn</code>, <code>error</code>, or <code>pending</code>/<code>disabled</code>), alongside each plugin's
+<code>status</code>:</p>
 <table>
 <thead>
 <tr>
