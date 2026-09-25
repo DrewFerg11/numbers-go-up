@@ -557,9 +557,12 @@ total_increasing`; `gauge` metrics get `state_class: measurement`.
   and their detail page and history are still reachable. Re-enabling the
   plugin brings a series back, with its full history, as soon as it polls
   successfully again.
-- **To remove everything:** disable the plugins (or delete the `mqtt` block)
-  and restart — that retires every one of their series, which removes their
-  HA entities as above. To also remove the now-empty "numbers-go-up" device
+- **To remove everything:** disable the plugins and restart — that retires
+  every one of their series, which removes their HA entities as above.
+  (Deleting the `mqtt` block instead only stops future publishing: with no
+  `MqttPublisher` running, nothing sends the `offline` status or clears
+  retained discovery configs, so already-published entities linger in HA
+  until removed there.) To also remove the now-empty "numbers-go-up" device
   itself, go to Settings → Devices & Services → MQTT and delete it.
 
 **Without MQTT:** there's currently no REST-polling fallback for Home
