@@ -1,12 +1,17 @@
 """Configuration loading: env vars, YAML file, and defaults.
 
 This is the only module that resolves a filesystem path directly.
-A handful of other modules read their own ``NGU_*`` env var directly
-rather than through this module's dict, each documented at its own
-read: ``main.NGU_LOG_LEVEL``, ``mqtt.NGU_MQTT_PASSWORD`` (a secret,
-deliberately kept out of ``config.yaml``), and
-``netfs.NGU_ALLOW_NETWORK_FS``. Everything else — storage, plugins,
-the scheduler — gets its settings from the dict this module returns.
+Several other modules read their own ``NGU_*`` env var directly rather
+than through this module's dict, each documented at its own read:
+``main.NGU_LOG_LEVEL``; the credentials that are deliberately kept out
+of ``config.yaml`` -- ``mqtt.NGU_MQTT_PASSWORD``, the milestone webhook
+URL (``milestones.py``, the env var name itself configurable via
+``config["milestones"]["webhook_url_env"]``, defaulting to
+``NGU_MILESTONE_WEBHOOK_URL``), ``github.py``'s ``NGU_GITHUB_TOKEN``,
+and ``youtube.py``'s ``NGU_YOUTUBE_API_KEY``; and
+``netfs.NGU_ALLOW_NETWORK_FS``. Everything else -- storage, the
+scheduler, every other plugin -- gets its settings from the dict this
+module returns.
 
 The core sections (``poll``, ``storage``, ``server``, ``dashboard``) are
 validated as a Pydantic model tree, with ``extra="forbid"`` so an unknown
