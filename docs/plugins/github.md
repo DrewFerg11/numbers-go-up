@@ -33,6 +33,10 @@ Two details worth knowing:
 
 ## Configuration
 
+Like every plugin, it's off until you set `enabled: true`, and it makes no
+request until its identifiers are configured. See
+[Opt-in and inert by default](index.md#opt-in-and-inert-by-default).
+
 ```yaml
 plugins:
   github:
