@@ -358,6 +358,24 @@
         
       
       
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Install
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
       <a href="./" class="md-nav__link md-nav__link--active">
         
   
@@ -374,6 +392,113 @@
   
 
       </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#what-you-need" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What you need
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#1-get-the-compose-file" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1. Get the compose file
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#2-create-the-folders" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2. Create the folders
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#3-file-ownership" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3. File ownership
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#4-set-your-timezone" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4. Set your timezone
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#5-start-it" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5. Start it
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#what-happens-on-first-run" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What happens on first run
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#next" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Next
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
       
     </li>
   
@@ -764,6 +889,102 @@
     
   
   
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#what-you-need" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What you need
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#1-get-the-compose-file" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1. Get the compose file
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#2-create-the-folders" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2. Create the folders
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#3-file-ownership" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3. File ownership
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#4-set-your-timezone" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4. Set your timezone
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#5-start-it" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5. Start it
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#what-happens-on-first-run" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What happens on first run
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#next" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Next
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
 </nav>
                   </div>
                 </div>
@@ -788,11 +1009,118 @@
 
 
 <h1 id="install">Install<a class="headerlink" href="#install" title="Permanent link">&para;</a></h1>
-<div class="admonition note">
-<p class="admonition-title">Coming soon</p>
-<p>Step-by-step install with Docker Compose: the bind mounts, file ownership, and the local-disk requirement for the database. This page is a placeholder — it is tracked in
-<a href="https://github.com/DrewFerg11/numbers-go-up/issues/105">#105</a>.</p>
+<p>numbers-go-up ships as one multi-arch container image (<code>amd64</code>, <code>arm64</code>,
+<code>armv7</code>) and is run with Docker Compose. Everything it keeps lives in two
+folders on the host, so the container itself is disposable.</p>
+<h2 id="what-you-need">What you need<a class="headerlink" href="#what-you-need" title="Permanent link">&para;</a></h2>
+<ul>
+<li>Docker with the Compose plugin (<code>docker compose version</code> works)</li>
+<li>A folder on <strong>local disk</strong> for the database. Read the warning below
+  before pointing it at a NAS share.</li>
+</ul>
+<h2 id="1-get-the-compose-file">1. Get the compose file<a class="headerlink" href="#1-get-the-compose-file" title="Permanent link">&para;</a></h2>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>git<span class="w"> </span>clone<span class="w"> </span>https://github.com/DrewFerg11/numbers-go-up.git
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="nb">cd</span><span class="w"> </span>numbers-go-up
+</code></pre></div>
+<p>The <a href="https://github.com/DrewFerg11/numbers-go-up/blob/main/docker-compose.yml"><code>docker-compose.yml</code></a>
+at the repo root is the supported way to run it. It names the published
+<code>ghcr.io/drewferg11/numbers-go-up:latest</code> image, publishes port <code>8080</code>,
+rotates logs, and sets up the bind mounts below. It also has <code>build: .</code>, so
+Compose can build the image from the checkout instead. Step 5 pulls the
+published image first, so you run the release rather than a local build.</p>
+<h2 id="2-create-the-folders">2. Create the folders<a class="headerlink" href="#2-create-the-folders" title="Permanent link">&para;</a></h2>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>mkdir<span class="w"> </span>-p<span class="w"> </span>data<span class="w"> </span>config<span class="w"> </span>user-plugins
+</code></pre></div>
+<table>
+<thead>
+<tr>
+<th>Host folder</th>
+<th>In the container</th>
+<th>What lives there</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>./data</code></td>
+<td><code>/data</code></td>
+<td>The SQLite database and its backups. <strong>Local disk only.</strong></td>
+</tr>
+<tr>
+<td><code>./config</code></td>
+<td><code>/config</code></td>
+<td><code>config.yaml</code>, which you edit on the host. No rebuild needed.</td>
+</tr>
+<tr>
+<td><code>./user-plugins</code></td>
+<td><code>/plugins</code></td>
+<td>Optional plugins of your own. Leave it empty if you have none.</td>
+</tr>
+</tbody>
+</table>
+<p><code>docker rm</code> the container any time; none of this lives inside it.</p>
+<div class="admonition danger">
+<p class="admonition-title">Keep <code>./data</code> off NFS and SMB shares</p>
+<p>SQLite's locking is unreliable over network filesystems, and this is the
+one deployment mistake that can <strong>silently corrupt the database</strong>. The
+container checks where <code>./data</code> is mounted and refuses to start if it is
+<code>nfs</code>, <code>nfs4</code>, <code>cifs</code>, <code>smb3</code>, <code>smbfs</code>, <code>fuse.sshfs</code>, or <code>9p</code>.</p>
+<p>On a NAS, run the container on the NAS itself with <code>./data</code> on its local
+volume, not on another machine with the share mounted.
+<code>NGU_ALLOW_NETWORK_FS=1</code> overrides the check if you accept the risk,
+and a warning is still logged on every start.</p>
 </div>
+<h2 id="3-file-ownership">3. File ownership<a class="headerlink" href="#3-file-ownership" title="Permanent link">&para;</a></h2>
+<p>You don't need to <code>chown</code> anything by hand. The container starts as root,
+changes ownership of <code>./data</code> and <code>./config</code> to <code>PUID:PGID</code>, then drops to
+that user before the app runs. Both default to <code>1000</code>.</p>
+<p>If your host user isn't <code>1000</code>, which is common on NAS distros (Synology's
+first user is usually <code>1026</code>, Unraid uses <code>99:100</code>), set both in
+<code>docker-compose.yml</code>:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="nt">environment</span><span class="p">:</span>
+<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">PUID=1026</span>
+<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">PGID=100</span>
+</code></pre></div>
+<p><code>PUID=0</code>/<code>PGID=0</code> are refused: the app never runs as root.</p>
+<p>If you'd rather manage ownership yourself, set <code>user: "1000:1000"</code> on the
+service instead. The container then skips the ownership step entirely, and
+you run <code>chown -R 1000:1000 data config</code> on the host once.</p>
+<h2 id="4-set-your-timezone">4. Set your timezone<a class="headerlink" href="#4-set-your-timezone" title="Permanent link">&para;</a></h2>
+<p><code>TZ</code> isn't set by default, so the container runs in UTC. Add your zone
+under <code>environment:</code>. It decides where the daily heartbeat boundary falls.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">TZ=America/New_York</span>
+</code></pre></div>
+<h2 id="5-start-it">5. Start it<a class="headerlink" href="#5-start-it" title="Permanent link">&para;</a></h2>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>docker<span class="w"> </span>compose<span class="w"> </span>pull
+<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>docker<span class="w"> </span>compose<span class="w"> </span>up<span class="w"> </span>-d
+<a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a>curl<span class="w"> </span>localhost:8080/health
+</code></pre></div>
+<p>Then open <code>http://&lt;host&gt;:8080</code> for the dashboard. The container listens on
+<code>8080</code> inside; to use a different port outside, change the mapping in
+compose (<code>"9000:8080"</code>).</p>
+<h2 id="what-happens-on-first-run">What happens on first run<a class="headerlink" href="#what-happens-on-first-run" title="Permanent link">&para;</a></h2>
+<p>With no <code>config.yaml</code> in <code>./config</code>, the service writes a fully commented
+<code>config.yaml.example</code> next to where it looked, then starts on built-in
+defaults with <strong>zero plugins enabled</strong>.</p>
+<div class="admonition success">
+<p class="admonition-title">Nothing is tracked until you ask</p>
+<p>A fresh install makes <strong>zero outbound requests</strong> to any platform until
+you enable a plugin, and no user IDs, handles or repos are baked into the
+image. The dashboard stays empty until you configure a source.</p>
+</div>
+<p>Copy the example to <code>config.yaml</code>, enable a plugin, and restart:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>cp<span class="w"> </span>config/config.yaml.example<span class="w"> </span>config/config.yaml
+<a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a><span class="c1"># edit config/config.yaml</span>
+<a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a>docker<span class="w"> </span>compose<span class="w"> </span>restart
+</code></pre></div>
+<h2 id="next">Next<a class="headerlink" href="#next" title="Permanent link">&para;</a></h2>
+<ul>
+<li><a href="../configuration/">Configuration</a>: every section of <code>config.yaml</code>, and
+  which settings go in environment variables instead</li>
+<li><a href="../../plugins/">Plugins</a>: what each source collects and how to set
+  it up</li>
+<li><a href="../../home-assistant/">Home Assistant</a>: entities via MQTT
+  discovery, with no YAML on the Home Assistant side</li>
+</ul>
 
 
 

@@ -386,6 +386,24 @@
         
       
       
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Configuration
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
       <a href="./" class="md-nav__link md-nav__link--active">
         
   
@@ -402,6 +420,113 @@
   
 
       </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#validation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Validation
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#poll" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        poll
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#storage" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        storage
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#server" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        server
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#dashboard" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        dashboard
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#plugins" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        plugins
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#mqtt-and-milestones" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        mqtt and milestones
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#environment-variables" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Environment variables
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
       
     </li>
   
@@ -764,6 +889,102 @@
     
   
   
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#validation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Validation
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#poll" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        poll
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#storage" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        storage
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#server" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        server
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#dashboard" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        dashboard
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#plugins" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        plugins
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#mqtt-and-milestones" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        mqtt and milestones
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#environment-variables" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Environment variables
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
 </nav>
                   </div>
                 </div>
@@ -788,11 +1009,257 @@
 
 
 <h1 id="configuration">Configuration<a class="headerlink" href="#configuration" title="Permanent link">&para;</a></h1>
-<div class="admonition note">
-<p class="admonition-title">Coming soon</p>
-<p>A walkthrough of every section of <code>config.yaml</code>, the environment-variable overrides, and which settings belong in env vars instead. This page is a placeholder — it is tracked in
-<a href="https://github.com/DrewFerg11/numbers-go-up/issues/105">#105</a>.</p>
+<p>Settings come from two places:</p>
+<ul>
+<li><strong><code>config.yaml</code></strong>, in the folder mounted at <code>/config</code>, holds everything
+  that isn't a secret. The file is optional; every key has a default.</li>
+<li><strong>Environment variables</strong> hold file paths and <strong>every credential</strong>. Set
+  them under <code>environment:</code> in <code>docker-compose.yml</code>.</li>
+</ul>
+<p>Edit <code>config.yaml</code> on the host and <code>docker compose restart</code> to apply it; no
+rebuild is needed. All intervals are in seconds.</p>
+<div class="admonition warning">
+<p class="admonition-title">Secrets go in environment variables, never in <code>config.yaml</code></p>
+<p>The MQTT password, the milestone webhook URL, and the optional API
+tokens are read <strong>only</strong> from environment variables. <code>config.yaml</code> is
+meant to be safe to copy, share and back up. The full list is
+<a href="#environment-variables">below</a>.</p>
 </div>
+<h2 id="validation">Validation<a class="headerlink" href="#validation" title="Permanent link">&para;</a></h2>
+<p>An unknown key in <code>poll</code>, <code>storage</code>, <code>server</code> or <code>dashboard</code>, or an unknown
+top-level section, <strong>fails startup</strong> with the offending key named (and a
+"did you mean" suggestion for a misspelled section). So does a value of the
+wrong type, such as a quoted number. A typo like <code>mqqt:</code> stops the
+container instead of silently doing nothing.</p>
+<p><code>NGU_CONFIG_STRICT=0</code> downgrades that failure to a warning and starts
+anyway. It's an escape hatch for getting a broken config booting while you
+fix it, not a setting to leave on, because it accepts exactly the typos the
+check exists to catch.</p>
+<h2 id="poll"><code>poll</code><a class="headerlink" href="#poll" title="Permanent link">&para;</a></h2>
+<p>Scheduling defaults for every plugin.</p>
+<table>
+<thead>
+<tr>
+<th>Key</th>
+<th>Default</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>default_interval</code></td>
+<td><code>1800</code></td>
+<td>Poll interval for a plugin that sets neither its own <code>poll_interval</code> nor a built-in default. Positive integer.</td>
+</tr>
+<tr>
+<td><code>jitter_fraction</code></td>
+<td><code>0.2</code></td>
+<td>Each poll is delayed by a random 0 to <code>jitter_fraction × interval</code> seconds, so polls don't line up. Never early. A number in <code>[0, 1)</code>.</td>
+</tr>
+</tbody>
+</table>
+<h2 id="storage"><code>storage</code><a class="headerlink" href="#storage" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Key</th>
+<th>Default</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>heartbeat_seconds</code></td>
+<td><code>86400</code></td>
+<td>A sample is stored only when a value changes, plus one heartbeat sample per this interval even if it hasn't, so a flat line is distinguishable from missing data. Positive integer.</td>
+</tr>
+<tr>
+<td><code>plugin_runs_retention_days</code></td>
+<td><code>30</code></td>
+<td>How long poll-run records (successes, errors) are kept. Each plugin's newest finished run is always kept. <code>0</code> or more.</td>
+</tr>
+<tr>
+<td><code>backups.keep_daily</code></td>
+<td><code>7</code></td>
+<td>Number of daily database backups to keep in <code>./data/backups/</code>. <code>0</code> disables them.</td>
+</tr>
+</tbody>
+</table>
+<p>The database always lives at <code>stats.db</code> in the data folder.</p>
+<h2 id="server"><code>server</code><a class="headerlink" href="#server" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Key</th>
+<th>Default</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>external_url</code></td>
+<td>none</td>
+<td>The URL you reach the service on, e.g. <code>http://192.168.1.50:8080</code>. Optional. Used as the Home Assistant device's "Visit" link. Must be an <code>http(s)</code> URL with a host.</td>
+</tr>
+</tbody>
+</table>
+<p>The container always listens on <code>0.0.0.0:8080</code>. To change the outside port,
+change the port mapping in compose (<code>"9000:8080"</code>), not this file.
+<code>server.host</code> and <code>server.port</code> are deprecated; they're accepted with a
+warning and have no effect.</p>
+<h2 id="dashboard"><code>dashboard</code><a class="headerlink" href="#dashboard" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Key</th>
+<th>Default</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>pinned</code></td>
+<td><code>[]</code></td>
+<td>Up to 6 metric keys shown in the index strip at the top of the dashboard. Empty uses the first 4 cumulative metrics.</td>
+</tr>
+</tbody>
+</table>
+<h2 id="plugins"><code>plugins</code><a class="headerlink" href="#plugins" title="Permanent link">&para;</a></h2>
+<p>One block per plugin, keyed by plugin name. <strong>Every plugin is off until
+its block sets <code>enabled: true</code></strong>, and a plugin that isn't enabled makes no
+requests at all.</p>
+<p>Two keys are common to every plugin:</p>
+<table>
+<thead>
+<tr>
+<th>Key</th>
+<th>Default</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>enabled</code></td>
+<td><code>false</code></td>
+<td>Turns the plugin on.</td>
+</tr>
+<tr>
+<td><code>poll_interval</code></td>
+<td>the plugin's own default (<code>1800</code> for every built-in)</td>
+<td>Seconds between polls. Values below <strong>300</strong> (5 minutes) are raised to 300 with a warning.</td>
+</tr>
+</tbody>
+</table>
+<p>Everything else is plugin-specific, such as which account, repos, channels
+or counters to read. See each plugin's page under <a href="../../plugins/">Plugins</a>,
+and the fully commented
+<a href="https://github.com/DrewFerg11/numbers-go-up/blob/main/config.yaml.example"><code>config.yaml.example</code></a>.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nt">plugins</span><span class="p">:</span>
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="w">  </span><span class="nt">github</span><span class="p">:</span>
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="w">    </span><span class="nt">enabled</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">true</span>
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="w">    </span><span class="nt">repos</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="s">"owner/name"</span><span class="p p-Indicator">]</span>
+</code></pre></div>
+<h2 id="mqtt-and-milestones"><code>mqtt</code> and <code>milestones</code><a class="headerlink" href="#mqtt-and-milestones" title="Permanent link">&para;</a></h2>
+<p>Both are optional, and both are off when their block is absent: no block
+means no MQTT connection and no webhook calls. Their keys are covered on
+the <a href="../../home-assistant/">Home Assistant</a> page, alongside the
+Home Assistant setup they feed. Until that page is written, the fully
+commented
+<a href="https://github.com/DrewFerg11/numbers-go-up/blob/main/config.yaml.example"><code>config.yaml.example</code></a>
+shows every key.</p>
+<h2 id="environment-variables">Environment variables<a class="headerlink" href="#environment-variables" title="Permanent link">&para;</a></h2>
+<p><strong>Paths.</strong> <code>docker-compose.yml</code> already sets these to the bind mounts, so
+leave them alone unless you change the mounts.</p>
+<table>
+<thead>
+<tr>
+<th>Variable</th>
+<th>Default</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>NGU_DATA_DIR</code></td>
+<td><code>/data</code></td>
+<td>Folder holding the database and backups</td>
+</tr>
+<tr>
+<td><code>NGU_CONFIG_FILE</code></td>
+<td><code>/config/config.yaml</code></td>
+<td>Path to the config file</td>
+</tr>
+<tr>
+<td><code>NGU_PLUGIN_DIR</code></td>
+<td><code>/plugins</code></td>
+<td>Folder scanned for user plugins</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Secrets.</strong> Set only the ones you use.</p>
+<table>
+<thead>
+<tr>
+<th>Variable</th>
+<th>Used by</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>NGU_MQTT_PASSWORD</code></td>
+<td>MQTT broker password</td>
+</tr>
+<tr>
+<td><code>NGU_MILESTONE_WEBHOOK_URL</code></td>
+<td>Milestone webhook URL. The variable's name can be changed with <code>milestones.webhook_url_env</code>.</td>
+</tr>
+<tr>
+<td><code>NGU_GITHUB_TOKEN</code></td>
+<td>Optional. Raises the GitHub plugin's rate limit.</td>
+</tr>
+<tr>
+<td><code>NGU_YOUTUBE_API_KEY</code></td>
+<td>Required by the YouTube plugin</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Behaviour.</strong></p>
+<table>
+<thead>
+<tr>
+<th>Variable</th>
+<th>Default</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>PUID</code> / <code>PGID</code></td>
+<td><code>1000</code></td>
+<td>Host user and group that own <code>./data</code> and <code>./config</code>. See <a href="../install/#3-file-ownership">Install</a>.</td>
+</tr>
+<tr>
+<td><code>TZ</code></td>
+<td>unset (UTC)</td>
+<td>Container timezone</td>
+</tr>
+<tr>
+<td><code>NGU_LOG_LEVEL</code></td>
+<td><code>INFO</code></td>
+<td>Log verbosity. <code>DEBUG</code> shows every repeated plugin failure, not just the first of a streak.</td>
+</tr>
+<tr>
+<td><code>NGU_CONFIG_STRICT</code></td>
+<td><code>1</code></td>
+<td><code>0</code> downgrades config validation failures to a warning. See <a href="#validation">Validation</a>.</td>
+</tr>
+<tr>
+<td><code>NGU_ALLOW_NETWORK_FS</code></td>
+<td>unset</td>
+<td><code>1</code> lets the database run on a network filesystem despite the risk. See <a href="../install/">Install</a>.</td>
+</tr>
+</tbody>
+</table>
 
 
 
