@@ -161,6 +161,20 @@ def test_chart_js_implements_the_stale_dashed_tail(tmp_path):
     assert "Date.now()" in chart_js
 
 
+def test_chart_js_stale_tail_survives_a_store_on_change_series(tmp_path):
+    # Regression: for a flat, store-on-change series, staleSinceTs (the
+    # plugin's last OK poll) lands strictly after the series' last
+    # *written* sample. render()'s split search used to look for a real
+    # point at or after staleSinceTs and find only the synthesized "now"
+    # point, landing splitIdx on the final index -- hasStaleTail then
+    # evaluated false and the whole line stayed main-colored, no dashed
+    # tail at all. The search threshold must be clamped to the last real
+    # point instead, so the split (and the tail) always includes it.
+    chart_js = (dashboard.STATIC_DIR / "js" / "chart.js").read_text(encoding="utf-8")
+
+    assert "Math.min(opts.staleSinceTs, lastRealTs)" in chart_js
+
+
 def test_theme_toggle_reloads_the_selected_chart(tmp_path):
     # chart.js resolves colors from CSS custom properties once, at render
     # time -- toggling the theme without re-rendering leaves the big
