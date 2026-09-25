@@ -4,7 +4,7 @@ from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from fastapi.testclient import TestClient
 
-from numbers_go_up import dashboard, migrate, storage
+from numbers_go_up import dashboard, migrate, queries, storage
 
 DAY = 86400
 HOUR = 3600
@@ -378,7 +378,7 @@ def test_overview_each_range_bound(tmp_path):
         "1Y": 100,
     }
 
-    for range_key in dashboard.RANGE_HOURS:
+    for range_key in queries.RANGE_HOURS:
         response = client.get(f"/api/stats/overview?range={range_key}")
         assert response.status_code == 200
         metric = response.json()["metrics"][0]

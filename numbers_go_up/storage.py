@@ -83,60 +83,103 @@ def get_or_create_series(
     back after :func:`set_series_active_bulk` deactivated it, or an exact
     key reactivating after :func:`retire_series_not_in` retired its plugin.
     """
+    with contextlib.closing(connect(db_path)) as conn:
+        series_id = _get_or_create_series_conn(
+            conn, metric_key, plugin_name, kind, label, unit, icon, now, attrs
+        )
+        conn.commit()
+        return series_id
+
+
+def _get_or_create_series_conn(
+    conn: sqlite3.Connection,
+    metric_key: str,
+    plugin_name: str,
+    kind: str,
+    label: str | None,
+    unit: str | None,
+    icon: str | None,
+    now: int,
+    attrs: dict | None,
+) -> int:
+    """:func:`get_or_create_series`'s body, against an already-open
+    connection whose transaction the caller owns (its own single-key
+    connection+commit, or :func:`store_poll`'s one connection+transaction
+    for a whole poll's worth of keys, #128).
+    """
     if kind not in VALID_KINDS:
         raise ValueError(f"kind must be one of {sorted(VALID_KINDS)}, got {kind!r}")
 
-    with contextlib.closing(connect(db_path)) as conn:
-        conn.execute(
-            "INSERT INTO metric_series "
-            "(metric_key, plugin_name, kind, label, unit, icon, first_seen) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?) "
-            "ON CONFLICT (metric_key) DO NOTHING",
-            (metric_key, plugin_name, kind, label, unit, icon, now),
+    conn.execute(
+        "INSERT INTO metric_series "
+        "(metric_key, plugin_name, kind, label, unit, icon, first_seen) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?) "
+        "ON CONFLICT (metric_key) DO NOTHING",
+        (metric_key, plugin_name, kind, label, unit, icon, now),
+    )
+    row = conn.execute(
+        "SELECT id, kind, plugin_name, label, unit, icon, active, attrs "
+        "FROM metric_series WHERE metric_key = ?",
+        (metric_key,),
+    ).fetchone()
+    (
+        series_id,
+        stored_kind,
+        stored_plugin_name,
+        stored_label,
+        stored_unit,
+        stored_icon,
+        stored_active,
+        stored_attrs_json,
+    ) = row
+
+    if stored_kind != kind:
+        logger.warning(
+            "Series %s: plugin reports kind=%r but stored kind is %r; "
+            "keeping the stored kind",
+            metric_key,
+            kind,
+            stored_kind,
         )
-        row = conn.execute(
-            "SELECT id, kind, attrs FROM metric_series WHERE metric_key = ?",
-            (metric_key,),
-        ).fetchone()
-        series_id, stored_kind, stored_attrs_json = row
 
-        if stored_kind != kind:
-            logger.warning(
-                "Series %s: plugin reports kind=%r but stored kind is %r; "
-                "keeping the stored kind",
-                metric_key,
-                kind,
-                stored_kind,
-            )
+    if attrs:
+        try:
+            merged_attrs = json.loads(stored_attrs_json) if stored_attrs_json else {}
+        except json.JSONDecodeError:
+            merged_attrs = {}
+        # A hand-edited row (or a future buggy writer) could hold
+        # valid-but-non-object JSON ("[1,2]", "3"); .update() on anything
+        # but a dict raises AttributeError, which would escape into
+        # run_plugin_once's blanket except and abort the rest of the poll
+        # -- exactly what the scheduler-boundary validation of the *new*
+        # attrs is there to prevent. Treat a corrupt stored value as
+        # "start fresh" instead.
+        if not isinstance(merged_attrs, dict):
+            merged_attrs = {}
+        merged_attrs.update(attrs)
+        attrs_json = json.dumps(merged_attrs)
+    else:
+        attrs_json = stored_attrs_json
 
-        if attrs:
-            try:
-                merged_attrs = (
-                    json.loads(stored_attrs_json) if stored_attrs_json else {}
-                )
-            except json.JSONDecodeError:
-                merged_attrs = {}
-            # A hand-edited row (or a future buggy writer) could hold
-            # valid-but-non-object JSON ("[1,2]", "3"); .update() on
-            # anything but a dict raises AttributeError, which would
-            # escape into run_plugin_once's blanket except and abort the
-            # rest of the poll -- exactly what the scheduler-boundary
-            # validation of the *new* attrs is there to prevent. Treat a
-            # corrupt stored value as "start fresh" instead.
-            if not isinstance(merged_attrs, dict):
-                merged_attrs = {}
-            merged_attrs.update(attrs)
-            attrs_json = json.dumps(merged_attrs)
-        else:
-            attrs_json = stored_attrs_json
-
+    # Skip the write entirely when nothing this call would change (#128):
+    # a plugin's METRICS rarely drift between polls, and `active` is
+    # already 1 for the overwhelming majority of calls (a series whose
+    # plugin just polled successfully).
+    unchanged = (
+        stored_plugin_name == plugin_name
+        and stored_label == label
+        and stored_unit == unit
+        and stored_icon == icon
+        and stored_active == 1
+        and attrs_json == stored_attrs_json
+    )
+    if not unchanged:
         conn.execute(
             "UPDATE metric_series SET plugin_name = ?, label = ?, unit = ?, "
             "icon = ?, attrs = ?, active = 1 WHERE id = ?",
             (plugin_name, label, unit, icon, attrs_json, series_id),
         )
-        conn.commit()
-        return series_id
+    return series_id
 
 
 def record_sample(
@@ -158,36 +201,105 @@ def record_sample(
     """
     with contextlib.closing(connect(db_path)) as conn:
         conn.execute("BEGIN IMMEDIATE")
-        row = conn.execute(
-            "SELECT last_value, last_seen FROM metric_series WHERE id = ?",
-            (series_id,),
-        ).fetchone()
-        if row is None:
+        try:
+            written = _record_sample_conn(conn, series_id, ts, value, heartbeat_seconds)
+        except Exception:
             conn.rollback()
-            raise ValueError(f"No series with id {series_id}")
-        last_value, last_seen = row
-
-        should_write = (
-            last_value is None
-            or last_seen is None
-            or value != last_value
-            or ts - last_seen >= heartbeat_seconds
-        )
-        if not should_write:
+            raise
+        if not written:
             conn.rollback()
             return False
-
-        conn.execute(
-            "INSERT INTO samples (series_id, ts, value) VALUES (?, ?, ?) "
-            "ON CONFLICT (series_id, ts) DO UPDATE SET value = excluded.value",
-            (series_id, ts, value),
-        )
-        conn.execute(
-            "UPDATE metric_series SET last_value = ?, last_seen = ? WHERE id = ?",
-            (value, ts, series_id),
-        )
         conn.commit()
         return True
+
+
+def _record_sample_conn(
+    conn: sqlite3.Connection,
+    series_id: int,
+    ts: int,
+    value: float,
+    heartbeat_seconds: int,
+) -> bool:
+    """:func:`record_sample`'s body, against an already-open connection
+    whose transaction the caller owns. See :func:`record_sample`
+    (single-key) and :func:`store_poll` (a whole poll's keys, one shared
+    transaction, #128) -- the two callers.
+    """
+    row = conn.execute(
+        "SELECT last_value, last_seen FROM metric_series WHERE id = ?",
+        (series_id,),
+    ).fetchone()
+    if row is None:
+        raise ValueError(f"No series with id {series_id}")
+    last_value, last_seen = row
+
+    should_write = (
+        last_value is None
+        or last_seen is None
+        or value != last_value
+        or ts - last_seen >= heartbeat_seconds
+    )
+    if not should_write:
+        return False
+
+    conn.execute(
+        "INSERT INTO samples (series_id, ts, value) VALUES (?, ?, ?) "
+        "ON CONFLICT (series_id, ts) DO UPDATE SET value = excluded.value",
+        (series_id, ts, value),
+    )
+    conn.execute(
+        "UPDATE metric_series SET last_value = ?, last_seen = ? WHERE id = ?",
+        (value, ts, series_id),
+    )
+    return True
+
+
+def store_poll(
+    db_path: str | Path,
+    plugin_name: str,
+    now: int,
+    heartbeat_seconds: int,
+    items: Iterable[
+        tuple[str, float, str, str | None, str | None, str | None, dict | None]
+    ],
+) -> int:
+    """Store every metric one poll returned in a single connection and a
+    single ``BEGIN IMMEDIATE`` transaction (#128), instead of
+    :func:`get_or_create_series` + :func:`record_sample`'s own
+    connection/transaction pair per key -- for a 500-key poll (a
+    MakerWorld account at the default ``models.max``), that was 10
+    PRAGMAs and up to 2 commits per key.
+
+    Each item in ``items`` is ``(metric_key, value, kind, label, unit,
+    icon, attrs)`` -- already validated by the caller (scheduler.py's
+    contract checks); this function only stores. Returns the number of
+    samples actually written (store-on-change may skip some).
+
+    All-or-nothing: if any item raises (sqlite contention that exhausts
+    ``busy_timeout``, a full disk), the whole poll's writes roll back --
+    nothing from this poll is left half-stored. This is a deliberate
+    change from calling :func:`get_or_create_series`/:func:`record_sample`
+    per key in a loop, where rows written before a mid-poll storage error
+    stayed written and counted toward ``samples_written``; see
+    ``scheduler.run_plugin_once``, which now reports 0 written on this
+    path's failure rather than a partial count.
+    """
+    items = list(items)
+    samples_written = 0
+    with contextlib.closing(connect(db_path)) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            for metric_key, value, kind, label, unit, icon, attrs in items:
+                series_id = _get_or_create_series_conn(
+                    conn, metric_key, plugin_name, kind, label, unit, icon, now, attrs
+                )
+                if _record_sample_conn(conn, series_id, now, value, heartbeat_seconds):
+                    samples_written += 1
+        except Exception:
+            conn.rollback()
+            raise
+        conn.commit()
+    return samples_written
 
 
 def start_run(db_path: str | Path, plugin_name: str, started_at: int) -> int:
@@ -530,6 +642,32 @@ def value_as_of(db_path: str | Path, series_id: int, ts: int) -> float | None:
             (series_id, ts),
         ).fetchone()
     return row[0] if row is not None else None
+
+
+def values_as_of_bulk(
+    conn: sqlite3.Connection, series_ids: Iterable[int], ts: int
+) -> dict[int, float]:
+    """:func:`value_as_of`, for many series on one already-open connection.
+
+    Per-series ``ORDER BY ts DESC LIMIT 1`` seeks, not a single batched
+    query across series -- the same reasoning as ``_range_stats_group``'s
+    anchor lookups (a window/GROUP BY was measured slower there, see its
+    docstring). What this saves over calling :func:`value_as_of` in a loop
+    is the per-*call* connect()+5-PRAGMA cost (#128: /api/stats/latest was
+    ~1,000 fresh connections for 500 series), not the seeks themselves.
+    Series with no sample at or before ``ts`` are omitted, same as
+    :func:`value_as_of` returning None.
+    """
+    result: dict[int, float] = {}
+    for series_id in series_ids:
+        row = conn.execute(
+            "SELECT value FROM samples WHERE series_id = ? AND ts <= ? "
+            "ORDER BY ts DESC LIMIT 1",
+            (series_id, ts),
+        ).fetchone()
+        if row is not None:
+            result[series_id] = row[0]
+    return result
 
 
 def list_series(db_path: str | Path) -> list[sqlite3.Row]:
@@ -1001,28 +1139,70 @@ def recorded_changes(
     This is exactly what's stored, heartbeats included: a heartbeat row
     with no real change comes back with ``change == 0`` rather than being
     filtered out, unlike :func:`recent_changes`.
+
+    Bounded (#94), unlike the ``LAG()`` over the series' *entire* history
+    this used to run on every call regardless of ``start``/``end``: one
+    indexed seek for the newest sample at or before ``start`` (the
+    "anchor", so the oldest row in range still gets a correct change
+    against a real predecessor even when that predecessor is outside the
+    range), plus the samples actually in range, both bounded scans against
+    ``samples``' ``(series_id, ts)`` primary key.
     """
     with contextlib.closing(connect(db_path)) as conn:
+        anchor = conn.execute(
+            "SELECT value FROM samples WHERE series_id = ? AND ts <= ? "
+            "ORDER BY ts DESC LIMIT 1",
+            (series_id, start),
+        ).fetchone()
         rows = conn.execute(
-            """
-            SELECT ts, value, value - LAG(value) OVER (ORDER BY ts) AS change
-            FROM samples
-            WHERE series_id = ?
-            ORDER BY ts
-            """,
-            (series_id,),
+            "SELECT ts, value FROM samples WHERE series_id = ? "
+            "AND ts > ? AND ts <= ? ORDER BY ts",
+            (series_id, start, end),
         ).fetchall()
 
-    in_range = [
-        {"ts": ts, "value": value, "change": 0 if change is None else change}
-        for ts, value, change in rows
-        if start < ts <= end
-    ]
-    in_range.sort(key=lambda row: row["ts"], reverse=True)
-    return in_range[:limit]
+    previous = anchor[0] if anchor is not None else None
+    changes = []
+    for ts, value in rows:
+        changes.append(
+            {
+                "ts": ts,
+                "value": value,
+                "change": 0 if previous is None else value - previous,
+            }
+        )
+        previous = value
+
+    changes.reverse()
+    return changes[:limit]
 
 
-def recent_changes(db_path: str | Path, limit: int) -> list[sqlite3.Row]:
+# recent_changes' progressively wider windows, in seconds: 7 days is
+# Hermes' own sizing estimate for "recent activity" on a healthy install
+# (#80), enough almost every time; each further step only runs when the
+# previous one came up short of `limit` real changes.
+_RECENT_CHANGES_WINDOWS_SECONDS = (7 * 86400, 30 * 86400, 90 * 86400, 365 * 86400)
+
+_RECENT_CHANGES_SELECT = """
+    SELECT metric_key, ts, value, change FROM (
+        SELECT
+            ms.metric_key AS metric_key,
+            ms.active AS active,
+            s.ts AS ts,
+            s.value AS value,
+            s.value - LAG(s.value) OVER (
+                PARTITION BY s.series_id ORDER BY s.ts
+            ) AS change
+        FROM samples s
+        JOIN metric_series ms ON ms.id = s.series_id
+        {where_ts}
+    )
+    WHERE active = 1 AND change IS NOT NULL AND change != 0
+    ORDER BY ts DESC
+    LIMIT ?
+"""
+
+
+def recent_changes(db_path: str | Path, limit: int, now: int) -> list[sqlite3.Row]:
     """The ``limit`` newest value-to-previous-value changes across every
     active series, newest first.
 
@@ -1031,28 +1211,33 @@ def recent_changes(db_path: str | Path, limit: int) -> list[sqlite3.Row]:
     in the same series; a null change (a series' very first sample, nothing
     to compare against) or a zero change (a heartbeat with no real change)
     is dropped, so only genuine value changes ever show up here.
+
+    Bounded by a growing time window (#94) instead of always computing
+    this ``LAG()`` over every sample of every active series -- a scan that
+    only grows with the install's *lifetime*, not its request volume, so
+    nothing surfaces it until a render suddenly takes seconds. Tries
+    :data:`_RECENT_CHANGES_WINDOWS_SECONDS` in order, widest last, and
+    returns as soon as a window finds at least ``limit`` results. A change
+    right at a window's edge can have its predecessor sample fall just
+    outside that window (no per-series anchor row, unlike
+    :func:`recorded_changes`, which needs one to satisfy a *date-range*
+    contract) -- worst case that costs one extra retry at the next window,
+    never a wrong or truncated result, since the final, unbounded query is
+    always the last resort: this must never return fewer genuine changes
+    than actually exist.
     """
     with contextlib.closing(connect(db_path)) as conn:
         conn.row_factory = sqlite3.Row
+        for window_seconds in _RECENT_CHANGES_WINDOWS_SECONDS:
+            since = now - window_seconds
+            rows = conn.execute(
+                _RECENT_CHANGES_SELECT.format(where_ts="WHERE s.ts > ?"),
+                (since, limit),
+            ).fetchall()
+            if len(rows) >= limit:
+                return rows
         return conn.execute(
-            """
-            SELECT metric_key, ts, value, change FROM (
-                SELECT
-                    ms.metric_key AS metric_key,
-                    ms.active AS active,
-                    s.ts AS ts,
-                    s.value AS value,
-                    s.value - LAG(s.value) OVER (
-                        PARTITION BY s.series_id ORDER BY s.ts
-                    ) AS change
-                FROM samples s
-                JOIN metric_series ms ON ms.id = s.series_id
-            )
-            WHERE active = 1 AND change IS NOT NULL AND change != 0
-            ORDER BY ts DESC
-            LIMIT ?
-            """,
-            (limit,),
+            _RECENT_CHANGES_SELECT.format(where_ts=""), (limit,)
         ).fetchall()
 
 

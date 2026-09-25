@@ -130,6 +130,9 @@ def run_plugin_once(
     returned_keys: set[str] = set()
     previous_values: dict[str, float | None] = {}
     current_values: dict[str, float] = {}
+    items: list[
+        tuple[str, float, str, str | None, str | None, str | None, dict | None]
+    ] = []
 
     # Snapshot every existing series' last_value for this plugin *before*
     # anything below writes a sample -- the milestone evaluator's
@@ -247,29 +250,28 @@ def run_plugin_once(
                 violations.append(f"{key!r} value {value!r} is not finite")
                 continue
 
-            series_id = storage.get_or_create_series(
-                db_path,
-                key,
-                plugin.name,
-                meta["kind"],
-                label,
-                unit,
-                icon,
-                now,
-                attrs=attrs,
-            )
             returned_keys.add(key)
             previous_values[key] = last_values_before_run.get(key)
             current_values[key] = value
-            if storage.record_sample(db_path, series_id, now, value, heartbeat_seconds):
-                samples_written += 1
+            items.append((key, value, meta["kind"], label, unit, icon, attrs))
+
+        # One connection, one BEGIN IMMEDIATE for the whole poll (#128) --
+        # get_or_create_series + record_sample per key was 10 PRAGMAs and
+        # up to 2 commits per key. All-or-nothing: if this raises, nothing
+        # from this poll is written (samples_written stays 0), unlike the
+        # old per-key loop where rows written before a mid-poll failure
+        # stayed written and counted.
+        samples_written = storage.store_poll(
+            db_path, plugin.name, now, heartbeat_seconds, items
+        )
     except Exception as exc:
         # collect() succeeded but validate/store blew up (a non-dict
         # result, sqlite contention, a full disk...). Finish the run and
         # swallow, exactly like the collect() guard above: a plugin that
         # breaks after collect() still never stops another plugin's poll
-        # or crashes the service. samples_written stays honest -- rows
-        # written before the crash are counted.
+        # or crashes the service. samples_written is 0 here (#128's
+        # all-or-nothing store_poll): either every validated item in this
+        # poll got written, or none did.
         error = storage.error_tail(traceback.format_exc())
         storage.finish_run(
             db_path,

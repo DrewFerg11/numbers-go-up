@@ -46,13 +46,12 @@ import os
 import threading
 import time
 from collections.abc import Mapping
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Protocol
 
 import httpx
 
-from numbers_go_up import plugins, storage
+from numbers_go_up import plugins, queries, storage
 from numbers_go_up.config import ConfigError
 from numbers_go_up.plugins import LoadedPlugin
 
@@ -65,10 +64,6 @@ PENDING_PREFIX = "milestone_pending:"
 # Handling #4's "no backoff storms" cousin for milestones): a webhook that's
 # been down for a full day is dropped rather than retried forever.
 PENDING_MAX_AGE_SECONDS = 24 * 3600
-
-
-def _iso(ts: float) -> str:
-    return datetime.fromtimestamp(ts, tz=UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def _format_number(value: float) -> str:
@@ -458,7 +453,7 @@ class MilestoneEvaluator:
             "value": current,
             "previous": previous,
             "url": url,
-            "timestamp": _iso(now),
+            "timestamp": queries.iso(now),
         }
         record = {"threshold": threshold, "payload": payload, "queued_at": now}
         # Recorded before sending. Any older, still-undelivered pending

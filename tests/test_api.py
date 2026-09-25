@@ -11,6 +11,12 @@ DAY = 86400
 HOUR = 3600
 
 
+def _time_it(fn):
+    started = time.perf_counter()
+    fn()
+    return time.perf_counter() - started
+
+
 def make_app(db_path, plugin_intervals=None, default_interval=1800):
     app = FastAPI()
     app.include_router(api.router)
@@ -496,33 +502,6 @@ def test_delta_no_starting_point_is_null_not_zero(tmp_path):
     assert body["current"] == 5
 
 
-# --- _is_stale / storage.last_ok_runs (#133) -----------------------------
-
-
-def test_is_stale_uses_shared_last_ok_runs_dict(tmp_path):
-    """_is_stale takes storage.last_ok_runs()'s result directly rather than
-    querying per call -- one grouped query shared across every series in a
-    request (stats_latest/build_overview), not one per series.
-    """
-    db_path = db(tmp_path)
-    now = int(time.time())
-
-    run_id = storage.start_run(db_path, "acme", now)
-    storage.finish_run(db_path, run_id, "ok", None, samples_written=0, finished_at=now)
-
-    last_ok = storage.last_ok_runs(db_path)
-    assert last_ok == {"acme": now}
-
-    # Recent success -> not stale; a plugin absent from the dict (never
-    # succeeded) -> stale; the same dict answers both without a query.
-    assert api._is_stale("acme", 1800, now, last_ok) is False
-    assert api._is_stale("other", 1800, now, last_ok) is True
-
-    # Well past 3x the interval since that same last success -> stale.
-    far_future = now + 4 * 1800 + 10
-    assert api._is_stale("acme", 1800, far_future, last_ok) is True
-
-
 # --- /api/integrations ---------------------------------------------------
 
 _DISABLED_MQTT_STATUS = {
@@ -682,3 +661,58 @@ def test_integrations_response_never_includes_a_password_field(tmp_path):
     response = client.get("/api/integrations")
 
     assert "password" not in response.text.lower()
+
+
+# --- /api/stats/latest perf (#128) ---------------------------------------
+
+
+def test_stats_latest_is_not_slower_than_overview_with_500_series(tmp_path):
+    """#128's measured regression: /api/stats/latest was an unbatched N+1
+    (a fresh connection + 5 PRAGMAs per series, twice over for the two
+    delta windows, plus a per-series staleness lookup) while
+    /api/stats/overview -- which does strictly more work per series -- was
+    already batched (#91). Batching /api/stats/latest (storage.
+    values_as_of_bulk + one storage.last_ok_runs call) should make it at
+    least as fast, not measurably slower.
+    """
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from numbers_go_up import dashboard
+
+    db_path = db(tmp_path)
+    now = int(time.time())
+    run_id = storage.start_run(db_path, "acme", now)
+    storage.finish_run(db_path, run_id, "ok", None, samples_written=0, finished_at=now)
+
+    for i in range(500):
+        series_id = seed_series(db_path, f"acme.item.{i}.count", now=now - 30 * DAY)
+        storage.record_sample(db_path, series_id, now - 30 * DAY, i, HOUR)
+        storage.record_sample(db_path, series_id, now - HOUR, i + 1, HOUR)
+        storage.record_sample(db_path, series_id, now, i + 2, HOUR)
+
+    app = FastAPI()
+    app.include_router(api.router)
+    app.include_router(dashboard.router)
+    app.state.config = {
+        "storage": {"path": db_path},
+        "poll": {"default_interval": 1800},
+        "plugins": {},
+        "dashboard": {},
+    }
+    app.state.plugin_intervals = {"acme": 1800}
+    app.state.plugin_names = ["acme"]
+    client = TestClient(app)
+
+    # Warm up file-system caches equally for both before timing either.
+    client.get("/api/stats/latest")
+    client.get("/api/stats/overview?range=1M")
+
+    latest_time = min(
+        _time_it(lambda: client.get("/api/stats/latest")) for _ in range(3)
+    )
+    overview_time = min(
+        _time_it(lambda: client.get("/api/stats/overview?range=1M")) for _ in range(3)
+    )
+
+    assert latest_time <= overview_time * 1.5
