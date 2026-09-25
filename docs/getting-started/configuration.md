@@ -95,10 +95,7 @@ plugins:
 Both are optional, and both are off when their block is absent: no block
 means no MQTT connection and no webhook calls. Their keys are covered on
 the [Home Assistant](../home-assistant/index.md) page, alongside the
-Home Assistant setup they feed. Until that page is written, the fully
-commented
-[`config.yaml.example`](https://github.com/DrewFerg11/numbers-go-up/blob/main/config.yaml.example)
-shows every key.
+Home Assistant setup they feed.
 
 ## Environment variables
 
