@@ -1,0 +1,82 @@
+# Removes a branch's docs preview (preview/<sanitised-branch>/ on gh-pages,
+# published by docs-deploy.yml) when that branch is deleted, so preview/
+# doesn't accumulate a folder for every docs branch ever pushed. Adapted from
+# DrewFerg11/Split-Flap-Display's docs-cleanup.yml.
+#
+# `delete` workflows run from the default branch's copy of this file, so this
+# only takes effect once merged to main.
+
+name: Docs / Cleanup preview
+
+on:
+  delete:
+
+permissions:
+  contents: write   # push to gh-pages
+
+jobs:
+  cleanup:
+    name: Remove preview folder
+    runs-on: ubuntu-latest
+    # Tag deletions and branches outside the prefixes docs-deploy.yml
+    # previews are a no-op.
+    if: >-
+      github.event.ref_type == 'branch' &&
+      (startsWith(github.event.ref, 'docs/') || startsWith(github.event.ref, 'feature/'))
+    env:
+      BRANCH: ${{ github.event.ref }}
+    steps:
+      - name: Check for gh-pages
+        id: ghpages
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Only a 404 means "no gh-pages". Any other failure (network,
+          # auth, 5xx) fails the job rather than silently skipping cleanup.
+          if err=$(gh api "repos/$GITHUB_REPOSITORY/branches/gh-pages" --silent 2>&1); then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          elif printf '%s' "$err" | grep -q "HTTP 404"; then
+            echo "No gh-pages branch, nothing to clean up"
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error::Checking for gh-pages failed: $err"
+            exit 1
+          fi
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: steps.ghpages.outputs.exists == 'true'
+        with:
+          ref: gh-pages
+
+      - name: Delete preview folder
+        if: steps.ghpages.outputs.exists == 'true'
+        run: |
+          # Keep this sanitiser identical to docs-deploy.yml's, or this looks
+          # for a folder the deploy never created.
+          SAFE_BRANCH=$(printf '%s' "$BRANCH" | sed 's/[^a-zA-Z0-9._-]/-/g')
+          PREVIEW_DIR="preview/$SAFE_BRANCH"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          # A deploy can push to gh-pages between our checkout and our push;
+          # redo the removal on the new tip and retry rather than fail.
+          for attempt in 1 2 3; do
+            git fetch origin gh-pages
+            git reset --hard origin/gh-pages
+
+            if [ ! -d "$PREVIEW_DIR" ]; then
+              echo "No preview at $PREVIEW_DIR, nothing to clean up"
+              exit 0
+            fi
+
+            git rm -rq "$PREVIEW_DIR"
+            git commit -q -m "Remove preview for deleted branch $BRANCH"
+            if git push origin HEAD:gh-pages; then
+              echo "Removed $PREVIEW_DIR"
+              exit 0
+            fi
+            echo "Push rejected (attempt $attempt); retrying on the new tip"
+            sleep $((attempt * 5))
+          done
+          exit 1
