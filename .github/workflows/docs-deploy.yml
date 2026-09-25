@@ -1,0 +1,173 @@
+# Builds the MkDocs site (mkdocs.yml, docs/) and publishes it to the gh-pages
+# branch: main deploys to the site root, any other branch to
+# preview/<sanitised-branch>/. Adapted from DrewFerg11/Split-Flap-Display's
+# docs-deploy.yml.
+#
+# Pages serves from the gh-pages branch rather than actions/deploy-pages on
+# purpose: an artifact deploy replaces the whole site, which would delete
+# every preview/ folder on each deploy to main.
+#
+# Note `docs/**` below means two different things: under `branches:` it is a
+# branch-name pattern (docs/foo), under `paths:` a file-path pattern.
+
+name: Docs / Deploy
+
+on:
+  push:
+    branches:
+      - main
+      - 'docs/**'
+      - 'feature/**'
+    paths:
+      - docs/**
+      - overrides/**
+      - mkdocs.yml
+      - .github/workflows/docs-deploy.yml
+  pull_request:
+    paths:
+      - docs/**
+      - overrides/**
+      - mkdocs.yml
+      - .github/workflows/docs-deploy.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write        # push to gh-pages
+  pull-requests: write   # sticky preview-link comment
+
+concurrency:
+  group: pages-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  SITE_URL: https://drewferg11.github.io/numbers-go-up
+
+jobs:
+  build-and-deploy:
+    name: Build and deploy
+    runs-on: ubuntu-latest
+    # Fork PRs get a read-only GITHUB_TOKEN, so the gh-pages push can't work
+    # for them. Rather than skip the whole job (which would also skip the
+    # `mkdocs build --strict` validation and let broken docs merge unchecked),
+    # the build always runs and only the deploy steps are gated.
+    env:
+      CAN_DEPLOY: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+      # On pull_request, github.ref_name is "<n>/merge"; preview under the
+      # PR's branch name instead, so the push and PR runs share one folder.
+      BRANCH: ${{ github.head_ref || github.ref_name }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.x"
+          cache: pip
+          cache-dependency-path: docs/requirements.txt
+
+      - name: Install dependencies
+        run: pip install -r docs/requirements.txt
+
+      - name: Build site
+        run: mkdocs build --strict
+
+      - name: Set deploy path
+        id: path
+        run: |
+          if [ "$BRANCH" = "main" ] && [ "$GITHUB_EVENT_NAME" != "pull_request" ]; then
+            echo "deploy_dir=." >> "$GITHUB_OUTPUT"
+            echo "url=$SITE_URL/" >> "$GITHUB_OUTPUT"
+          else
+            SAFE_BRANCH=$(printf '%s' "$BRANCH" | sed 's/[^a-zA-Z0-9._-]/-/g')
+            echo "deploy_dir=preview/$SAFE_BRANCH" >> "$GITHUB_OUTPUT"
+            echo "url=$SITE_URL/preview/$SAFE_BRANCH/" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Until an admin creates gh-pages and points Settings -> Pages at it,
+      # there is nothing to deploy to: skip with a notice instead of failing.
+      - name: Check for gh-pages
+        id: ghpages
+        if: env.CAN_DEPLOY == 'true'
+        run: |
+          if git ls-remote --exit-code --heads origin gh-pages >/dev/null; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::No gh-pages branch yet; built the site but skipped the deploy."
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: steps.ghpages.outputs.exists == 'true'
+        with:
+          ref: gh-pages
+          path: gh-pages-dir
+
+      - name: Deploy to gh-pages
+        if: steps.ghpages.outputs.exists == 'true'
+        env:
+          DEPLOY_DIR: ${{ steps.path.outputs.deploy_dir }}
+        working-directory: gh-pages-dir
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          # Another run (a different branch's preview, or main) can push to
+          # gh-pages between our checkout and our push. Rebuild on the latest
+          # tip and retry rather than fail; the wipe below never touches
+          # another run's folder, so a retry cannot lose anything.
+          for attempt in 1 2 3; do
+            git fetch origin gh-pages
+            git reset --hard origin/gh-pages
+
+            # Without .nojekyll Pages runs Jekyll, which can be slow or
+            # inconsistent about picking up newly-added top-level paths.
+            touch .nojekyll
+
+            if [ "$DEPLOY_DIR" = "." ]; then
+              # main: replace the site root but keep every branch preview.
+              find . -maxdepth 1 ! -name '.' ! -name '.git' ! -name 'preview' ! -name '.nojekyll' -exec rm -rf {} +
+              cp -r ../site/. .
+            else
+              rm -rf "$DEPLOY_DIR"
+              mkdir -p "$(dirname "$DEPLOY_DIR")"
+              cp -r ../site "$DEPLOY_DIR"
+            fi
+
+            git add -A
+            if git diff --cached --quiet; then
+              echo "No changes to deploy"
+              exit 0
+            fi
+            git commit -q -m "Deploy $BRANCH @ $GITHUB_SHA"
+            if git push origin HEAD:gh-pages; then
+              exit 0
+            fi
+            echo "Push rejected (attempt $attempt); retrying on the new tip"
+            sleep $((attempt * 5))
+          done
+          exit 1
+
+      - name: Summary
+        if: steps.ghpages.outputs.exists == 'true'
+        env:
+          URL: ${{ steps.path.outputs.url }}
+        run: echo "### Deployed to [$URL]($URL)" >> "$GITHUB_STEP_SUMMARY"
+
+      # One comment per PR, edited in place on each push.
+      - name: Comment preview link
+        if: github.event_name == 'pull_request' && steps.ghpages.outputs.exists == 'true'
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          URL: ${{ steps.path.outputs.url }}
+        with:
+          script: |
+            const marker = "<!-- docs-preview -->";
+            const body = `${marker}\n📖 Docs preview: ${process.env.URL}\n\nBuilt from ${context.payload.pull_request.head.sha}. It can take a minute or two for Pages to serve a new deploy.`;
+            const { owner, repo } = context.repo;
+            const issue_number = context.payload.pull_request.number;
+            const comments = await github.paginate(github.rest.issues.listComments, { owner, repo, issue_number });
+            const existing = comments.find((c) => c.user.type === "Bot" && c.body.includes(marker));
+            if (existing) {
+              await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body });
+            } else {
+              await github.rest.issues.createComment({ owner, repo, issue_number, body });
+            }
