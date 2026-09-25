@@ -238,6 +238,52 @@ class TestGetOrCreateSeries:
             conn.close()
         assert json.loads(stored) == {"a": 1}
 
+    def test_skips_the_update_when_nothing_changed(self, db_path, monkeypatch):
+        # #128: a plugin's METRICS rarely drift between polls, so the
+        # common case (identical plugin_name/label/unit/icon/attrs, and
+        # active already 1) should do the INSERT...DO NOTHING + the
+        # SELECT, and no UPDATE at all.
+        storage.get_or_create_series(
+            db_path, "demo.thing.count", "demo", "cumulative", "Count", "u", "i", 1000
+        )
+
+        statements: list[str] = []
+        real_connect = storage.connect
+
+        def tracing_connect(db_path):
+            conn = real_connect(db_path)
+            conn.set_trace_callback(statements.append)
+            return conn
+
+        monkeypatch.setattr(storage, "connect", tracing_connect)
+
+        storage.get_or_create_series(
+            db_path, "demo.thing.count", "demo", "cumulative", "Count", "u", "i", 2000
+        )
+
+        assert not any("UPDATE metric_series" in s for s in statements)
+
+    def test_writes_the_update_when_something_changed(self, db_path, monkeypatch):
+        storage.get_or_create_series(
+            db_path, "demo.thing.count", "demo", "cumulative", "Count", "u", "i", 1000
+        )
+
+        statements: list[str] = []
+        real_connect = storage.connect
+
+        def tracing_connect(db_path):
+            conn = real_connect(db_path)
+            conn.set_trace_callback(statements.append)
+            return conn
+
+        monkeypatch.setattr(storage, "connect", tracing_connect)
+
+        storage.get_or_create_series(
+            db_path, "demo.thing.count", "demo", "cumulative", "New", "u", "i", 2000
+        )
+
+        assert any("UPDATE metric_series" in s for s in statements)
+
 
 class TestRecordSample:
     def _series(self, db_path):
@@ -348,6 +394,110 @@ class TestRecordSample:
     def test_raises_for_unknown_series(self, db_path):
         with pytest.raises(ValueError):
             storage.record_sample(db_path, 999, 1000, 5, heartbeat_seconds=86400)
+
+
+class TestStorePoll:
+    def test_creates_series_and_writes_samples_for_every_item(self, db_path):
+        items = [
+            ("demo.a", 1, "cumulative", "A", "u", "i", None),
+            ("demo.b", 2, "gauge", "B", "u", "i", None),
+        ]
+
+        written = storage.store_poll(db_path, "demo", 1000, 86400, items)
+
+        assert written == 2
+        series_a = storage.get_series_by_key(db_path, "demo.a")
+        series_b = storage.get_series_by_key(db_path, "demo.b")
+        assert series_a["last_value"] == 1
+        assert series_b["last_value"] == 2
+        assert _sample_count(db_path, series_a["id"]) == 1
+        assert _sample_count(db_path, series_b["id"]) == 1
+
+    def test_store_on_change_still_applies_per_key(self, db_path):
+        storage.store_poll(
+            db_path,
+            "demo",
+            1000,
+            86400,
+            [("demo.a", 5, "cumulative", "A", "", "", None)],
+        )
+
+        written = storage.store_poll(
+            db_path,
+            "demo",
+            1100,
+            86400,
+            [("demo.a", 5, "cumulative", "A", "", "", None)],
+        )
+
+        assert written == 0
+        series_a = storage.get_series_by_key(db_path, "demo.a")
+        assert _sample_count(db_path, series_a["id"]) == 1
+
+    def test_reactivates_a_retired_series(self, db_path):
+        storage.get_or_create_series(
+            db_path, "demo.a", "demo", "cumulative", "A", "", "", 1000
+        )
+        storage.retire_series_not_in(db_path, [])
+        assert storage.get_series_by_key(db_path, "demo.a") is None
+
+        storage.store_poll(
+            db_path,
+            "demo",
+            2000,
+            86400,
+            [("demo.a", 1, "cumulative", "A", "", "", None)],
+        )
+
+        assert storage.get_series_by_key(db_path, "demo.a") is not None
+
+    def test_empty_items_writes_nothing(self, db_path):
+        written = storage.store_poll(db_path, "demo", 1000, 86400, [])
+
+        assert written == 0
+
+    def test_all_or_nothing_on_a_mid_batch_failure(self, db_path):
+        # A poll of 3 keys where the 2nd raises (an unknown-series bug
+        # standing in for any mid-transaction failure) must leave *none*
+        # of the 3 written -- not just the first one -- since the whole
+        # poll is one transaction (#128).
+        items = [
+            ("demo.a", 1, "cumulative", "A", "", "", None),
+            ("demo.b", 2, "bogus-kind", "B", "", "", None),
+            ("demo.c", 3, "cumulative", "C", "", "", None),
+        ]
+
+        with pytest.raises(ValueError):
+            storage.store_poll(db_path, "demo", 1000, 86400, items)
+
+        assert storage.get_series_by_key(db_path, "demo.a") is None
+        assert storage.get_series_by_key(db_path, "demo.b") is None
+        assert storage.get_series_by_key(db_path, "demo.c") is None
+
+    def test_500_key_poll_store_phase_is_fast(self, db_path):
+        # #128's measured regression: get_or_create_series + record_sample
+        # per key was ~1.5s for a 500-key poll on a fast x86 box (10
+        # PRAGMAs and up to 2 commits per key -- a MakerWorld account at
+        # the default models.max already returns 258 keys every 30 min).
+        # One connection and one transaction for the whole poll targets
+        # well under that. Each of the 3 timed calls uses brand new keys
+        # (a fresh, unique prefix per call), so every one is a real
+        # cold "create 500 new series" poll -- reusing the same 500 keys
+        # across calls would let the second and third skip nearly all the
+        # work via store-on-change and the unchanged-metadata UPDATE skip.
+        def run(prefix):
+            items = [
+                (f"demo.{prefix}.{i}", float(i), "gauge", "Item", "", "", None)
+                for i in range(500)
+            ]
+            storage.store_poll(db_path, "demo", 1000, 86400, items)
+
+        elapsed = min(_time_it(lambda p=prefix: run(p)) for prefix in range(3))
+
+        # 250ms leaves generous headroom over the ~150ms target for a slow
+        # CI runner, while still catching a regression back toward the old
+        # ~1.5s per-key-connection behavior.
+        assert elapsed < 0.25
 
 
 def _run_row(db_path, run_id):
@@ -472,6 +622,107 @@ class TestCloseInterruptedRuns:
         latest = storage.latest_finished_run(db_path, "demo")
         assert latest["status"] == "error"
         assert latest["error"] == "boom"
+
+
+class TestTrailingBackoffCount:
+    def test_no_runs_is_zero(self, db_path):
+        assert storage.trailing_backoff_count(db_path, "demo") == 0
+
+    def test_ok_run_is_zero(self, db_path):
+        run_id = storage.start_run(db_path, "demo", 1000)
+        storage.finish_run(
+            db_path, run_id, "ok", None, samples_written=1, finished_at=1000
+        )
+
+        assert storage.trailing_backoff_count(db_path, "demo") == 0
+
+    def test_ordinary_error_is_zero(self, db_path):
+        run_id = storage.start_run(db_path, "demo", 1000)
+        storage.finish_run(
+            db_path, run_id, "error", "boom", samples_written=0, finished_at=1000
+        )
+
+        assert storage.trailing_backoff_count(db_path, "demo") == 0
+
+    def test_counts_trailing_blocked_runs(self, db_path):
+        for ts in (1000, 1001, 1002):
+            run_id = storage.start_run(db_path, "demo", ts)
+            storage.finish_run(
+                db_path,
+                run_id,
+                "error",
+                "blocked (HTTP 403) for url 'https://x'",
+                samples_written=0,
+                finished_at=ts,
+            )
+
+        assert storage.trailing_backoff_count(db_path, "demo") == 3
+
+    def test_counts_trailing_rate_limited_runs(self, db_path):
+        for ts in (1000, 1001):
+            run_id = storage.start_run(db_path, "demo", ts)
+            storage.finish_run(
+                db_path,
+                run_id,
+                "error",
+                "rate limited (retry_after=None)",
+                samples_written=0,
+                finished_at=ts,
+            )
+
+        assert storage.trailing_backoff_count(db_path, "demo") == 2
+
+    def test_stops_at_the_first_ok_run(self, db_path):
+        ok_run = storage.start_run(db_path, "demo", 1000)
+        storage.finish_run(
+            db_path, ok_run, "ok", None, samples_written=1, finished_at=1000
+        )
+        blocked_run = storage.start_run(db_path, "demo", 1001)
+        storage.finish_run(
+            db_path,
+            blocked_run,
+            "error",
+            "blocked (HTTP 403) for url 'https://x'",
+            samples_written=0,
+            finished_at=1001,
+        )
+
+        assert storage.trailing_backoff_count(db_path, "demo") == 1
+
+    def test_stops_at_the_first_ordinary_error(self, db_path):
+        # An ordinary error resets the in-memory backoff_state to 0 (see
+        # _run_scheduled_plugin's else branch), so the trailing count must
+        # stop there too, not keep walking past it to older blocked runs.
+        blocked_run = storage.start_run(db_path, "demo", 1000)
+        storage.finish_run(
+            db_path,
+            blocked_run,
+            "error",
+            "blocked (HTTP 403) for url 'https://x'",
+            samples_written=0,
+            finished_at=1000,
+        )
+        ordinary_run = storage.start_run(db_path, "demo", 1001)
+        storage.finish_run(
+            db_path, ordinary_run, "error", "boom", samples_written=0, finished_at=1001
+        )
+
+        assert storage.trailing_backoff_count(db_path, "demo") == 0
+
+    def test_interrupted_run_is_skipped_not_counted(self, db_path):
+        blocked_run = storage.start_run(db_path, "demo", 1000)
+        storage.finish_run(
+            db_path,
+            blocked_run,
+            "error",
+            "blocked (HTTP 403) for url 'https://x'",
+            samples_written=0,
+            finished_at=1000,
+        )
+        storage.start_run(db_path, "demo", 1100)
+        storage.close_interrupted_runs(db_path, now=1150)
+
+        assert storage.trailing_backoff_count(db_path, "demo") == 1
 
 
 class TestPrunePluginRuns:
@@ -1361,7 +1612,7 @@ class TestRecentChanges:
         storage.record_sample(db_path, series_id, 1100, 5, heartbeat_seconds=100)
         storage.record_sample(db_path, series_id, 1200, 8, heartbeat_seconds=100)
 
-        changes = storage.recent_changes(db_path, 10)
+        changes = storage.recent_changes(db_path, 10, now=1200)
 
         assert [(row["ts"], row["change"]) for row in changes] == [(1200, 3)]
 
@@ -1369,7 +1620,7 @@ class TestRecentChanges:
         series_id = self._series(db_path, "demo.a")
         storage.record_sample(db_path, series_id, 1000, 5, heartbeat_seconds=100)
 
-        assert storage.recent_changes(db_path, 10) == []
+        assert storage.recent_changes(db_path, 10, now=1000) == []
 
     def test_orders_newest_first_and_respects_limit(self, db_path):
         series_id = self._series(db_path, "demo.a")
@@ -1378,7 +1629,7 @@ class TestRecentChanges:
         storage.record_sample(db_path, series_id, 1002, 3, heartbeat_seconds=1)
         storage.record_sample(db_path, series_id, 1003, 4, heartbeat_seconds=1)
 
-        changes = storage.recent_changes(db_path, 2)
+        changes = storage.recent_changes(db_path, 2, now=1003)
 
         assert [row["ts"] for row in changes] == [1003, 1002]
 
@@ -1395,7 +1646,73 @@ class TestRecentChanges:
         finally:
             conn.close()
 
-        assert storage.recent_changes(db_path, 10) == []
+        assert storage.recent_changes(db_path, 10, now=1001) == []
+
+    def test_falls_back_past_every_window_to_the_unbounded_scan(self, db_path):
+        # A change older than the widest (1-year) window must still be
+        # found -- the unbounded fallback is the correctness backstop.
+        series_id = self._series(db_path, "demo.a")
+        storage.record_sample(db_path, series_id, 1000, 1, heartbeat_seconds=1)
+        storage.record_sample(db_path, series_id, 1001, 2, heartbeat_seconds=1)
+
+        now = 1001 + 400 * 86400  # well past the widest window
+        changes = storage.recent_changes(db_path, 1, now=now)
+
+        assert [row["ts"] for row in changes] == [1001]
+
+    def test_a_narrow_window_still_returns_the_true_newest_changes(self, db_path):
+        # Two series: one with a change inside the first (7-day) window,
+        # one with an older change that only a wider window reaches. With
+        # limit=1 the 7-day window alone already has >= 1 result, so the
+        # newest one (inside the window) must win -- not an artifact of
+        # which window happened to satisfy the count.
+        old_series = self._series(db_path, "demo.old")
+        storage.record_sample(db_path, old_series, 1000, 1, heartbeat_seconds=1)
+        storage.record_sample(db_path, old_series, 1001, 2, heartbeat_seconds=1)
+
+        recent_series = self._series(db_path, "demo.recent")
+        now = 1001 + 10 * 86400
+        recent_ts = now - 3600
+        storage.record_sample(
+            db_path, recent_series, now - 4000, 1, heartbeat_seconds=1
+        )
+        storage.record_sample(db_path, recent_series, recent_ts, 2, heartbeat_seconds=1)
+
+        changes = storage.recent_changes(db_path, 1, now=now)
+
+        assert [row["ts"] for row in changes] == [recent_ts]
+
+    def test_stays_fast_with_years_of_history(self, db_path):
+        # #94: Hermes' own estimate is ~8.8k rows/series/year at a 1h
+        # heartbeat; this seeds ~3 years' worth (hourly for 1000 days) on
+        # one series, all older than the recent-activity window this call
+        # actually needs, plus one genuine recent change. Before #94 this
+        # scan grew with the install's *lifetime*, not its request volume
+        # -- the whole point of the fix is that this stays fast regardless
+        # of how much history exists behind the window that answers it.
+        series_id = self._series(db_path, "demo.a")
+        conn = sqlite3.connect(str(db_path))
+        try:
+            conn.executemany(
+                "INSERT INTO samples (series_id, ts, value) VALUES (?, ?, ?)",
+                [(series_id, ts, float(ts)) for ts in range(0, 1000 * 86400, 3600)],
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        now = 1000 * 86400 + 100
+        storage.record_sample(db_path, series_id, now, -1, heartbeat_seconds=1)
+
+        elapsed = min(
+            _time_it(lambda: storage.recent_changes(db_path, 10, now=now))
+            for _ in range(3)
+        )
+
+        # ~24k rows is enough for the windowed vs. unbounded gap to show:
+        # 100ms leaves generous CI headroom while still catching a
+        # regression back to scanning the whole series on every call.
+        assert elapsed < 0.1
 
 
 class TestRecordedChanges:
@@ -1433,6 +1750,58 @@ class TestRecordedChanges:
         rows = storage.recorded_changes(db_path, series_id, 1000, 1003, 2)
 
         assert [row["ts"] for row in rows] == [1003, 1002]
+
+    def test_oldest_row_in_range_gets_a_real_change_from_its_anchor(self, db_path):
+        # #94: the range query alone (ts > start AND ts <= end) can't see
+        # the sample just before `start`, so the oldest returned row needs
+        # a separate anchor lookup for its predecessor -- not an unbounded
+        # scan of the whole series, just one indexed seek at start.
+        series_id = self._series(db_path)
+        storage.record_sample(db_path, series_id, 500, 10, heartbeat_seconds=1)
+        storage.record_sample(db_path, series_id, 1500, 16, heartbeat_seconds=1)
+
+        rows = storage.recorded_changes(db_path, series_id, 1000, 2000, 10)
+
+        # Only the ts=1500 sample is in (1000, 2000], but its change must
+        # be against the ts=500 anchor (10), not treated as a first-ever
+        # sample (change=0).
+        assert rows == [{"ts": 1500, "value": 16, "change": 6}]
+
+    def test_no_anchor_before_start_treats_oldest_row_as_first_ever(self, db_path):
+        series_id = self._series(db_path)
+        storage.record_sample(db_path, series_id, 1500, 16, heartbeat_seconds=1)
+
+        rows = storage.recorded_changes(db_path, series_id, 1000, 2000, 10)
+
+        assert rows == [{"ts": 1500, "value": 16, "change": 0}]
+
+    def test_stays_fast_with_years_of_history_outside_the_range(self, db_path):
+        # #94: querying a recent window (the detail page's default 1M
+        # range) must not pay for the years of history before it -- the
+        # anchor lookup is one indexed seek, and the range scan only
+        # touches rows actually in range.
+        series_id = self._series(db_path)
+        conn = sqlite3.connect(str(db_path))
+        try:
+            conn.executemany(
+                "INSERT INTO samples (series_id, ts, value) VALUES (?, ?, ?)",
+                [(series_id, ts, float(ts)) for ts in range(0, 1000 * 86400, 3600)],
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        end = 1000 * 86400
+        start = end - 30 * 86400  # the last 30 days only
+
+        elapsed = min(
+            _time_it(
+                lambda: storage.recorded_changes(db_path, series_id, start, end, 20)
+            )
+            for _ in range(3)
+        )
+
+        assert elapsed < 0.05
 
 
 class TestGetAnySeriesByKey:
