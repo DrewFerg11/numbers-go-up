@@ -58,8 +58,8 @@ Hover it to see the last error:
 
 | Dot | Meaning |
 |---|---|
-| Green | The last poll succeeded, or a poll is running now |
-| Amber | The last one or two polls failed |
+| Green | The last finished poll succeeded |
+| Amber | The last one or two finished polls failed, even while a retry is running |
 | Red | Three or more polls in a row failed, **or** the source answered `403` |
 | Grey | Enabled, but no poll has finished yet |
 

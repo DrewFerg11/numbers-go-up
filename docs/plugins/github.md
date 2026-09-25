@@ -4,9 +4,9 @@ Tracks stars, forks, watchers and open issues for your repositories, and
 optionally the total download count of their release assets.
 
 !!! success "Official, documented API"
-    This is the only built-in source that uses an official, documented API
-    (GitHub's REST API). It's the most stable plugin here: the fields it
-    reads are part of GitHub's published contract.
+    Uses GitHub's REST API, an official, documented API. The fields it reads
+    are part of GitHub's published contract, so breakage from GitHub's side
+    is unlikely.
 
 ## What it collects
 
