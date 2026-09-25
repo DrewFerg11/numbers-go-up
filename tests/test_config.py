@@ -42,8 +42,7 @@ def test_missing_config_file_writes_example_and_uses_defaults(tmp_path):
     assert config["poll"]["jitter_fraction"] == 0.2
     assert config["storage"]["heartbeat_seconds"] == 86400
     assert config["storage"]["plugin_runs_retention_days"] == 30
-    assert config["server"]["host"] == "0.0.0.0"
-    assert config["server"]["port"] == 8080
+    assert config["server"] == {"external_url": None, "host": None, "port": None}
     assert config["plugins"] == {}
 
 
@@ -93,7 +92,7 @@ def test_partial_config_merges_over_defaults_instead_of_replacing(tmp_path):
     # ...and everything else still comes from defaults, not wiped out.
     assert config["poll"]["default_interval"] == 1800
     assert config["storage"]["heartbeat_seconds"] == 86400
-    assert config["server"]["port"] == 8080
+    assert config["server"] == {"external_url": None, "host": None, "port": None}
 
 
 def test_zero_plugins_enabled_by_default(tmp_path):
@@ -174,3 +173,101 @@ def test_scalar_section_raises_config_error_naming_key(tmp_path):
         load_config(env=_env(tmp_path, NGU_CONFIG_FILE=str(config_file)))
 
     assert "poll" in str(exc_info.value)
+
+
+def _write_config(config_file: Path, data: dict) -> None:
+    config_file.parent.mkdir(parents=True, exist_ok=True)
+    config_file.write_text(yaml.dump(data))
+
+
+def test_quoted_heartbeat_seconds_fails_startup_naming_the_key(tmp_path):
+    config_file = tmp_path / "config" / "config.yaml"
+    _write_config(config_file, {"storage": {"heartbeat_seconds": "86400"}})
+
+    with pytest.raises(ConfigError, match="storage.heartbeat_seconds"):
+        load_config(env=_env(tmp_path, NGU_CONFIG_FILE=str(config_file)))
+
+
+def test_quoted_default_interval_fails_startup_naming_the_key(tmp_path):
+    config_file = tmp_path / "config" / "config.yaml"
+    _write_config(config_file, {"poll": {"default_interval": "1800"}})
+
+    with pytest.raises(ConfigError, match="poll.default_interval"):
+        load_config(env=_env(tmp_path, NGU_CONFIG_FILE=str(config_file)))
+
+
+def test_unknown_top_level_key_fails_startup_and_names_the_key(tmp_path):
+    config_file = tmp_path / "config" / "config.yaml"
+    _write_config(config_file, {"mqqt": {"host": "broker.local"}})
+
+    with pytest.raises(ConfigError, match="mqqt"):
+        load_config(env=_env(tmp_path, NGU_CONFIG_FILE=str(config_file)))
+
+
+def test_unknown_top_level_key_suggests_the_closest_known_key(tmp_path):
+    config_file = tmp_path / "config" / "config.yaml"
+    _write_config(config_file, {"mqqt": {"host": "broker.local"}})
+
+    with pytest.raises(ConfigError, match="mqtt"):
+        load_config(env=_env(tmp_path, NGU_CONFIG_FILE=str(config_file)))
+
+
+def test_ngu_config_strict_0_downgrades_a_bad_config_to_a_warning(tmp_path, caplog):
+    config_file = tmp_path / "config" / "config.yaml"
+    _write_config(config_file, {"mqqt": {"host": "broker.local"}})
+
+    config = load_config(
+        env=_env(tmp_path, NGU_CONFIG_FILE=str(config_file), NGU_CONFIG_STRICT="0")
+    )
+
+    assert "mqqt" in config
+    assert any("NGU_CONFIG_STRICT" in r.message for r in caplog.records)
+
+
+def test_server_port_set_logs_a_deprecation_warning_but_still_starts(tmp_path, caplog):
+    config_file = tmp_path / "config" / "config.yaml"
+    _write_config(config_file, {"server": {"port": 9000}})
+
+    config = load_config(env=_env(tmp_path, NGU_CONFIG_FILE=str(config_file)))
+
+    assert config["server"]["port"] == 9000
+    assert any("deprecated" in r.message for r in caplog.records)
+
+
+def test_server_external_url_is_carried_through(tmp_path):
+    config_file = tmp_path / "config" / "config.yaml"
+    _write_config(config_file, {"server": {"external_url": "http://192.168.1.50:8080"}})
+
+    config = load_config(env=_env(tmp_path, NGU_CONFIG_FILE=str(config_file)))
+
+    assert config["server"]["external_url"] == "http://192.168.1.50:8080"
+
+
+def test_server_external_url_without_scheme_fails_startup(tmp_path):
+    config_file = tmp_path / "config" / "config.yaml"
+    _write_config(
+        config_file,
+        {"server": {"external_url": "192.168.1.50:8080"}},
+    )
+
+    with pytest.raises(ConfigError, match="external_url"):
+        load_config(env=_env(tmp_path, NGU_CONFIG_FILE=str(config_file)))
+
+
+def test_server_external_url_without_host_fails_startup(tmp_path):
+    config_file = tmp_path / "config" / "config.yaml"
+    _write_config(
+        config_file,
+        {"server": {"external_url": "http://:8080"}},
+    )
+
+    with pytest.raises(ConfigError, match="external_url"):
+        load_config(env=_env(tmp_path, NGU_CONFIG_FILE=str(config_file)))
+
+
+def test_dashboard_pinned_non_list_fails_startup(tmp_path):
+    config_file = tmp_path / "config" / "config.yaml"
+    _write_config(config_file, {"dashboard": {"pinned": "acme.x"}})
+
+    with pytest.raises(ConfigError, match="dashboard.pinned"):
+        load_config(env=_env(tmp_path, NGU_CONFIG_FILE=str(config_file)))

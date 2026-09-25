@@ -29,6 +29,7 @@ import fnmatch
 import json
 import logging
 import os
+import secrets
 import threading
 import time
 from collections.abc import Mapping
@@ -210,14 +211,14 @@ class MqttPublisher:
         self._password = password
         self._version = version
 
+        # No fallback to a guessed host:port -- 0.0.0.0 (the container's own
+        # bind address, not something a browser can open) rewritten to
+        # "localhost" pointed HA's "Visit" link at the NAS running HA
+        # itself, not the machine actually serving the dashboard, for
+        # anyone opening it from another device. Publish the field only
+        # when the user has set one explicitly.
         server_config = server_config or {}
-        server_host = server_config.get("host") or "0.0.0.0"
-        # 0.0.0.0/:: is a bind address, not something a browser can open --
-        # fall back to localhost for the device's configuration_url link.
-        if server_host in ("0.0.0.0", "::"):
-            server_host = "localhost"
-        server_port = server_config.get("port", 8080)
-        self._configuration_url = f"http://{server_host}:{server_port}/"
+        self._configuration_url = server_config.get("external_url")
 
         self._lock = threading.Lock()
         self._connected = False
@@ -245,8 +246,18 @@ class MqttPublisher:
     # -- construction ------------------------------------------------
 
     def _build_client(self) -> Any:
+        # MQTT allows one session per client id -- a fixed id meant a
+        # second instance connecting to the same broker (a test container
+        # next to prod, an old container not yet removed) got the broker
+        # to disconnect the first, which paho then reconnected, kicking the
+        # second, forever. A random per-process suffix means no two
+        # processes ever share a session; clean sessions are already used
+        # (no persistent session to lose), and unique_id/object_id/the
+        # device identifier are unrelated to this and stay exactly as they
+        # are, so existing Home Assistant entities are untouched.
+        client_id = f"numbers-go-up-{self._topic_prefix}-{secrets.token_hex(3)}"
         return paho_mqtt.Client(
-            paho_mqtt.CallbackAPIVersion.VERSION2, client_id="numbers-go-up"
+            paho_mqtt.CallbackAPIVersion.VERSION2, client_id=client_id
         )
 
     def _configure_client(self) -> None:
@@ -421,6 +432,16 @@ class MqttPublisher:
         return 3 * interval
 
     def _discovery_payload(self, row: Any, object_id: str) -> dict[str, Any]:
+        device: dict[str, Any] = {
+            "identifiers": [DEVICE_IDENTIFIER],
+            "name": DEVICE_IDENTIFIER,
+            "manufacturer": DEVICE_IDENTIFIER,
+            "model": DEVICE_MODEL,
+            "sw_version": self._version,
+        }
+        if self._configuration_url:
+            device["configuration_url"] = self._configuration_url
+
         payload: dict[str, Any] = {
             "name": row["label"],
             "unique_id": object_id,
@@ -439,14 +460,7 @@ class MqttPublisher:
             "state_class": _KIND_TO_STATE_CLASS[row["kind"]],
             "suggested_display_precision": 0,
             "expire_after": self._expire_after(row["plugin_name"]),
-            "device": {
-                "identifiers": [DEVICE_IDENTIFIER],
-                "name": DEVICE_IDENTIFIER,
-                "manufacturer": DEVICE_IDENTIFIER,
-                "model": DEVICE_MODEL,
-                "sw_version": self._version,
-                "configuration_url": self._configuration_url,
-            },
+            "device": device,
         }
         if row["unit"]:
             payload["unit_of_measurement"] = row["unit"]
