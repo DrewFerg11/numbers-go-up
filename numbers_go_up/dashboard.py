@@ -126,9 +126,8 @@ def _build_metric(
     now: int,
     default_interval: int,
     intervals: dict[str, int],
-    finished_run_cache: dict[str, Any],
+    last_ok: dict[str, int],
 ) -> dict[str, Any] | None:
-    db_path = request.app.state.config["storage"]["path"]
     if row["last_value"] is None:
         return None
 
@@ -155,14 +154,8 @@ def _build_metric(
     avg_per_day = round(change / span_days, 2)
 
     interval = intervals.get(row["plugin_name"], default_interval)
-    stale = _is_stale(
-        db_path,
-        row["plugin_name"],
-        row["last_seen"],
-        interval,
-        now,
-        finished_run_cache,
-    )
+    stale = _is_stale(row["plugin_name"], interval, now, last_ok)
+    stale_since = _format_iso(last_ok.get(row["plugin_name"]))
 
     metrics_for_plugin = _plugin_metrics_for(request, row["plugin_name"])
     resolved = resolve_metric(row["metric_key"], metrics_for_plugin)
@@ -187,6 +180,7 @@ def _build_metric(
         "changes": stats["changes"],
         "updated": _format_iso(row["last_seen"]),
         "stale": stale,
+        "stale_since": stale_since,
         "spark": _bucket_spark(points, start, now, open_value, value),
     }
 
@@ -250,8 +244,10 @@ def build_overview(request: Request, range_key: str) -> dict[str, Any]:
     # per-series first_seen start can't be batched the same way) rather than
     # a connection *and* 2-3 queries per series -- with up to 500
     # pattern-matched series per plugin and a 60s auto-refresh per open tab,
-    # that per-series cost was the dominant one here.
-    finished_run_cache: dict[str, Any] = {}
+    # that per-series cost was the dominant one here. Same reasoning behind
+    # last_ok: one grouped query for every plugin's last successful poll,
+    # not one per series (#133).
+    last_ok = storage.last_ok_runs(db_path)
     metrics: list[dict[str, Any]] = []
     with contextlib.closing(storage.connect(db_path)) as conn:
         stats_by_id = storage.range_stats_bulk_conn(conn, starts_by_id, now)
@@ -264,7 +260,7 @@ def build_overview(request: Request, range_key: str) -> dict[str, Any]:
                 now,
                 default_interval,
                 intervals,
-                finished_run_cache,
+                last_ok,
             )
             if metric is not None:
                 metrics.append(metric)
@@ -414,7 +410,9 @@ def metric_detail(
     intervals = getattr(request.app.state, "plugin_intervals", {})
     default_interval = config["poll"]["default_interval"]
     interval = intervals.get(row["plugin_name"], default_interval)
-    stale = _is_stale(db_path, row["plugin_name"], row["last_seen"], interval, now)
+    last_ok = storage.last_ok_runs(db_path)
+    stale = _is_stale(row["plugin_name"], interval, now, last_ok)
+    stale_since = _format_iso(last_ok.get(row["plugin_name"]))
 
     attrs = _parse_attrs(row["attrs"])
     recorded = storage.recorded_changes(
@@ -444,6 +442,7 @@ def metric_detail(
         "first_seen": _format_iso(row["first_seen"]),
         "updated": _format_iso(row["last_seen"]),
         "stale": stale,
+        "stale_since": stale_since,
         "active": bool(row["active"]),
         "recorded_changes": [
             {

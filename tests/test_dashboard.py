@@ -161,6 +161,20 @@ def test_chart_js_implements_the_stale_dashed_tail(tmp_path):
     assert "Date.now()" in chart_js
 
 
+def test_chart_js_stale_tail_survives_a_store_on_change_series(tmp_path):
+    # Regression: for a flat, store-on-change series, staleSinceTs (the
+    # plugin's last OK poll) lands strictly after the series' last
+    # *written* sample. render()'s split search used to look for a real
+    # point at or after staleSinceTs and find only the synthesized "now"
+    # point, landing splitIdx on the final index -- hasStaleTail then
+    # evaluated false and the whole line stayed main-colored, no dashed
+    # tail at all. The search threshold must be clamped to the last real
+    # point instead, so the split (and the tail) always includes it.
+    chart_js = (dashboard.STATIC_DIR / "js" / "chart.js").read_text(encoding="utf-8")
+
+    assert "Math.min(opts.staleSinceTs, lastRealTs)" in chart_js
+
+
 def test_theme_toggle_reloads_the_selected_chart(tmp_path):
     # chart.js resolves colors from CSS custom properties once, at render
     # time -- toggling the theme without re-rendering leaves the big
@@ -434,6 +448,28 @@ def test_overview_high_low(tmp_path):
     metric = response.json()["metrics"][0]
     assert metric["high"] == 50
     assert metric["low"] == 5
+
+
+def test_overview_stale_since_is_the_plugins_last_successful_poll(tmp_path):
+    # The chart's dashed "no data" tail boundary (#133): stale_since is
+    # the plugin's last OK poll, not the series' last written sample --
+    # a flat, store-on-change series can go most of a day between writes
+    # while still polling successfully every interval.
+    client, db_path = client_for(tmp_path, plugin_intervals={"acme": 1800})
+    now = int(time.time())
+    series_id = seed_series(db_path, "acme.widgets", now=now - 5 * DAY)
+    storage.record_sample(db_path, series_id, now - 5 * DAY, 10, DAY)
+
+    run_id = storage.start_run(db_path, "acme", now - 60)
+    storage.finish_run(
+        db_path, run_id, "ok", None, samples_written=0, finished_at=now - 60
+    )
+
+    response = client.get("/api/stats/overview?range=1M")
+
+    metric = response.json()["metrics"][0]
+    assert metric["stale"] is False
+    assert metric["stale_since"] != metric["updated"]
 
 
 def test_overview_avg_per_day(tmp_path):
@@ -751,6 +787,26 @@ def test_detail_exposes_stale_and_updated_to_the_client(tmp_path):
 
     assert 'data-stale="true"' in response.text
     assert 'data-updated="' in response.text
+    # No successful poll at all -> stale_since is empty, distinct from the
+    # sample-age-based `updated` the old rule used for the chart tail.
+    assert 'data-stale-since=""' in response.text
+
+
+def test_detail_stale_since_is_the_plugins_last_successful_poll(tmp_path):
+    client, db_path = client_for(tmp_path, plugin_intervals={"acme": 1800})
+    now = int(time.time())
+    series_id = seed_series(db_path, "acme.widgets", now=now - 2 * DAY)
+    storage.record_sample(db_path, series_id, now - 2 * DAY, 10, DAY)
+    run_id = storage.start_run(db_path, "acme", now - 60)
+    storage.finish_run(
+        db_path, run_id, "ok", None, samples_written=0, finished_at=now - 60
+    )
+
+    response = client.get("/m/acme.widgets")
+
+    assert 'data-stale="false"' in response.text
+    assert 'data-stale-since="' in response.text
+    assert 'data-stale-since=""' not in response.text
 
 
 def test_detail_recorded_change_renders_full_precision(tmp_path):

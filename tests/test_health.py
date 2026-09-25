@@ -116,6 +116,33 @@ def test_lifespan_runs_migrations_before_serving(tmp_path, monkeypatch):
     assert "metric_series" in tables
 
 
+def test_lifespan_retires_a_disabled_plugins_series_at_startup(tmp_path, monkeypatch):
+    # #133: a plugin disabled in config (or whose file was removed) leaves
+    # its series stranded active forever unless something retires them.
+    # main.lifespan does that once, right after migrations/discovery and
+    # before the scheduler starts.
+    from numbers_go_up import migrate, storage
+
+    data_dir = tmp_path / "data"
+    monkeypatch.setenv("NGU_DATA_DIR", str(data_dir))
+    monkeypatch.setenv("NGU_CONFIG_FILE", str(tmp_path / "config" / "config.yaml"))
+    monkeypatch.setenv("NGU_PLUGIN_DIR", str(tmp_path / "plugins"))
+
+    db_path = data_dir / "stats.db"
+    data_dir.mkdir(parents=True)
+    migrate.run_migrations(str(db_path))
+    storage.get_or_create_series(
+        str(db_path), "removed.old.count", "removed", "cumulative", "L", "u", "i", 1000
+    )
+
+    with TestClient(app) as scoped_client:
+        response = scoped_client.get("/health")
+
+    assert response.status_code == 200
+    assert storage.get_series_by_key(str(db_path), "removed.old.count") is None
+    assert storage.get_any_series_by_key(str(db_path), "removed.old.count") is not None
+
+
 def test_service_starts_with_an_mqtt_broker_that_is_unreachable(tmp_path, monkeypatch):
     # No network access in tests: 127.0.0.1 on a port nothing listens on is
     # about as close to "unreachable broker" as this suite can get without

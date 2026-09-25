@@ -58,6 +58,7 @@
     // stored point at "now" for the dashed tail to extend to, so
     // synthesize one (carrying the last known value forward) whenever
     // the series is stale, per "the line continues ... to 'now'".
+    var lastRealTs = xs[xs.length - 1];
     if (opts.staleSinceTs != null) {
       var nowTs = Math.floor(Date.now() / 1000);
       if (xs[xs.length - 1] < nowTs) {
@@ -81,8 +82,17 @@
     var data = [xs, ys];
 
     if (opts.staleSinceTs != null) {
+      // For a store-on-change series, staleSinceTs (the plugin's last OK
+      // poll) can land after the last *stored* point -- there's no real
+      // point at or after it for the split search to find besides the
+      // synthesized "now" point itself, which would make the whole line
+      // main-colored with no tail at all. Clamping the search threshold
+      // to the last real point guarantees the split lands there instead,
+      // so everything from it onward (through the synthesized point)
+      // draws as the dashed tail.
+      var splitThreshold = Math.min(opts.staleSinceTs, lastRealTs);
       var splitIdx = xs.findIndex(function (ts) {
-        return ts >= opts.staleSinceTs;
+        return ts >= splitThreshold;
       });
       if (splitIdx === -1) splitIdx = xs.length - 1;
 

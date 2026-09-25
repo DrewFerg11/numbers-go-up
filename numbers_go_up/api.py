@@ -278,37 +278,28 @@ def _iso(ts: int | None) -> str | None:
 
 
 def _is_stale(
-    db_path: str,
     plugin_name: str,
-    last_seen: int | None,
     interval_seconds: int,
     now: int,
-    finished_run_cache: dict[str, Any] | None = None,
+    last_ok: dict[str, int],
 ) -> bool:
-    """Both halves of the stale rule: an old newest sample *and* a plugin
-    whose newest *finished* run failed. Age alone would mark every flat,
-    store-on-change series stale. consecutive_failures() is deliberately
-    not used here: start_run() inserts every run as status='error' (the
-    _RUN_IN_PROGRESS sentinel) and only finish_run() overwrites it, so
-    while a poll is in flight it counts a healthy plugin as failing.
+    """A series is stale when its plugin has had no successful poll within
+    3x its interval -- exactly Home Assistant's own ``expire_after`` rule
+    (mqtt.py's ``_expire_after``), per the README and #133's decision.
 
-    ``finished_run_cache``, when given, memoizes ``latest_finished_run`` per
-    ``plugin_name`` in that dict -- every series belonging to one plugin
-    shares the same result, so a caller checking many series for one
-    request (the dashboard overview) can pass the same dict across calls
-    and collapse what would otherwise be one connection+query per stale
-    series down to one per plugin. ``None`` (the default) looks it up
-    fresh every time, unchanged from before this parameter existed.
+    Not "the plugin's newest run failed": for a flat, store-on-change
+    series that only writes on the heartbeat, that older rule collapsed to
+    just the newest-run check, so a single failed poll could mark it stale
+    for up to a full heartbeat interval even though HA still saw it as
+    fresh.
+
+    ``last_ok`` is :func:`storage.last_ok_runs`'s ``{plugin_name:
+    finished_at}`` result -- one grouped query shared across every series
+    in a request (the dashboard overview, ``/api/stats/latest``) instead of
+    one query per series.
     """
-    if last_seen is None or now - last_seen <= 3 * interval_seconds:
-        return False
-    if finished_run_cache is not None and plugin_name in finished_run_cache:
-        finished = finished_run_cache[plugin_name]
-    else:
-        finished = storage.latest_finished_run(db_path, plugin_name)
-        if finished_run_cache is not None:
-            finished_run_cache[plugin_name] = finished
-    return finished is not None and finished["status"] != "ok"
+    finished_at = last_ok.get(plugin_name)
+    return finished_at is None or now - finished_at > 3 * interval_seconds
 
 
 @router.get(
@@ -323,6 +314,7 @@ def stats_latest(request: Request) -> dict[str, Any]:
     default_interval = config["poll"]["default_interval"]
     intervals = getattr(request.app.state, "plugin_intervals", {})
     now = int(time.time())
+    last_ok = storage.last_ok_runs(db_path)
 
     metrics: dict[str, Any] = {}
     for row in storage.list_series(db_path):
@@ -330,7 +322,7 @@ def stats_latest(request: Request) -> dict[str, Any]:
             continue
 
         interval = intervals.get(row["plugin_name"], default_interval)
-        stale = _is_stale(db_path, row["plugin_name"], row["last_seen"], interval, now)
+        stale = _is_stale(row["plugin_name"], interval, now, last_ok)
 
         value_1h = storage.value_as_of(db_path, row["id"], now - 3600)
         value_24h = storage.value_as_of(db_path, row["id"], now - 86400)
@@ -374,7 +366,11 @@ def stats_history(
         )
 
     db_path = request.app.state.config["storage"]["path"]
-    series = storage.get_series_by_key(db_path, metric)
+    # Any known series, active or not (#133): history is kept precisely so
+    # a retired series can still be looked at, and /api/metrics already
+    # lists inactive keys -- 404ing their history here was the one place
+    # that contradicted that. /api/stats/latest stays active-only.
+    series = storage.get_any_series_by_key(db_path, metric)
     if series is None:
         raise HTTPException(status_code=404, detail=f"Unknown metric {metric!r}")
 
@@ -409,7 +405,8 @@ def stats_delta(
     request: Request, metric: str, hours: int = Query(..., gt=0, le=MAX_HOURS)
 ) -> dict[str, Any]:
     db_path = request.app.state.config["storage"]["path"]
-    series = storage.get_series_by_key(db_path, metric)
+    # Same active-or-not resolution as /api/stats/history (#133).
+    series = storage.get_any_series_by_key(db_path, metric)
     if series is None:
         raise HTTPException(status_code=404, detail=f"Unknown metric {metric!r}")
 

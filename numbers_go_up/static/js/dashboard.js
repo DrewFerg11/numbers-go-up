@@ -455,7 +455,8 @@
         var points = data.points.map(function (p) {
           return [p.ts, p.value];
         });
-        var staleSinceTs = metric.stale ? Date.parse(metric.updated) / 1000 : null;
+        var staleSinceTs =
+          metric.stale && metric.stale_since ? Date.parse(metric.stale_since) / 1000 : null;
         chart.render(points, {
           direction: directionOf(metric),
           unit: metric.unit,
