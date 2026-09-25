@@ -31,7 +31,7 @@ jobs:
           cache-to: type=gha,mode=max
 
       # MVP acceptance: the container must come up and answer /health even
-      # with zero plugins configured (design.md -> Failure Handling #6).
+      # with zero plugins configured (Failure Handling #6, CONTRIBUTING.md).
       - name: Boot the image and check /health
         run: |
           docker run -d --name ngu-ci -p 8080:8080 app:ci

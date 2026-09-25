@@ -847,9 +847,8 @@ def get_series_by_key(db_path: str | Path, metric_key: str) -> sqlite3.Row | Non
     :func:`get_any_series_by_key` instead (#133): a retired series' history
     is kept precisely so it can still be looked at.
 
-    Includes ``attrs`` (unlike this function's earlier shape) so callers
-    that need a series' ``attrs.url`` -- the milestone webhook payload --
-    don't need a second query.
+    Includes ``attrs`` so callers that need a series' ``attrs.url`` -- the
+    milestone webhook payload -- don't need a second query.
     """
     with contextlib.closing(connect(db_path)) as conn:
         conn.row_factory = sqlite3.Row
@@ -1175,13 +1174,13 @@ def recorded_changes(
     with no real change comes back with ``change == 0`` rather than being
     filtered out, unlike :func:`recent_changes`.
 
-    Bounded (#94), unlike the ``LAG()`` over the series' *entire* history
-    this used to run on every call regardless of ``start``/``end``: one
-    indexed seek for the newest sample at or before ``start`` (the
-    "anchor", so the oldest row in range still gets a correct change
-    against a real predecessor even when that predecessor is outside the
-    range), plus the samples actually in range, both bounded scans against
-    ``samples``' ``(series_id, ts)`` primary key.
+    Bounded (#94): one indexed seek for the newest sample at or before
+    ``start`` (the "anchor", so the oldest row in range still gets a
+    correct change against a real predecessor even when that predecessor
+    is outside the range), plus the samples actually in range, both
+    bounded scans against ``samples``' ``(series_id, ts)`` primary key --
+    never a scan over the series' entire history regardless of
+    ``start``/``end``.
     """
     with contextlib.closing(connect(db_path)) as conn:
         anchor = conn.execute(

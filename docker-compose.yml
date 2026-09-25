@@ -13,7 +13,7 @@ services:
       - "8080:8080"
     volumes:
       - ./data:/data # SQLite DB + migration backups
-      - ./config:/config # config.yaml -- edit on the host, no rebuild
+      - ./config:/config # config.yaml -- edit on the host, then `docker compose restart`
       - ./user-plugins:/plugins # optional user-supplied plugins
     environment:
       - NGU_DATA_DIR=/data

@@ -13,7 +13,7 @@ Closes #
 - [ ] Linked to an issue above — the reviewer reads its acceptance criteria as the spec
 - [ ] Tests are **offline**: no network access in anything CI runs. Live probes are marked `@pytest.mark.live` and excluded by `-m "not live"`
 - [ ] `ruff` clean, `pytest` green
-- [ ] **If a decision changed, the doc changed in this same PR** — not just the issue thread. `docs/` is the design record and it is authoritative
+- [ ] **If a decision changed, `README.md`/`CONTRIBUTING.md` (or the relevant code comment) changed in this same PR** — not just the issue thread
 - [ ] No secrets, tokens, cookies, personal user IDs, or handles committed — including in test fixtures
 - [ ] All SQL lives in `storage.py`
 

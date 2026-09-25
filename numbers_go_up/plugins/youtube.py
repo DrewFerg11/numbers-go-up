@@ -14,9 +14,8 @@ exercise than this project takes on elsewhere, so it stays out.
 
 Only ``source: official`` ships. It uses the documented Data API v3
 ``channels`` endpoint, unauthenticated except for the required API key.
-Per the issue's own prior research (research.md, not yet in this repo --
-see the PR), the official API rounds ``subscriberCount`` to 3 significant
-figures above roughly four digits; ``viewCount``/``videoCount`` are
+The official API rounds ``subscriberCount`` to 3 significant figures
+above roughly four digits; ``viewCount``/``videoCount`` are
 commonly understood to be exact, though this project has not independently
 live-verified that split -- the ``test_live_youtube`` canary is the real
 check once ``NGU_YOUTUBE_API_KEY`` and ``NGU_CANARY_YOUTUBE_CHANNEL_ID``

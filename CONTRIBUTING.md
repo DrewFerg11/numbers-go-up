@@ -1,31 +1,88 @@
 # Contributing
 
-Thanks for looking. This is a small, opinionated hobby project — reading
-`docs/` first will save you time.
+Thanks for looking. This is a small, opinionated hobby project — this file
+and the code comments it points at are the written rules.
 
-## Read the design record first
+## Design record
 
-> **Note:** the design record is being prepared and lands in `docs/` shortly.
-> Until it does, the summaries below and this file are the written rules.
+The design record (why SQLite, why one container, the plugin contract's
+full rationale, and so on) is the maintainer's private working notes, not
+a tracked part of this repo. What *is* public and authoritative:
 
-`docs/` is authoritative and it is **not** a stale copy of somebody's notes.
-It's where the reasoning lives:
+- **This file** — the rules below, including the numbered Responsible Use
+  and Failure Handling list every code comment cites.
+- **Code comments** — the *why* behind a specific piece of code lives next
+  to that code, not in a separate doc.
+- **Closed decisions**, listed once here so they don't get relitigated in
+  every PR: SQLite over a real TSDB, one container instead of poller +
+  TSDB + Grafana, MQTT discovery over REST sensors, store-on-change writes,
+  GHCR as the canonical registry, and the platform-neutral name. Each was
+  made with evidence the maintainer has; reopening one needs new
+  information, not a preference.
 
-| Question | Doc |
-|---|---|
-| Why this architecture? Plugin contract? API spec? Responsible Use rules? | `docs/design.md` |
-| Why SQLite? Schema, migrations, write policy, retention | `docs/database.md` |
-| What gets built, in what order, and how do we know it works? | `docs/implementation-guide.md` |
-| What else exists out there? Which repos are upstream canaries? | `docs/research.md` |
+**If a decision changes, this file (or the relevant code comment) changes
+in the same PR.** Not a comment on the issue, not a follow-up. Otherwise
+the docs rot and nobody trusts them.
 
-Some decisions are closed — SQLite over a real TSDB, one container instead of
-poller + TSDB + Grafana, MQTT discovery over REST sensors, store-on-change
-writes, GHCR as the canonical registry, and the platform-neutral name. Each was
-made with evidence that's written down. Reopening one needs new information,
-not a preference.
+## Project rules
 
-**If a decision changes, the doc changes in the same PR.** Not a comment on the
-issue, not a follow-up. Otherwise the docs rot and nobody trusts them.
+Every `Responsible Use #N` / `Failure Handling #N` comment in the code
+cites one of these. Keep the numbering stable — a citation with no
+matching rule here is a bug.
+
+**Responsible Use**
+
+1. *(reserved — not yet cited in code)*
+2. **Opt-in and inert by default.** No default user IDs, handles, or repos
+   ship in the image. A fresh install makes zero outbound requests until
+   someone configures a source. If a config key is missing, make no
+   request at all — never fetch and discard.
+3. **Be polite.** Use the shared client from `http.py` only — no plugin
+   builds its own. Send the honest project User-Agent (documented,
+   per-plugin exceptions require a comment explaining why: TikTok's
+   browser-shaped UA, MakerWorld's model listing, GitHub's release
+   paging). A timeout on every request, no cookie or session reuse, no
+   automatic retries. One request per *configured subject* per poll —
+   not one request per poll; a plugin tracking five repos/channels/
+   handles/counters makes five requests, each capped by the plugin's own
+   `max` — plus the documented paging exceptions above. 30-minute default
+   interval, never below 5 minutes. Jitter only ever delays a request,
+   never brings one forward. On a 429 or 403, back off (see Failure
+   Handling #4) instead of retrying immediately.
+
+**Failure Handling**
+
+1. **Every poll is wrapped.** Start a `plugin_runs` row, call the
+   plugin's `collect()` inside try/except, validate and store what came
+   back, and always finish the run row — success or failure. A failing
+   plugin never stops another plugin or crashes the service.
+2. **A plugin goes unhealthy after 3 consecutive failed polls.** That's
+   what turns `/health/plugins` and the dashboard's status dot red;
+   tunable via `/health/plugins?failures=N`.
+3. *(reserved — not yet cited in code)*
+4. **No backoff storms.** An ordinary error doesn't change a plugin's
+   polling interval. Only a 429 or 403 backs off, and that backoff is
+   capped (see `scheduler.compute_backoff_delay_seconds`) — never an
+   unbounded or indefinite retreat.
+5. **Store the tail of a traceback, not the head.** A failed poll's
+   `plugin_runs.error` keeps the last ~500 characters of the exception,
+   so the actually-useful frame (what failed, not the call chain that led
+   there) survives truncation.
+6. **The container boots and answers `/health` with zero plugins
+   configured.** A missing or empty `config.yaml` is a valid starting
+   state, not a startup failure.
+
+**Unnumbered rules cited by comment, not by number:**
+
+- Don't flood the log — a plugin logs one warning when it starts failing
+  and one line when it recovers, not one line per poll.
+- A single failed poll (e.g. a Cloudflare 403 on one paginated request)
+  must never retire every series a pattern-key plugin already knows
+  about — only an explicit reconciliation after a *successful* poll
+  removes a series that's stopped being returned.
+- Retries for a stuck delivery (e.g. a milestone webhook) are bounded —
+  retried on the next successful poll, dropped after 24 hours of
+  failures rather than retried forever.
 
 ## Licensing — the one hard rule
 
@@ -35,39 +92,31 @@ permissively licensed source** (MIT, BSD, Apache-2.0), with the source credited.
 **Do not copy AGPL-licensed code into this project.** Not a snippet, not a
 "just the parsing bit." AGPL is copyleft: a derived file would relicense the
 entire project, which is not a call any single PR gets to make. This matters
-concretely here — some of the most useful prior art for the unofficial sources
-is AGPL-3.0 (this is recorded in the research notes). **Read those repos to understand the
-technique, then write your own implementation.** PRs with AGPL-derived code
-will be closed, however good they are.
+concretely here — some of the most useful prior art for the unofficial
+sources (MakerWorld, TikTok) is AGPL-3.0. **Read those repos to understand
+the technique, then write your own implementation.** PRs with AGPL-derived
+code will be closed, however good they are.
 
 By contributing you agree your work is licensed under the MIT License.
 
 ## Writing a plugin
 
-A new data source should be **one file** in `plugins/` and no changes anywhere
-else. If you find yourself editing the scheduler or storage to make a source
-work, open an issue — that's a gap in the plugin contract worth discussing
-before you write code.
+A new data source should be **one file** and no changes anywhere else: a
+built-in lives in `numbers_go_up/plugins/`, a user plugin in whatever
+directory `NGU_PLUGIN_DIR` points at (`./user-plugins` on the host, in the
+default compose setup) — there is no top-level `plugins/` directory. If you
+find yourself editing the scheduler or storage to make a source work, open
+an issue — that's a gap in the plugin contract worth discussing before you
+write code.
 
-The contract is in `docs/design.md` → Plugin System. Every plugin must:
+Copy [`numbers_go_up/plugins/_template.py`](numbers_go_up/plugins/_template.py)
+to start; its docstrings and `numbers_go_up/plugins/__init__.py`'s module
+docstring are the in-repo contract. Every plugin must also follow the
+Responsible Use and Failure Handling rules above, plus:
 
-- **Ship disabled and be inert by default.** No default user IDs, handles, or
-  repos in the image. A fresh install makes **zero** outbound requests until
-  someone configures one. If the config key is missing, make no request at all
-  — don't fetch and discard.
-- **Use the shared client from `http.py`.** It sets the honest project
-  User-Agent and handles 429 / `Retry-After` centrally. Plugins never build
-  their own client, and never spoof a browser UA. (TikTok is the one documented
-  exception — its profile page returns nothing usable without a browser UA and
-  `Accept-Language`. It says so in a comment, and it stays opt-in.)
-- **Be polite.** One request per poll. 30-minute default interval, never below
-  5 minutes. No proxy rotation, no CAPTCHA solving, no auth bypass, no cookie
-  or session reuse.
-- **Read public data about the user's own accounts.** No plugin reads another
-  user's private or authenticated data, and none require credentials.
-- **Fail as a failed poll, never a crash.** Any non-200, any missing key, any
-  shape change is one `plugin_runs` row with `status=error` and a bounded
-  traceback tail. The service stays up. Other plugins keep running.
+- **Read public data about the user's own accounts.** No plugin reads
+  another user's private or authenticated data, and none require
+  credentials.
 - **Come with an offline fixture test.** Commit a captured response under
   `tests/fixtures/` with your own IDs scrubbed. That's what CI runs. A live
   test is welcome but must be marked `@pytest.mark.live`, which CI excludes.
@@ -98,9 +147,11 @@ is derived from, and getting it wrong corrupts long-term statistics.
 
 ## Reporting things
 
-- A **data source stopped working** → the "Broken data source" template. This is
-  expected and routine; every source except GitHub is unofficial. Please verify
-  from your own connection first — the daily canary runs from Azure IPs and can
-  get 403s that don't reproduce at home.
+- A **data source stopped working** → the "Broken data source" template. This
+  is expected and routine for MakerWorld and TikTok, the two unofficial
+  (scraped) sources — GitHub, YouTube, and Abacus read documented APIs and
+  are comparatively stable. Please verify from your own connection first —
+  the daily canary runs from Azure IPs and can get 403s that don't
+  reproduce at home.
 - **The service itself misbehaves** → the bug template.
 - **A security issue** → privately, per [`SECURITY.md`](SECURITY.md).
