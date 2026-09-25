@@ -640,6 +640,28 @@ class TestLatestFinishedRun:
     def test_never_ran_returns_none(self, db_path):
         assert storage.latest_finished_run(db_path, "demo") is None
 
+    def test_a_started_at_tie_is_broken_by_id(self, db_path):
+        # Two finished runs sharing a started_at (real under
+        # second-resolution timestamps -- a fast error followed by a fast
+        # retry in the same second): ORDER BY started_at DESC alone
+        # leaves SQLite free to return either row, so this must match
+        # consecutive_failures' own id DESC tiebreak or the two can
+        # disagree about which run is newest.
+        older = storage.start_run(db_path, "demo", 1000)
+        storage.finish_run(
+            db_path, older, "ok", None, samples_written=1, finished_at=1000
+        )
+        newer = storage.start_run(db_path, "demo", 1000)
+        storage.finish_run(
+            db_path, newer, "error", "boom", samples_written=0, finished_at=1000
+        )
+        assert newer > older  # insertion order is the only real ordering
+
+        row = storage.latest_finished_run(db_path, "demo")
+
+        assert row["status"] == "error"
+        assert row["error"] == "boom"
+
     def test_ignores_other_plugins(self, db_path):
         other = storage.start_run(db_path, "other", 1000)
         storage.finish_run(

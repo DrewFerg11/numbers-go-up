@@ -451,7 +451,11 @@ def latest_finished_run(db_path: str | Path, plugin_name: str) -> sqlite3.Row | 
     plugin is alive. An interrupted run (see :data:`_INTERRUPTED_ERROR`)
     is skipped too, so a restart doesn't surface as an "error" status
     right after startup -- the row behind it (or None) is what's reported
-    instead.
+    instead. Ties on ``started_at`` (same-second runs) are broken by
+    ``id``, matching :func:`consecutive_failures` and
+    :func:`prune_plugin_runs` -- without it, two finished runs sharing a
+    ``started_at`` leave SQLite free to return either one, so this could
+    disagree with :func:`consecutive_failures` about which run is newest.
     """
     with contextlib.closing(connect(db_path)) as conn:
         conn.row_factory = sqlite3.Row
@@ -459,7 +463,7 @@ def latest_finished_run(db_path: str | Path, plugin_name: str) -> sqlite3.Row | 
             "SELECT started_at, finished_at, status, error FROM plugin_runs "
             "WHERE plugin_name = ? AND finished_at IS NOT NULL "
             "AND NOT (status = 'error' AND error = ?) "
-            "ORDER BY started_at DESC LIMIT 1",
+            "ORDER BY started_at DESC, id DESC LIMIT 1",
             (plugin_name, _INTERRUPTED_ERROR),
         ).fetchone()
 
