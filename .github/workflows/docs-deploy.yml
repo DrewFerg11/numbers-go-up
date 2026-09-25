@@ -76,17 +76,26 @@ jobs:
           if [ "$BRANCH" = "main" ] && [ "$GITHUB_EVENT_NAME" != "pull_request" ]; then
             echo "deploy_dir=." >> "$GITHUB_OUTPUT"
             echo "url=$SITE_URL/" >> "$GITHUB_OUTPUT"
-          else
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          elif [[ "$BRANCH" == docs/* || "$BRANCH" == feature/* ]]; then
+            # Keep this sanitiser identical to docs-cleanup.yml's, or deleting
+            # the branch won't find the preview folder to remove.
             SAFE_BRANCH=$(printf '%s' "$BRANCH" | sed 's/[^a-zA-Z0-9._-]/-/g')
             echo "deploy_dir=preview/$SAFE_BRANCH" >> "$GITHUB_OUTPUT"
             echo "url=$SITE_URL/preview/$SAFE_BRANCH/" >> "$GITHUB_OUTPUT"
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            # Previews only for the prefixes docs-cleanup.yml removes on branch
+            # deletion; anything else (e.g. a PR from fix/foo) is build-only.
+            echo "::notice::$BRANCH is not a docs/ or feature/ branch; built the site but skipped the preview."
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
           fi
 
       # Until an admin creates gh-pages and points Settings -> Pages at it,
       # there is nothing to deploy to: skip with a notice instead of failing.
       - name: Check for gh-pages
         id: ghpages
-        if: env.CAN_DEPLOY == 'true'
+        if: env.CAN_DEPLOY == 'true' && steps.path.outputs.enabled == 'true'
         run: |
           if git ls-remote --exit-code --heads origin gh-pages >/dev/null; then
             echo "exists=true" >> "$GITHUB_OUTPUT"
