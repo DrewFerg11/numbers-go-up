@@ -18,7 +18,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 
-from numbers_go_up import queries, storage
+from numbers_go_up import __version__, queries, storage
 from numbers_go_up.plugins import is_pattern_key, resolve_metric
 from numbers_go_up.queries import VALID_RANGES, RangeKey
 
@@ -31,6 +31,14 @@ TEMPLATES_DIR = PACKAGE_DIR / "templates"
 STATIC_DIR = PACKAGE_DIR / "static"
 
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
+# Cache-busting query param on every /static/... URL (base.html and the two
+# page templates): without it, a browser can keep serving an upgraded
+# image's old JS/CSS from heuristic cache against the new API shapes.
+# `__version__` is `0.0.0+unknown` on a dev checkout with no git metadata,
+# which is still a fine cache key -- it's constant for the life of that
+# process, so a restart (the only time the files on disk can have changed)
+# still busts it.
+templates.env.globals["asset_version"] = __version__
 
 DEFAULT_RANGE = "1M"
 
@@ -121,10 +129,13 @@ def _build_metric(
     resolved = resolve_metric(row["metric_key"], metrics_for_plugin)
     pattern = resolved[0] if resolved and is_pattern_key(resolved[0]) else None
 
+    group_label = _breadcrumb_group(pattern)
+
     return {
         "key": row["metric_key"],
         "plugin": row["plugin_name"],
         "pattern": pattern,
+        "group_label": group_label.lower() if group_label is not None else None,
         "label": row["label"],
         "kind": row["kind"],
         "unit": row["unit"],

@@ -144,24 +144,7 @@
       // Cursor point markers are on by default; explicitly setting
       // `cursor.points.show: true` crashes this uPlot build (a boolean
       // literal there conflicts with its internal default-function path),
-      // so leave `cursor` unset and just hook the readout below.
-      hooks: {
-        setCursor: [
-          function (u) {
-            if (!opts.onCursor) return;
-            var idx = u.cursor.idx;
-            if (idx == null) {
-              opts.onCursor(null);
-              return;
-            }
-            // With a stale tail, the value lives in whichever of the two
-            // series (main / stale) isn't null at this index.
-            var value = u.data[1][idx];
-            if (value == null && u.data[2] !== undefined) value = u.data[2][idx];
-            opts.onCursor({ ts: u.data[0][idx], value: value });
-          },
-        ],
-      },
+      // so leave `cursor` unset entirely -- nothing here hooks it.
     };
 
     this.instance = new global.uPlot(uplotOpts, data, this.container);
@@ -238,5 +221,4 @@
 
   global.NguChart = NguChart;
   global.renderChangeBars = renderBars;
-  global.nguCssVar = cssVar;
 })(window);

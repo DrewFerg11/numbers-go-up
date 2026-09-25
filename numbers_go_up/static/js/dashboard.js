@@ -7,8 +7,8 @@
   "use strict";
 
   var REFRESH_MS = 60000;
-  var THEME_KEY = "ngu.theme";
   var FOLD_KEY_PREFIX = "ngu.fold.";
+  var Ngu = window.Ngu;
 
   var app = document.querySelector(".app");
   var indexStrip = document.getElementById("index-strip");
@@ -38,6 +38,13 @@
     refreshTimer: null,
     metricsByKey: {},
     chartRequestId: 0,
+    // The key currently drawn on the big chart -- set by loadChartFor,
+    // read by the theme toggle so it can re-render whatever's actually
+    // charted. selectedKey() (the URL's own ?m=) isn't the same thing: a
+    // fresh load with no ?m= still charts pinned[0], and toggling the
+    // theme used to leave that chart in the old colors until the next
+    // 60s refresh happened to re-trigger loadChartFor.
+    chartedKey: null,
   };
 
   // --- Sparkline: a stepped polyline + area fill, hand-written (about 40
@@ -107,40 +114,6 @@
     svg.appendChild(line);
   }
 
-  function directionOf(metric) {
-    if (metric.change > 0) return "up";
-    if (metric.change < 0) return "down";
-    return "flat";
-  }
-
-  function formatValue(value) {
-    if (value === null || value === undefined) return "—";
-    return Number(value).toLocaleString();
-  }
-
-  function formatChange(metric) {
-    var dir = directionOf(metric);
-    var arrow = dir === "up" ? "▲" : dir === "down" ? "▼" : "●";
-    var sign = metric.change > 0 ? "+" : "";
-    var pct =
-      metric.change_pct === null || metric.change_pct === undefined
-        ? ""
-        : " (" + (metric.change_pct > 0 ? "+" : "") + metric.change_pct + "%)";
-    return arrow + " " + sign + formatValue(metric.change) + pct;
-  }
-
-  function relativeTime(iso) {
-    if (!iso) return "—";
-    var then = new Date(iso).getTime();
-    var diffSeconds = Math.max(0, Math.round((Date.now() - then) / 1000));
-    if (diffSeconds < 60) return diffSeconds + "s";
-    var minutes = Math.round(diffSeconds / 60);
-    if (minutes < 60) return minutes + "m";
-    var hours = Math.round(minutes / 60);
-    if (hours < 24) return hours + "h";
-    return Math.round(hours / 24) + "d";
-  }
-
   function selectedKey() {
     var params = new URLSearchParams(window.location.search);
     return params.get("m");
@@ -178,11 +151,11 @@
     node.removeAttribute("href");
     node.querySelector(".tile-plugin").textContent = metric.plugin.toUpperCase();
     node.querySelector(".tile-label").textContent = metric.label || metric.key;
-    node.querySelector(".tile-value").textContent = formatValue(metric.value);
+    node.querySelector(".tile-value").textContent = Ngu.formatValue(metric.value);
     var change = node.querySelector(".tile-change");
-    change.textContent = formatChange(metric);
-    change.className = "tile-change " + directionOf(metric);
-    renderSparkline(node.querySelector(".tile-spark"), metric.spark, directionOf(metric));
+    change.textContent = Ngu.formatChange(metric.change, metric.change_pct);
+    change.className = "tile-change " + Ngu.directionOf(metric.change);
+    renderSparkline(node.querySelector(".tile-spark"), metric.spark, Ngu.directionOf(metric.change));
     node.addEventListener("click", function (event) {
       event.preventDefault();
       setSelectedKey(metric.key);
@@ -206,15 +179,15 @@
     renderSparkline(
       node.querySelector(".row-spark"),
       metric.spark,
-      metric.stale ? "stale" : directionOf(metric)
+      metric.stale ? "stale" : Ngu.directionOf(metric.change)
     );
-    node.querySelector(".row-last").textContent = formatValue(metric.value);
+    node.querySelector(".row-last").textContent = Ngu.formatValue(metric.value);
     var change = node.querySelector(".row-change");
-    change.textContent = formatChange(metric);
-    change.className = "col-change row-change value-" + directionOf(metric);
+    change.textContent = Ngu.formatChange(metric.change, metric.change_pct);
+    change.className = "col-change row-change value-" + Ngu.directionOf(metric.change);
     node.querySelector(".row-highlow").textContent =
-      formatValue(metric.high) + " / " + formatValue(metric.low);
-    node.querySelector(".row-updated").textContent = relativeTime(metric.updated);
+      Ngu.formatValue(metric.high) + " / " + Ngu.formatValue(metric.low);
+    node.querySelector(".row-updated").textContent = Ngu.relativeTime(metric.updated);
 
     node.addEventListener("click", function () {
       setSelectedKey(metric.key);
@@ -264,8 +237,13 @@
       var toggle = node.querySelector(".fold-toggle");
       if (patternMetrics.length && staticMetrics.length) {
         // Mixed static + pattern: pattern series fold under a toggle,
-        // remembered per browser.
+        // remembered per browser. The noun comes from the server
+        // (dashboard._breadcrumb_group) -- "repos", "models", "channels",
+        // whatever the pattern's placeholder segment actually names --
+        // instead of a single hardcoded noun that was wrong for most
+        // plugins.
         var foldKey = FOLD_KEY_PREFIX + group.plugin;
+        var noun = patternMetrics[0].group_label || "items";
         var expanded = false;
         try {
           expanded = localStorage.getItem(foldKey) === "1";
@@ -279,18 +257,18 @@
         });
         rows.appendChild(patternContainer);
 
+        function foldLabel() {
+          return (
+            (expanded ? "▾ Hide " : "▸ Show ") + patternMetrics.length + " " + noun
+          );
+        }
+
         toggle.hidden = false;
-        toggle.textContent =
-          (expanded ? "▾ Hide " : "▸ Show ") +
-          patternMetrics.length +
-          " per-model series";
+        toggle.textContent = foldLabel();
         toggle.addEventListener("click", function () {
           expanded = !expanded;
           patternContainer.hidden = !expanded;
-          toggle.textContent =
-            (expanded ? "▾ Hide " : "▸ Show ") +
-            patternMetrics.length +
-            " per-model series";
+          toggle.textContent = foldLabel();
           try {
             localStorage.setItem(foldKey, expanded ? "1" : "0");
           } catch (e) {
@@ -375,7 +353,7 @@
       var pct = document.createElement("span");
       pct.textContent =
         (metric.change_pct > 0 ? "+" : "") + metric.change_pct + "%";
-      pct.className = "value-" + directionOf(metric);
+      pct.className = "value-" + Ngu.directionOf(metric.change);
       li.appendChild(label);
       li.appendChild(pct);
       li.addEventListener("click", function () {
@@ -396,8 +374,8 @@
       label.textContent = (metric && (metric.label || metric.key)) || change.key;
       var amount = document.createElement("span");
       var sign = change.change > 0 ? "+" : "";
-      amount.textContent = sign + formatValue(change.change) + " · " + relativeTime(change.ts);
-      amount.className = "value-" + directionOf({ change: change.change });
+      amount.textContent = sign + Ngu.formatValue(change.change) + " · " + Ngu.relativeTime(change.ts);
+      amount.className = "value-" + Ngu.directionOf(change.change);
       li.appendChild(label);
       li.appendChild(amount);
       latestChangesList.appendChild(li);
@@ -407,6 +385,7 @@
   function loadChartFor(key) {
     var metric = state.metricsByKey[key];
     if (!chart || !metric) return;
+    state.chartedKey = key;
 
     // A slower response for a previous selection (a stale metric's
     // history is exactly the expensive case) can land after a faster
@@ -439,7 +418,7 @@
         var staleSinceTs =
           metric.stale && metric.stale_since ? Date.parse(metric.stale_since) / 1000 : null;
         chart.render(points, {
-          direction: directionOf(metric),
+          direction: Ngu.directionOf(metric.change),
           unit: metric.unit,
           staleSinceTs: staleSinceTs,
         });
@@ -449,20 +428,17 @@
         // every bar maps too far right, worst at the last one, which
         // ends up drawn under the dashed "no data" tail instead of at
         // its own timestamp.
-        var barsEnd = staleSinceTs != null ? Date.now() / 1000 : 1;
-        if (staleSinceTs == null && points.length) {
-          barsEnd = points[points.length - 1][0];
-        }
-        window.renderChangeBars(document.getElementById("chart-bars"), data.bars, {
-          start: points.length ? points[0][0] : 0,
-          end: barsEnd,
-        });
+        window.renderChangeBars(
+          document.getElementById("chart-bars"),
+          data.bars,
+          Ngu.barsDomain(points, staleSinceTs)
+        );
         chartStats.textContent = "";
         [
-          ["OPEN", formatValue(metric.open)],
-          ["HIGH", formatValue(metric.high)],
-          ["LOW", formatValue(metric.low)],
-          ["AVG/DAY", formatValue(metric.avg_per_day)],
+          ["OPEN", Ngu.formatValue(metric.open)],
+          ["HIGH", Ngu.formatValue(metric.high)],
+          ["LOW", Ngu.formatValue(metric.low)],
+          ["AVG/DAY", Ngu.formatValue(metric.avg_per_day)],
           ["CHANGES", metric.changes],
         ].forEach(function (pair) {
           var span = document.createElement("span");
@@ -539,25 +515,16 @@
   // The initial theme is already applied by an inline <script> in
   // base.html's <head>, synchronously before first paint (avoiding a
   // flash of the wrong theme) -- this only needs to handle the toggle.
-  function applyTheme(theme) {
-    document.documentElement.setAttribute("data-theme", theme);
-  }
-
-  themeToggle.addEventListener("click", function () {
-    var current = document.documentElement.getAttribute("data-theme");
-    var next = current === "dark" ? "light" : "dark";
-    applyTheme(next);
-    try {
-      localStorage.setItem(THEME_KEY, next);
-    } catch (e) {
-      /* ignore */
-    }
+  Ngu.initThemeToggle(themeToggle, function () {
     // The big chart and change bars resolve their colors from CSS custom
     // properties once, at render time (chart.js's cssVar()) -- without
     // this, they'd keep the previous theme's colors until the next 60s
-    // auto-refresh happened to re-trigger loadChartFor.
-    var current_key = selectedKey();
-    if (current_key && state.metricsByKey[current_key]) loadChartFor(current_key);
+    // auto-refresh happened to re-trigger loadChartFor. state.chartedKey
+    // (not selectedKey()'s ?m=) is what's actually drawn: a fresh load
+    // with no ?m= still charts pinned[0].
+    if (state.chartedKey && state.metricsByKey[state.chartedKey]) {
+      loadChartFor(state.chartedKey);
+    }
   });
 
   // --- Refresh --------------------------------------------------------

@@ -28,8 +28,8 @@
       <div>
         <h1>{{ metric.label }}</h1>
         <div class="detail-key">{{ metric.key }}</div>
-        {% if not metric.active %}<span class="stale-chip" style="display:inline-block">INACTIVE</span>{% endif %}
-        {% if metric.stale %}<span class="stale-chip" style="display:inline-block">STALE</span>{% endif %}
+        {% if not metric.active %}<span class="stale-chip">INACTIVE</span>{% endif %}
+        {% if metric.stale %}<span class="stale-chip">STALE</span>{% endif %}
       </div>
       <nav class="range-switcher" role="tablist" aria-label="Time range">
         {% for r in ranges %}
@@ -78,7 +78,7 @@
           <li class="rc-empty">No changes recorded in this range.</li>
           {% endfor %}
         </ul>
-        <p class="rc-note">Only changes (plus a daily heartbeat) are stored.</p>
+        <p class="rc-note">Only changes (plus a periodic heartbeat) are stored.</p>
       </aside>
     </div>
   </main>
@@ -87,6 +87,6 @@
 {% block scripts %}
 <link rel="stylesheet" href="/static/vendor/uplot/uPlot.min.css" />
 <script src="/static/vendor/uplot/uPlot.iife.min.js"></script>
-<script src="/static/js/chart.js"></script>
-<script src="/static/js/detail.js"></script>
+<script src="/static/js/chart.js?v={{ asset_version }}"></script>
+<script src="/static/js/detail.js?v={{ asset_version }}"></script>
 {% endblock %}
