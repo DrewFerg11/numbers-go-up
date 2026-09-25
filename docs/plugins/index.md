@@ -83,4 +83,8 @@ red.
 ## Writing your own
 
 Want a source that isn't here? A plugin is one Python file in
-`./user-plugins`. See [Writing a plugin](writing-a-plugin.md).
+`./user-plugins`. Start from the commented
+[`_template.py`](https://github.com/DrewFerg11/numbers-go-up/blob/main/numbers_go_up/plugins/_template.py),
+and read the plugin rules in
+[`CONTRIBUTING.md`](https://github.com/DrewFerg11/numbers-go-up/blob/main/CONTRIBUTING.md)
+first. More in [Writing a plugin](writing-a-plugin.md).
