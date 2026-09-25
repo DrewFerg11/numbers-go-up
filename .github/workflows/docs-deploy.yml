@@ -88,11 +88,19 @@ jobs:
         id: ghpages
         if: env.CAN_DEPLOY == 'true'
         run: |
-          if git ls-remote --exit-code --heads origin gh-pages >/dev/null; then
+          # --exit-code: 0 = branch found, 2 = no such branch. Anything else
+          # is a failed lookup (network, auth), which must fail the job
+          # rather than read as "no gh-pages" and silently skip a deploy.
+          rc=0
+          git ls-remote --exit-code --heads origin gh-pages >/dev/null || rc=$?
+          if [ "$rc" -eq 0 ]; then
             echo "exists=true" >> "$GITHUB_OUTPUT"
-          else
+          elif [ "$rc" -eq 2 ]; then
             echo "::notice::No gh-pages branch yet; built the site but skipped the deploy."
             echo "exists=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error::git ls-remote failed (exit $rc) while checking for gh-pages"
+            exit 1
           fi
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
