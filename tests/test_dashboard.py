@@ -93,6 +93,30 @@ def test_index_no_longer_carries_the_unhealthy_threshold_or_blocked_prefix(tmp_p
     assert "data-blocked-prefix" not in response.text
 
 
+def test_static_assets_are_cache_busted_with_the_package_version(tmp_path):
+    # #130: static assets used to have no cache-busting, so a deployed
+    # edit to dashboard.js/detail.js/chart.js/dashboard.css could keep
+    # serving a stale cached copy indefinitely. asset_version (package
+    # __version__) is injected once as a Jinja global and appended as
+    # ?v= on every own static asset -- not on the vendored uPlot files,
+    # which are versioned by their own filenames/build already.
+    client, db_path = client_for(tmp_path)
+
+    index = client.get("/")
+    assert f"/static/css/dashboard.css?v={dashboard.__version__}" in index.text
+    assert f"/static/js/common.js?v={dashboard.__version__}" in index.text
+    assert f"/static/js/chart.js?v={dashboard.__version__}" in index.text
+    assert f"/static/js/dashboard.js?v={dashboard.__version__}" in index.text
+    assert "/static/vendor/uplot/uPlot.iife.min.js?v=" not in index.text
+
+    now = int(time.time())
+    series_id = seed_series(db_path, "acme.widgets", now=now)
+    storage.record_sample(db_path, series_id, now, 5, DAY)
+    detail = client.get("/m/acme.widgets")
+    assert f"/static/js/chart.js?v={dashboard.__version__}" in detail.text
+    assert f"/static/js/detail.js?v={dashboard.__version__}" in detail.text
+
+
 def test_index_tile_has_no_href_but_row_label_links_to_detail_page(tmp_path):
     # The detail page (/m/{key}) now exists (this PR). Per spec, the
     # watchlist row's metric name is a link to it; the index tile stays a
@@ -125,6 +149,38 @@ def test_status_class_reads_the_server_computed_health_field(tmp_path):
     assert "consecutive_failures" not in js
 
 
+def test_fold_toggle_uses_the_server_supplied_group_noun(tmp_path):
+    # #130: the fold-toggle used to hardcode "per-model series" for every
+    # plugin's pattern group, which was wrong for anything but a
+    # model-per-{id} plugin. It now reads patternMetrics[0].group_label.
+    js = (dashboard.STATIC_DIR / "js" / "dashboard.js").read_text(encoding="utf-8")
+
+    assert "patternMetrics[0].group_label" in js
+    assert "per-model series" not in js
+
+
+def test_dashboard_and_detail_js_share_common_helpers(tmp_path):
+    # #130: dashboard.js and detail.js had drifted into duplicating the
+    # same value/direction/change/relative-time formatting -- both now
+    # call the shared window.Ngu namespace (common.js) instead of keeping
+    # their own copies.
+    dashboard_js = (dashboard.STATIC_DIR / "js" / "dashboard.js").read_text(
+        encoding="utf-8"
+    )
+    detail_js = (dashboard.STATIC_DIR / "js" / "detail.js").read_text(encoding="utf-8")
+    common_js = (dashboard.STATIC_DIR / "js" / "common.js").read_text(encoding="utf-8")
+
+    assert "window.Ngu" in common_js
+    for js in (dashboard_js, detail_js):
+        assert "var Ngu = window.Ngu;" in js
+        assert "function directionOf(" not in js
+        assert "function formatValue(" not in js
+        assert "function formatChange(" not in js
+        assert "function relativeTime(" not in js
+        assert "Ngu.formatValue(" in js
+        assert "Ngu.directionOf(" in js
+
+
 def test_chart_js_implements_the_stale_dashed_tail(tmp_path):
     # No JS test runner in this repo. The overview and detail acceptance
     # criteria both require a stale series to draw a grey dashed
@@ -139,7 +195,7 @@ def test_chart_js_implements_the_stale_dashed_tail(tmp_path):
     )
 
     assert "opts.staleSinceTs" in chart_js
-    assert "direction: directionOf(metric)" in dashboard_js
+    assert "direction: Ngu.directionOf(metric.change)" in dashboard_js
     assert 'direction: metric.stale ? "stale"' not in dashboard_js
 
     # A stale series' history stops at its last good poll -- there's no
@@ -171,10 +227,14 @@ def test_theme_toggle_reloads_the_selected_chart(tmp_path):
     # chart and change bars showing the previous theme's colors until the
     # next 60s auto-refresh happens to fire.
     js = (dashboard.STATIC_DIR / "js" / "dashboard.js").read_text(encoding="utf-8")
-    toggle_start = js.index('themeToggle.addEventListener("click"')
+    toggle_start = js.index("Ngu.initThemeToggle(themeToggle")
     toggle_body = js[toggle_start : toggle_start + 800]
 
     assert "loadChartFor(" in toggle_body
+    # #130: recolors whatever's actually charted (state.chartedKey), not
+    # selectedKey()'s ?m= -- a fresh load with no ?m= still charts
+    # pinned[0], so the old selectedKey()-based check silently no-opped.
+    assert "state.chartedKey" in toggle_body
 
 
 def test_change_bar_domain_extends_to_now_for_a_stale_series(tmp_path):
@@ -184,13 +244,18 @@ def test_change_bar_domain_extends_to_now_for_a_stale_series(tmp_path):
     # (worst at the last one, which ends up drawn under the dashed "no
     # data" tail instead of at its own timestamp). Both the overview
     # (dashboard.js) and detail page (detail.js) share this bug shape.
+    common_js = (dashboard.STATIC_DIR / "js" / "common.js").read_text(encoding="utf-8")
     dashboard_js = (dashboard.STATIC_DIR / "js" / "dashboard.js").read_text(
         encoding="utf-8"
     )
     detail_js = (dashboard.STATIC_DIR / "js" / "detail.js").read_text(encoding="utf-8")
 
-    assert "staleSinceTs != null ? Date.now()" in dashboard_js
-    assert "staleSinceTs != null ? Date.now()" in detail_js
+    # #130: this domain math moved into the shared Ngu.barsDomain helper
+    # (common.js), used by both pages instead of each keeping its own copy.
+    assert "staleSinceTs != null" in common_js
+    assert "Date.now() / 1000" in common_js
+    assert "Ngu.barsDomain(" in dashboard_js
+    assert "Ngu.barsDomain(" in detail_js
 
 
 def test_load_chart_for_guards_against_out_of_order_responses(tmp_path):
@@ -220,8 +285,8 @@ def test_change_bars_positioned_by_timestamp_not_array_index(tmp_path):
 
     assert "bar.ts - start" in chart_js
     assert "i * barWidth" not in chart_js
-    assert "renderChangeBars(" in dashboard_js and "data.bars, {" in dashboard_js
-    assert "renderChangeBars(" in detail_js and "data.bars, {" in detail_js
+    assert "renderChangeBars(" in dashboard_js and "Ngu.barsDomain(" in dashboard_js
+    assert "renderChangeBars(" in detail_js and "Ngu.barsDomain(" in detail_js
 
 
 def test_detail_range_switch_does_a_full_reload(tmp_path):
@@ -395,6 +460,35 @@ def test_overview_all_starts_at_first_sample(tmp_path):
     assert metric["open"] == 10
     assert metric["value"] == 20
     assert metric["change"] == 10
+
+
+def test_overview_group_label_for_pattern_and_static_metrics(tmp_path):
+    # #130: dashboard.js's fold-toggle used to hardcode "per-model series"
+    # for every plugin's pattern group -- group_label is the server-derived
+    # noun (_breadcrumb_group, lowercased) it now reads instead.
+    metrics = {
+        "acme.model.{id}.downloads": {
+            "kind": "cumulative",
+            "label": "Downloads",
+            "unit": "u",
+        }
+    }
+    client, db_path = client_for(
+        tmp_path,
+        plugins_config={"acme": {"enabled": True}},
+        plugin_metrics={"acme": metrics},
+    )
+    now = int(time.time())
+    pattern_id = seed_series(db_path, "acme.model.1.downloads", now=now)
+    storage.record_sample(db_path, pattern_id, now, 5, DAY)
+    static_id = seed_series(db_path, "acme.widgets", now=now)
+    storage.record_sample(db_path, static_id, now, 10, DAY)
+
+    response = client.get("/api/stats/overview")
+
+    by_key = {m["key"]: m for m in response.json()["metrics"]}
+    assert by_key["acme.model.1.downloads"]["group_label"] == "models"
+    assert by_key["acme.widgets"]["group_label"] is None
 
 
 def test_overview_series_younger_than_range_has_non_null_open(tmp_path):

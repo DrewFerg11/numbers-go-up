@@ -7,7 +7,7 @@
     <link rel="icon" href="/static/img/favicon.svg" type="image/svg+xml" />
     <link rel="icon" href="/static/img/favicon.ico" sizes="48x48" />
     <link rel="apple-touch-icon" href="/static/img/apple-touch-icon.png" />
-    <link rel="stylesheet" href="/static/css/dashboard.css" />
+    <link rel="stylesheet" href="/static/css/dashboard.css?v={{ asset_version }}" />
     <script>
       // Set the theme before first paint, so a light-theme visitor never
       // sees a dark flash: this runs synchronously in <head>, ahead of
@@ -27,6 +27,7 @@
   </head>
   <body>
     {% block body %}{% endblock %}
+    <script src="/static/js/common.js?v={{ asset_version }}"></script>
     {% block scripts %}{% endblock %}
   </body>
 </html>
