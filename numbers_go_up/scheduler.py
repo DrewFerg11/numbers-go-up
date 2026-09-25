@@ -18,6 +18,7 @@ import json
 import logging
 import math
 import random
+import re
 import time
 import traceback
 from datetime import UTC, datetime, timedelta
@@ -30,7 +31,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 
 from numbers_go_up import milestones, mqtt, plugins, storage
 from numbers_go_up.config import ConfigError
-from numbers_go_up.http import Blocked, RateLimited
+from numbers_go_up.http import RATE_LIMITED_ERROR_PREFIX, Blocked, RateLimited
 from numbers_go_up.milestones import Evaluator as MilestoneEvaluator
 from numbers_go_up.mqtt import Publisher
 from numbers_go_up.plugins import LoadedPlugin, discover_plugins
@@ -98,7 +99,7 @@ def run_plugin_once(
     try:
         result = plugin.module.collect(plugin.config, http)
     except RateLimited as exc:
-        error = f"rate limited (retry_after={exc.retry_after})"
+        error = f"{RATE_LIMITED_ERROR_PREFIX} (retry_after={exc.retry_after})"
         storage.finish_run(
             db_path, run_id, "error", error, samples_written=0, finished_at=now
         )
@@ -800,6 +801,97 @@ def _run_maintenance(db_path: str | Path, config: dict[str, Any]) -> None:
     )
 
 
+_RETRY_AFTER_FROM_ERROR_RE = re.compile(
+    re.escape(RATE_LIMITED_ERROR_PREFIX) + r" \(retry_after=([\d.]+)\)"
+)
+
+
+def _retry_after_from_error(error: str | None) -> float | None:
+    """The ``retry_after`` value baked into a rate-limited run's error text
+    (``RateLimited.__init__``'s ``f"{RATE_LIMITED_ERROR_PREFIX}
+    (retry_after={retry_after})"``), or None for anything else -- including
+    a rate-limited run with no Retry-After header, whose error text is
+    literally ``"...retry_after=None)"`` and correctly fails this match.
+    """
+    if error is None:
+        return None
+    match = _RETRY_AFTER_FROM_ERROR_RE.fullmatch(error)
+    return float(match.group(1)) if match else None
+
+
+def _initial_next_run(
+    db_path: str | Path,
+    plugin: LoadedPlugin,
+    now: datetime,
+    backoff_state: dict[str, int],
+) -> datetime:
+    """Where to schedule ``plugin``'s first post-startup poll.
+
+    ``backoff_state`` and every job's ``next_run_time`` both start fresh on
+    every restart, so without this a plugin last polled 2 minutes into a
+    30-minute interval gets re-polled again within the usual 0-60s startup
+    jitter, and a plugin mid-403-backoff (up to 24h) gets hit again
+    immediately -- the exact "no backoff storms" spirit Responsible Use #3
+    asks for. Reads ``plugin_runs`` (already closed of any interrupted row
+    by ``close_interrupted_runs``, called earlier in ``main.lifespan``) to
+    resume where the last process left off instead.
+
+    Never run before: the usual random 0-60s spread, unchanged.
+
+    Last run's trailing runs were blocked/rate-limited
+    (:func:`storage.trailing_backoff_count`): seed ``backoff_state`` with
+    that count and resume the backoff schedule from the last run's start,
+    via the same :func:`compute_backoff_delay_seconds` a live 429/403
+    uses -- including its Retry-After, recovered from the newest run's
+    error text (:func:`_retry_after_from_error`) when it has one, so a
+    restart mid-Retry-After-backoff doesn't re-poll earlier than the
+    source asked for. If that time has already passed, the job fires as
+    soon as the scheduler starts (a past ``next_run_time`` isn't a misfire
+    here -- ``misfire_grace_time=None`` just means it runs late instead of
+    being dropped).
+
+    Otherwise: ``max(now + uniform(0, 60), last_started_at + interval)`` --
+    a plugin already due (or never run) gets the random startup spread; one
+    not yet due waits out the rest of its own interval instead.
+    """
+    run = storage.latest_run(db_path, plugin.name)
+    if run is None:
+        return now + timedelta(seconds=random.uniform(0, FIRST_RUN_MAX_DELAY_SECONDS))
+
+    last_started = datetime.fromtimestamp(run["started_at"])
+
+    trailing = storage.trailing_backoff_count(db_path, plugin.name)
+    if trailing > 0:
+        backoff_state[plugin.name] = trailing
+        retry_after = _retry_after_from_error(run["error"])
+        delay = compute_backoff_delay_seconds(
+            plugin.interval_seconds, retry_after, trailing
+        )
+        logger.info(
+            "Plugin %s: resuming backoff after restart (%d consecutive "
+            "blocked/rate-limited runs); next poll in %.0fs",
+            plugin.name,
+            trailing,
+            delay,
+        )
+        return last_started + timedelta(seconds=delay)
+
+    jittered_now = now + timedelta(
+        seconds=random.uniform(0, FIRST_RUN_MAX_DELAY_SECONDS)
+    )
+    due_at = last_started + timedelta(seconds=plugin.interval_seconds)
+    next_run = max(jittered_now, due_at)
+    if next_run > jittered_now:
+        logger.info(
+            "Plugin %s: last polled at %s; resuming its own interval "
+            "instead of the usual startup jitter, next poll in %.0fs",
+            plugin.name,
+            last_started.isoformat(),
+            (next_run - now).total_seconds(),
+        )
+    return next_run
+
+
 def build_scheduler(
     config: dict[str, Any],
     http: Any = None,
@@ -864,15 +956,19 @@ def build_scheduler(
     if enabled_plugins is None:
         enabled_plugins = discover_plugins(config)
 
+    # One snapshot for every plugin's initial scheduling decision, not
+    # datetime.now() called once per plugin -- keeps every "already due"
+    # comparison consistent even if this loop runs long with many plugins.
+    now = datetime.now()
+
     for plugin in enabled_plugins:
         job_id = f"plugin:{plugin.name}"
-        first_run_delay = random.uniform(0, FIRST_RUN_MAX_DELAY_SECONDS)
         scheduler.add_job(
             _run_scheduled_plugin,
             trigger="interval",
             seconds=plugin.interval_seconds,
             jitter=plugin.interval_seconds * jitter_fraction,
-            next_run_time=datetime.now() + timedelta(seconds=first_run_delay),
+            next_run_time=_initial_next_run(db_path, plugin, now, backoff_state),
             max_instances=1,
             coalesce=True,
             misfire_grace_time=None,

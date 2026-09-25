@@ -19,8 +19,6 @@ from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 
 from numbers_go_up import queries, storage
-from numbers_go_up.api import DEFAULT_UNHEALTHY_FAILURES
-from numbers_go_up.http import BLOCKED_ERROR_PREFIX
 from numbers_go_up.plugins import is_pattern_key, resolve_metric
 from numbers_go_up.queries import VALID_RANGES, RangeKey
 
@@ -282,8 +280,6 @@ def dashboard_index(
             "range": range_key,
             "ranges": VALID_RANGES,
             "any_enabled": any_enabled,
-            "unhealthy_failure_threshold": DEFAULT_UNHEALTHY_FAILURES,
-            "blocked_error_prefix": BLOCKED_ERROR_PREFIX,
         },
     )
 

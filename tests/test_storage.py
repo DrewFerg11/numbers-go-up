@@ -624,6 +624,107 @@ class TestCloseInterruptedRuns:
         assert latest["error"] == "boom"
 
 
+class TestTrailingBackoffCount:
+    def test_no_runs_is_zero(self, db_path):
+        assert storage.trailing_backoff_count(db_path, "demo") == 0
+
+    def test_ok_run_is_zero(self, db_path):
+        run_id = storage.start_run(db_path, "demo", 1000)
+        storage.finish_run(
+            db_path, run_id, "ok", None, samples_written=1, finished_at=1000
+        )
+
+        assert storage.trailing_backoff_count(db_path, "demo") == 0
+
+    def test_ordinary_error_is_zero(self, db_path):
+        run_id = storage.start_run(db_path, "demo", 1000)
+        storage.finish_run(
+            db_path, run_id, "error", "boom", samples_written=0, finished_at=1000
+        )
+
+        assert storage.trailing_backoff_count(db_path, "demo") == 0
+
+    def test_counts_trailing_blocked_runs(self, db_path):
+        for ts in (1000, 1001, 1002):
+            run_id = storage.start_run(db_path, "demo", ts)
+            storage.finish_run(
+                db_path,
+                run_id,
+                "error",
+                "blocked (HTTP 403) for url 'https://x'",
+                samples_written=0,
+                finished_at=ts,
+            )
+
+        assert storage.trailing_backoff_count(db_path, "demo") == 3
+
+    def test_counts_trailing_rate_limited_runs(self, db_path):
+        for ts in (1000, 1001):
+            run_id = storage.start_run(db_path, "demo", ts)
+            storage.finish_run(
+                db_path,
+                run_id,
+                "error",
+                "rate limited (retry_after=None)",
+                samples_written=0,
+                finished_at=ts,
+            )
+
+        assert storage.trailing_backoff_count(db_path, "demo") == 2
+
+    def test_stops_at_the_first_ok_run(self, db_path):
+        ok_run = storage.start_run(db_path, "demo", 1000)
+        storage.finish_run(
+            db_path, ok_run, "ok", None, samples_written=1, finished_at=1000
+        )
+        blocked_run = storage.start_run(db_path, "demo", 1001)
+        storage.finish_run(
+            db_path,
+            blocked_run,
+            "error",
+            "blocked (HTTP 403) for url 'https://x'",
+            samples_written=0,
+            finished_at=1001,
+        )
+
+        assert storage.trailing_backoff_count(db_path, "demo") == 1
+
+    def test_stops_at_the_first_ordinary_error(self, db_path):
+        # An ordinary error resets the in-memory backoff_state to 0 (see
+        # _run_scheduled_plugin's else branch), so the trailing count must
+        # stop there too, not keep walking past it to older blocked runs.
+        blocked_run = storage.start_run(db_path, "demo", 1000)
+        storage.finish_run(
+            db_path,
+            blocked_run,
+            "error",
+            "blocked (HTTP 403) for url 'https://x'",
+            samples_written=0,
+            finished_at=1000,
+        )
+        ordinary_run = storage.start_run(db_path, "demo", 1001)
+        storage.finish_run(
+            db_path, ordinary_run, "error", "boom", samples_written=0, finished_at=1001
+        )
+
+        assert storage.trailing_backoff_count(db_path, "demo") == 0
+
+    def test_interrupted_run_is_skipped_not_counted(self, db_path):
+        blocked_run = storage.start_run(db_path, "demo", 1000)
+        storage.finish_run(
+            db_path,
+            blocked_run,
+            "error",
+            "blocked (HTTP 403) for url 'https://x'",
+            samples_written=0,
+            finished_at=1000,
+        )
+        storage.start_run(db_path, "demo", 1100)
+        storage.close_interrupted_runs(db_path, now=1150)
+
+        assert storage.trailing_backoff_count(db_path, "demo") == 1
+
+
 class TestPrunePluginRuns:
     def test_deletes_only_rows_past_the_cutoff(self, db_path):
         now = 30 * 86400

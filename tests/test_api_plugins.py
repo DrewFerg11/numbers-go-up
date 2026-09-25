@@ -212,6 +212,7 @@ def test_plugins_zero_plugins_configured(tmp_path):
     # Every discovered plugin is reported, just disabled -- none crash.
     assert all(p["enabled"] is False for p in plugins)
     assert all(p["status"] == "disabled" for p in plugins)
+    assert all(p["health"] == "disabled" for p in plugins)
     assert all(p["last_poll"] is None for p in plugins)
     assert all(p["next_poll"] is None for p in plugins)
 
@@ -236,6 +237,7 @@ def test_plugins_pending_when_enabled_but_never_run(tmp_path):
     plugin = next(p for p in response.json()["plugins"] if p["name"] == "makerworld")
     assert plugin["enabled"] is True
     assert plugin["status"] == "pending"
+    assert plugin["health"] == "pending"
     assert plugin["last_poll"] is None
 
 
@@ -259,6 +261,11 @@ def test_plugins_polling_while_run_in_flight(tmp_path):
     # consecutive_failures now only counts *finished* runs (#127): an
     # in-flight poll is liveness, not a failure, and must not move it.
     assert plugin["consecutive_failures"] == 0
+    # A healthy plugin mid-poll is "ok", not downgraded for being in
+    # flight (#127b: unlike the old JS statusClass, which used to
+    # subtract 1 for "polling" after consecutive_failures() already
+    # stopped counting in-flight runs itself).
+    assert plugin["health"] == "ok"
 
 
 def test_plugins_error_status_and_last_error_from_latest_finished_run(tmp_path):
@@ -283,6 +290,8 @@ def test_plugins_error_status_and_last_error_from_latest_finished_run(tmp_path):
     assert plugin["last_error"] == "boom"
     assert plugin["consecutive_failures"] == 1
     assert plugin["last_poll"] is not None
+    # Below the default failure_threshold (3): warn, not error.
+    assert plugin["health"] == "warn"
 
 
 def test_plugins_blocked_status_when_latest_finished_run_was_a_403(tmp_path):
@@ -302,6 +311,27 @@ def test_plugins_blocked_status_when_latest_finished_run_was_a_403(tmp_path):
     assert plugin["status"] == "blocked"
     assert plugin["last_error"] == error
     assert plugin["consecutive_failures"] == 1
+    # Blocked is unhealthy unconditionally, even below the failure
+    # threshold -- a source refusing this client isn't a blip.
+    assert plugin["health"] == "error"
+
+
+def test_plugins_health_error_at_the_default_failure_threshold(tmp_path):
+    client, db_path = client_for(
+        tmp_path, plugins_config={"makerworld": {"enabled": True}}
+    )
+    now = int(time.time())
+    for offset in range(3):
+        run_id = storage.start_run(db_path, "makerworld", now - offset * 100)
+        storage.finish_run(
+            db_path, run_id, "error", "boom", samples_written=0, finished_at=now
+        )
+
+    response = client.get("/api/plugins")
+    plugin = next(p for p in response.json()["plugins"] if p["name"] == "makerworld")
+
+    assert plugin["consecutive_failures"] == 3
+    assert plugin["health"] == "error"
 
 
 def _record_runs(db_path, plugin_name, outcomes, now):

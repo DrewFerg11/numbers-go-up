@@ -32,14 +32,17 @@ class RateLimited(Exception):
     def __init__(
         self, retry_after: float | None, response: httpx.Response | None = None
     ):
-        super().__init__(f"rate limited (retry_after={retry_after})")
+        super().__init__(f"{RATE_LIMITED_ERROR_PREFIX} (retry_after={retry_after})")
         self.retry_after = retry_after
         self.response = response
 
 
-# Every Blocked error message starts with this, so /api/plugins can tell a
-# blocked source apart from an ordinary error using only plugin_runs.error.
+# Every Blocked/RateLimited error message starts with one of these, so a
+# reader with only plugin_runs.error (storage.trailing_backoff_count,
+# api._unhealthy_reason, queries.is_blocked) can tell them apart from an
+# ordinary error without catching the exception itself.
 BLOCKED_ERROR_PREFIX = "blocked"
+RATE_LIMITED_ERROR_PREFIX = "rate limited"
 
 # Query param names that carry a secret when a source requires the key in
 # the URL itself (Google's APIs, YouTube included) rather than a header.

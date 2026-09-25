@@ -40,15 +40,6 @@
     chartRequestId: 0,
   };
 
-  // Same threshold /health/plugins uses (api.DEFAULT_UNHEALTHY_FAILURES),
-  // passed through by the server rather than duplicated as a literal here
-  // -- one source of truth, so bumping the server constant also moves the
-  // dashboard's red dot.
-  var UNHEALTHY_FAILURES = parseInt(app.dataset.unhealthyThreshold, 10) || 3;
-  // Same prefix api.http.BLOCKED_ERROR_PREFIX uses to tag a 403 in
-  // plugin_runs.error -- also passed through rather than duplicated.
-  var BLOCKED_PREFIX = app.dataset.blockedPrefix || "blocked";
-
   // --- Sparkline: a stepped polyline + area fill, hand-written (about 40
   // lines) rather than a charting library -- dozens of chart-library
   // instances for 30x110px sparklines would be heavier than the big chart.
@@ -326,27 +317,17 @@
     });
   }
 
-  // Mirrors api._unhealthy_reason's rule exactly, so the dot and
-  // /health/plugins can't disagree: blocked is unhealthy on the first
-  // failure; otherwise an in-flight retry doesn't count as one of its own
-  // consecutive failures (consecutive_failures's liveness convention
-  // counts an unfinished run, which would flag a healthy mid-poll plugin).
+  // plugin.health ("disabled"/"pending"/"ok"/"warn"/"error") is computed
+  // once server-side (queries.plugin_health, #127b) so the dot and
+  // /health/plugins can never disagree -- this used to be a second copy of
+  // api._unhealthy_reason's rule here, including its own "polling"
+  // adjustment that went stale the moment the Python side stopped needing
+  // one. "disabled"/"pending" map to the unstyled default dot; only
+  // ok/warn/error have their own CSS class.
   function statusClass(plugin) {
-    // Mirrors api._unhealthy_reason's exact order: the blocked check reads
-    // last_error directly, unconditional of status -- a blocked source
-    // stays scheduled and retried, so its newest run can be "polling"
-    // (in flight) while last_error still carries the prior 403. Checking
-    // plugin.status === "blocked" alone (as a first pass here did) missed
-    // exactly that case, letting the dot go green/grey while
-    // /health/plugins still reported it unhealthy.
-    if (plugin.last_error && plugin.last_error.indexOf(BLOCKED_PREFIX) === 0) {
-      return "error";
-    }
-    var failures = plugin.consecutive_failures;
-    if (plugin.status === "polling") failures = Math.max(failures - 1, 0);
-    if (failures >= UNHEALTHY_FAILURES) return "error";
-    if (failures >= 1) return "warn";
-    return plugin.status === "ok" || plugin.status === "polling" ? "ok" : "";
+    return plugin.health === "ok" || plugin.health === "warn" || plugin.health === "error"
+      ? plugin.health
+      : "";
   }
 
   function renderStatusLine(plugins) {

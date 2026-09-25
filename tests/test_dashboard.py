@@ -79,33 +79,18 @@ def test_index_renders_with_healthy_sample_data(tmp_path):
     assert response.status_code == 200
 
 
-def test_index_exposes_the_unhealthy_failure_threshold_to_the_client(tmp_path):
-    # dashboard.js reads this off the .app div rather than hardcoding its
-    # own copy of api.DEFAULT_UNHEALTHY_FAILURES, so the status line can't
-    # silently drift from /health/plugins' threshold.
-    from numbers_go_up.api import DEFAULT_UNHEALTHY_FAILURES
-
+def test_index_no_longer_carries_the_unhealthy_threshold_or_blocked_prefix(tmp_path):
+    # #127b: plugin.health is now computed once server-side
+    # (queries.plugin_health) and read straight off /api/stats/overview's
+    # plugin list, so dashboard.js no longer needs the threshold or the
+    # blocked-error prefix piped in via data-* attributes to re-derive it
+    # itself.
     client, _ = client_for(tmp_path)
 
     response = client.get("/")
 
-    assert f'data-unhealthy-threshold="{DEFAULT_UNHEALTHY_FAILURES}"' in response.text
-
-
-def test_index_exposes_the_blocked_error_prefix_to_the_client(tmp_path):
-    # dashboard.js checks last_error against this prefix (matching
-    # api._unhealthy_reason's own check) rather than trusting `status`
-    # alone -- a blocked plugin stays scheduled and retried, so its newest
-    # run can read "polling" (in flight) while last_error still carries
-    # the prior blocked result. Checking status alone would let the dot
-    # go green/grey exactly when /health/plugins reports it unhealthy.
-    from numbers_go_up.http import BLOCKED_ERROR_PREFIX
-
-    client, _ = client_for(tmp_path)
-
-    response = client.get("/")
-
-    assert f'data-blocked-prefix="{BLOCKED_ERROR_PREFIX}"' in response.text
+    assert "data-unhealthy-threshold" not in response.text
+    assert "data-blocked-prefix" not in response.text
 
 
 def test_index_tile_has_no_href_but_row_label_links_to_detail_page(tmp_path):
@@ -122,17 +107,22 @@ def test_index_tile_has_no_href_but_row_label_links_to_detail_page(tmp_path):
     assert 'label.href = "/m/' in js
 
 
-def test_status_class_checks_last_error_not_just_status(tmp_path):
+def test_status_class_reads_the_server_computed_health_field(tmp_path):
     # No JS test runner in this repo, so this pins the source: statusClass
-    # must key off `last_error` (matching api._unhealthy_reason's own
-    # blocked check), not `plugin.status === "blocked"` alone -- a blocked
-    # plugin stays scheduled, so a retry in flight reports status
-    # "polling" while last_error still says blocked. Fails loudly if a
-    # future edit reverts to the status-only check.
+    # must read plugin.health (queries.plugin_health, computed once
+    # server-side, #127b) rather than re-deriving its own copy of the
+    # blocked/failure-threshold rule from last_error and
+    # consecutive_failures. Fails loudly if a future edit reintroduces a
+    # second copy of that rule in JS.
     js = (dashboard.STATIC_DIR / "js" / "dashboard.js").read_text(encoding="utf-8")
 
-    assert "plugin.last_error" in js
-    assert "BLOCKED_PREFIX" in js
+    assert "plugin.health" in js
+    assert "BLOCKED_PREFIX" not in js
+    assert "UNHEALTHY_FAILURES" not in js
+    # A future JS-side re-derivation of the rule (e.g. re-reading
+    # consecutive_failures and mapping the ok/warn/error literals again)
+    # would pass the three assertions above; this is the one that bites.
+    assert "consecutive_failures" not in js
 
 
 def test_chart_js_implements_the_stale_dashed_tail(tmp_path):
