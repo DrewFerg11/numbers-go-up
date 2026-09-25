@@ -135,6 +135,20 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # /api/plugins reports on every discovered plugin, enabled or not.
     app.state.plugin_names = [p.name for p in all_plugins]
 
+    # A plugin disabled in config or whose file was removed since the last
+    # run leaves its series stranded active forever otherwise -- frozen on
+    # the dashboard, still in /api/stats/latest, and MQTT re-announcing
+    # their discovery on every reconnect (#133). Retiring only ever flips
+    # `active`; history is kept, and get_or_create_series reactivates a
+    # series the moment its plugin polls again (re-enabled or reinstalled).
+    retired = storage.retire_series_not_in(
+        config["storage"]["path"], (p.name for p in enabled_plugins)
+    )
+    for plugin_name, count in retired.items():
+        logger.info(
+            "Retired %d series for disabled/removed plugin %s", count, plugin_name
+        )
+
     shared_http_client = http.build_client()
 
     # Built whether or not config["mqtt"] is set -- a NoopPublisher when

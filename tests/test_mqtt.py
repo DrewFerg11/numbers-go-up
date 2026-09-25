@@ -701,6 +701,47 @@ class TestDeactivationLifecycle:
         assert fake.published_dict("numbers-go-up/acme.a/state") == b""
         assert fake.published_dict("numbers-go-up/acme.a/attrs") == b""
 
+    def test_disabled_plugins_series_is_removed_on_connect_and_reannounced_later(
+        self, db_path
+    ):
+        # main.lifespan retires a disabled/removed plugin's series with
+        # storage.retire_series_not_in (#133) before the scheduler or MQTT
+        # ever runs -- no MQTT-side code path is needed, since
+        # _republish_snapshot already sweeps every inactive row on connect,
+        # the same as any other deactivated series.
+        _seed_series(db_path, "acme.a", value=1)
+        storage.retire_series_not_in(db_path, [])
+
+        publisher, fake = _publisher(db_path, connected=False)
+        publisher.start()
+        fake.simulate_connect()
+
+        discovery_topic = "homeassistant/sensor/numbers_go_up/ngu_acme_a/config"
+        assert fake.published_dict(discovery_topic) == b""
+        assert fake.published_dict("numbers-go-up/acme.a/state") == b""
+        assert fake.published_dict("numbers-go-up/acme.a/attrs") == b""
+
+        # Re-enabling the plugin and letting it poll again reactivates the
+        # series (storage.get_or_create_series sets active=1) and the next
+        # poll re-announces its discovery.
+        series_id = storage.get_or_create_series(
+            db_path,
+            "acme.a",
+            "acme",
+            "cumulative",
+            "Label",
+            "widgets",
+            "mdi:download",
+            2000,
+        )
+        storage.record_sample(db_path, series_id, 2000, 42, 86400)
+        fake.published.clear()
+        publisher.on_poll_finished("acme", "ok", frozenset({"acme.a"}))
+
+        payload = json.loads(fake.published_dict(discovery_topic))
+        assert payload["unique_id"] == "ngu_acme_a"
+        assert fake.published_dict("numbers-go-up/acme.a/state") == "42"
+
 
 # --- connect / reconnect / HA restart --------------------------------------
 

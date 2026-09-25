@@ -77,6 +77,11 @@ def get_or_create_series(
     replacing it wholesale -- a poll that reports a subset of attrs must not
     erase attrs a previous poll wrote. ``None`` (the default) leaves the
     stored attrs untouched.
+
+    Also sets ``active = 1``: a key a plugin just returned is live by
+    definition (#133), whether it's brand new, a pattern-matched key coming
+    back after :func:`set_series_active_bulk` deactivated it, or an exact
+    key reactivating after :func:`retire_series_not_in` retired its plugin.
     """
     if kind not in VALID_KINDS:
         raise ValueError(f"kind must be one of {sorted(VALID_KINDS)}, got {kind!r}")
@@ -127,7 +132,7 @@ def get_or_create_series(
 
         conn.execute(
             "UPDATE metric_series SET plugin_name = ?, label = ?, unit = ?, "
-            "icon = ?, attrs = ? WHERE id = ?",
+            "icon = ?, attrs = ?, active = 1 WHERE id = ?",
             (plugin_name, label, unit, icon, attrs_json, series_id),
         )
         conn.commit()
@@ -468,6 +473,28 @@ def latest_finished_run(db_path: str | Path, plugin_name: str) -> sqlite3.Row | 
         ).fetchone()
 
 
+def last_ok_runs(db_path: str | Path) -> dict[str, int]:
+    """The newest successful (``status = 'ok'``) ``finished_at`` per
+    plugin, in one grouped query. A plugin with no successful run yet (or
+    ever) has no entry.
+
+    The one query behind the shared stale rule (#133): a series is stale
+    when its plugin has had no successful poll within 3x its interval --
+    exactly Home Assistant's own ``expire_after`` semantics (mqtt.py's
+    ``_expire_after``), not "the plugin's *newest* run
+    failed", which is what the old age-plus-newest-run rule collapsed to
+    for any flat, store-on-change series (one failed poll would mark it
+    stale for up to a full heartbeat interval even though HA still saw it
+    as fresh).
+    """
+    with contextlib.closing(connect(db_path)) as conn:
+        rows = conn.execute(
+            "SELECT plugin_name, MAX(finished_at) FROM plugin_runs "
+            "WHERE status = 'ok' GROUP BY plugin_name"
+        ).fetchall()
+    return dict(rows)
+
+
 def latest(db_path: str | Path, series_ids: Iterable[int]) -> dict[int, float]:
     """Return the newest value for each of ``series_ids`` in one call.
 
@@ -510,9 +537,10 @@ def list_series(db_path: str | Path) -> list[sqlite3.Row]:
 
     /api/stats/latest needs every series' current state in one shot rather
     than one query per series. Deactivated series (``active = 0``) are
-    excluded so the first future writer of that flag can't end up silently
-    serving deactivated metrics. /api/metrics wants every series regardless
-    of ``active`` -- see :func:`list_all_series`.
+    excluded, whether deactivated by pattern-key reconciliation
+    (:func:`set_series_active_bulk`) or by :func:`retire_series_not_in`
+    retiring a disabled/removed plugin. /api/metrics wants every series
+    regardless of ``active`` -- see :func:`list_all_series`.
     """
     with contextlib.closing(connect(db_path)) as conn:
         conn.row_factory = sqlite3.Row
@@ -593,10 +621,58 @@ def set_series_active_bulk(
         conn.commit()
 
 
+def retire_series_not_in(
+    db_path: str | Path, enabled_plugin_names: Iterable[str]
+) -> dict[str, int]:
+    """Deactivate every active series whose plugin isn't in
+    ``enabled_plugin_names``. Returns the number of series retired per
+    plugin, for a startup INFO line -- a plugin absent from the result
+    retired nothing.
+
+    Called once at startup (``main.lifespan``), after plugin discovery and
+    before the scheduler starts. Covers both "disabled in config" and
+    "plugin file removed": ``enabled_plugin_names`` is exactly
+    :func:`numbers_go_up.plugins.discover`'s enabled set, so a plugin
+    missing from it either isn't enabled or was never discovered at all.
+    A plugin that's enabled and passes its contract check but fails an
+    individual poll (a 403, a bad response) is untouched -- it's still in
+    the enabled set, so this only ever reacts to a config/file change, not
+    a poll outcome (#133). History is kept: this only flips ``active``,
+    never deletes a row or its samples.
+
+    Uses the same one-transaction shape as :func:`set_series_active_bulk`
+    (a plain positional ``?`` list rather than ``executemany``, since
+    every retired row shares the one WHERE clause) so a crash mid-sweep
+    can't leave some plugins' series retired and others not.
+    """
+    names = list(enabled_plugin_names)
+    where = "active = 1"
+    params: list[str] = []
+    if names:
+        placeholders = ",".join("?" for _ in names)
+        where += f" AND plugin_name NOT IN ({placeholders})"
+        params = names
+
+    with contextlib.closing(connect(db_path)) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        rows = conn.execute(
+            f"SELECT plugin_name, COUNT(*) FROM metric_series WHERE {where} "
+            f"GROUP BY plugin_name",
+            params,
+        ).fetchall()
+        conn.execute(f"UPDATE metric_series SET active = 0 WHERE {where}", params)
+        conn.commit()
+    return dict(rows)
+
+
 def get_series_by_key(db_path: str | Path, metric_key: str) -> sqlite3.Row | None:
     """The active metric_series row for ``metric_key`` -- None if it's
-    unknown or deactivated (``active = 0``), so history/delta on a
-    deactivated key 404s instead of serving its history.
+    unknown or deactivated (``active = 0``).
+
+    Used by the milestone webhook lookup, which must never fire on a
+    retired series' key. /api/stats/history and /api/stats/delta use
+    :func:`get_any_series_by_key` instead (#133): a retired series' history
+    is kept precisely so it can still be looked at.
 
     Includes ``attrs`` (unlike this function's earlier shape) so callers
     that need a series' ``attrs.url`` -- the milestone webhook payload --
@@ -614,10 +690,13 @@ def get_series_by_key(db_path: str | Path, metric_key: str) -> sqlite3.Row | Non
 
 def get_any_series_by_key(db_path: str | Path, metric_key: str) -> sqlite3.Row | None:
     """The metric_series row for ``metric_key``, active or not -- None if
-    the key was never seen. Unlike :func:`get_series_by_key`, which
-    /api/stats/history and /api/stats/delta use and which 404s a
-    deactivated key, the dashboard's detail page (``/m/{key}``) renders an
-    inactive series too (its history is kept), with an "inactive" chip.
+    the key was never seen.
+
+    Used by /api/stats/history, /api/stats/delta, and the dashboard's
+    detail page (``/m/{key}``, which renders an inactive series with an
+    "inactive" chip) -- unlike :func:`get_series_by_key`, none of these
+    404 a deactivated key (#133): a retired series' history is kept
+    precisely so it can still be looked at.
     """
     with contextlib.closing(connect(db_path)) as conn:
         conn.row_factory = sqlite3.Row

@@ -74,6 +74,12 @@ def test_latest_includes_deltas_and_not_stale(tmp_path):
     storage.record_sample(db_path, series_id, now - 20 * HOUR, 105, HOUR)
     storage.record_sample(db_path, series_id, now - 30 * 60, 110, HOUR)
 
+    # A plugin with no successful run is stale by definition (#133) --
+    # the plugin must have actually polled successfully for its series
+    # to read as fresh, regardless of how recent the sample itself is.
+    run_id = storage.start_run(db_path, "acme", now)
+    storage.finish_run(db_path, run_id, "ok", None, samples_written=1, finished_at=now)
+
     response = client.get("/api/stats/latest")
     assert response.status_code == 200
     metric = response.json()["metrics"]["acme.widgets"]
@@ -88,24 +94,50 @@ def test_latest_includes_deltas_and_not_stale(tmp_path):
     assert metric["delta_24h"] == 10
 
 
-def test_latest_stale_requires_both_old_sample_and_last_run_failed(tmp_path):
+def test_latest_stale_rule_is_time_since_last_successful_poll(tmp_path):
+    """The shared stale rule (#133): no successful poll of the series'
+    plugin within 3x its interval -- exactly HA's own expire_after, not
+    "the newest run failed". A failed poll right after a recent success
+    must not flip it stale, and an old success must, even with no failed
+    run since.
+    """
     client, db_path = client_for(tmp_path, plugin_intervals={"acme": 1800})
     now = int(time.time())
     old_ts = now - 4 * 1800 - 10
     series_id = seed_series(db_path, "acme.widgets", now=old_ts)
     storage.record_sample(db_path, series_id, old_ts, 42, HOUR)
 
-    # Old sample, but last run succeeded -> not stale.
+    # Recent success -> not stale, even though the sample itself is old
+    # (a flat, store-on-change series only writes on the heartbeat).
     run_id = storage.start_run(db_path, "acme", now)
     storage.finish_run(db_path, run_id, "ok", None, samples_written=0, finished_at=now)
 
     response = client.get("/api/stats/latest")
     assert response.json()["metrics"]["acme.widgets"]["stale"] is False
 
-    # Old sample and last run failed -> stale.
+    # A failed poll right after that recent success must not make it
+    # stale -- the plugin's *last successful* poll is still recent.
     run_id = storage.start_run(db_path, "acme", now + 1)
     storage.finish_run(
         db_path, run_id, "error", "boom", samples_written=0, finished_at=now + 1
+    )
+
+    response = client.get("/api/stats/latest")
+    assert response.json()["metrics"]["acme.widgets"]["stale"] is False
+
+
+def test_latest_stale_after_no_success_within_expire_window(tmp_path):
+    client, db_path = client_for(tmp_path, plugin_intervals={"acme": 1800})
+    now = int(time.time())
+    old_ts = now - 4 * 1800 - 10
+    series_id = seed_series(db_path, "acme.widgets", now=old_ts)
+    storage.record_sample(db_path, series_id, old_ts, 42, HOUR)
+
+    # The plugin's last success was more than 3x its interval ago -- stale,
+    # even though nothing has failed since (no run at all since then).
+    run_id = storage.start_run(db_path, "acme", old_ts)
+    storage.finish_run(
+        db_path, run_id, "ok", None, samples_written=0, finished_at=old_ts
     )
 
     response = client.get("/api/stats/latest")
@@ -153,12 +185,16 @@ def test_latest_poll_in_flight_after_a_failure_is_stale(tmp_path):
     assert response.json()["metrics"]["acme.widgets"]["stale"] is True
 
 
-def test_latest_recent_failed_sample_not_stale_due_to_age(tmp_path):
+def test_latest_recent_success_then_failure_not_stale(tmp_path):
     client, db_path = client_for(tmp_path, plugin_intervals={"acme": 1800})
     now = int(time.time())
     series_id = seed_series(db_path, "acme.widgets", now=now)
     storage.record_sample(db_path, series_id, now, 42, HOUR)
 
+    run_id = storage.start_run(db_path, "acme", now - 1)
+    storage.finish_run(
+        db_path, run_id, "ok", None, samples_written=1, finished_at=now - 1
+    )
     run_id = storage.start_run(db_path, "acme", now)
     storage.finish_run(
         db_path, run_id, "error", "boom", samples_written=0, finished_at=now
@@ -166,6 +202,19 @@ def test_latest_recent_failed_sample_not_stale_due_to_age(tmp_path):
 
     response = client.get("/api/stats/latest")
     assert response.json()["metrics"]["acme.widgets"]["stale"] is False
+
+
+def test_latest_never_polled_successfully_is_stale(tmp_path):
+    """A series with a fresh sample but no successful run at all -- stale
+    by definition (#133), same as an old-enough last success would be.
+    """
+    client, db_path = client_for(tmp_path, plugin_intervals={"acme": 1800})
+    now = int(time.time())
+    series_id = seed_series(db_path, "acme.widgets", now=now)
+    storage.record_sample(db_path, series_id, now, 42, HOUR)
+
+    response = client.get("/api/stats/latest")
+    assert response.json()["metrics"]["acme.widgets"]["stale"] is True
 
 
 def test_latest_omits_series_with_no_samples(tmp_path):
@@ -213,7 +262,11 @@ def test_history_unknown_metric_404(tmp_path):
     assert response.status_code == 404
 
 
-def test_history_deactivated_metric_404(tmp_path):
+def test_history_deactivated_metric_still_returns_its_history(tmp_path):
+    """A retired series' history is kept precisely so it can still be
+    looked at (#133) -- deactivated no longer means 404 here, only
+    /api/stats/latest is active-only.
+    """
     client, db_path = client_for(tmp_path)
     now = int(time.time())
     series_id = seed_series(db_path, "acme.retired", now=now)
@@ -224,7 +277,10 @@ def test_history_deactivated_metric_404(tmp_path):
         "/api/stats/history", params={"metric": "acme.retired", "hours": 24}
     )
 
-    assert response.status_code == 404
+    assert response.status_code == 200
+    points = response.json()["points"]
+    assert len(points) == 1
+    assert points[0]["value"] == 7
 
 
 def test_history_flat_series_returns_carried_forward_anchor(tmp_path):
@@ -387,10 +443,12 @@ def test_delta_unknown_metric_404(tmp_path):
     assert response.status_code == 404
 
 
-def test_delta_deactivated_metric_404(tmp_path):
+def test_delta_deactivated_metric_still_returns_its_delta(tmp_path):
+    """Same active-or-not resolution as /api/stats/history (#133)."""
     client, db_path = client_for(tmp_path)
     now = int(time.time())
-    series_id = seed_series(db_path, "acme.retired", now=now)
+    series_id = seed_series(db_path, "acme.retired", now=now - 30 * HOUR)
+    storage.record_sample(db_path, series_id, now - 30 * HOUR, 5, HOUR)
     storage.record_sample(db_path, series_id, now, 7, HOUR)
     deactivate(db_path, series_id)
 
@@ -398,7 +456,8 @@ def test_delta_deactivated_metric_404(tmp_path):
         "/api/stats/delta", params={"metric": "acme.retired", "hours": 24}
     )
 
-    assert response.status_code == 404
+    assert response.status_code == 200
+    assert response.json()["delta"] == 2
 
 
 def test_delta_across_gap_uses_last_value_carried_forward(tmp_path):
@@ -437,62 +496,31 @@ def test_delta_no_starting_point_is_null_not_zero(tmp_path):
     assert body["current"] == 5
 
 
-# --- _is_stale's optional per-plugin cache (#80) ------------------------
+# --- _is_stale / storage.last_ok_runs (#133) -----------------------------
 
 
-def test_is_stale_cache_memoizes_latest_finished_run_per_plugin(tmp_path, monkeypatch):
+def test_is_stale_uses_shared_last_ok_runs_dict(tmp_path):
+    """_is_stale takes storage.last_ok_runs()'s result directly rather than
+    querying per call -- one grouped query shared across every series in a
+    request (stats_latest/build_overview), not one per series.
+    """
     db_path = db(tmp_path)
     now = int(time.time())
-
-    calls = []
-    real_latest_finished_run = storage.latest_finished_run
-
-    def counting_latest_finished_run(db_path, plugin_name):
-        calls.append(plugin_name)
-        return real_latest_finished_run(db_path, plugin_name)
-
-    monkeypatch.setattr(storage, "latest_finished_run", counting_latest_finished_run)
 
     run_id = storage.start_run(db_path, "acme", now)
     storage.finish_run(db_path, run_id, "ok", None, samples_written=0, finished_at=now)
 
-    old_ts = now - 4 * 1800 - 10
-    cache: dict = {}
+    last_ok = storage.last_ok_runs(db_path)
+    assert last_ok == {"acme": now}
 
-    # Three series on the same plugin, sharing one request-scoped cache:
-    # only the first call should hit storage.latest_finished_run.
-    for _ in range(3):
-        stale = api._is_stale(db_path, "acme", old_ts, 1800, now, cache)
-        assert stale is False
+    # Recent success -> not stale; a plugin absent from the dict (never
+    # succeeded) -> stale; the same dict answers both without a query.
+    assert api._is_stale("acme", 1800, now, last_ok) is False
+    assert api._is_stale("other", 1800, now, last_ok) is True
 
-    assert calls == ["acme"]
-    assert cache == {"acme": real_latest_finished_run(db_path, "acme")}
-
-
-def test_is_stale_without_cache_looks_up_every_call(tmp_path, monkeypatch):
-    db_path = db(tmp_path)
-    now = int(time.time())
-
-    calls = []
-    real_latest_finished_run = storage.latest_finished_run
-
-    def counting_latest_finished_run(db_path, plugin_name):
-        calls.append(plugin_name)
-        return real_latest_finished_run(db_path, plugin_name)
-
-    monkeypatch.setattr(storage, "latest_finished_run", counting_latest_finished_run)
-
-    run_id = storage.start_run(db_path, "acme", now)
-    storage.finish_run(db_path, run_id, "ok", None, samples_written=0, finished_at=now)
-
-    old_ts = now - 4 * 1800 - 10
-
-    # No cache given (the default): unchanged from before this parameter
-    # existed, so every call still looks it up.
-    for _ in range(3):
-        api._is_stale(db_path, "acme", old_ts, 1800, now)
-
-    assert calls == ["acme", "acme", "acme"]
+    # Well past 3x the interval since that same last success -> stale.
+    far_future = now + 4 * 1800 + 10
+    assert api._is_stale("acme", 1800, far_future, last_ok) is True
 
 
 # --- /api/integrations ---------------------------------------------------

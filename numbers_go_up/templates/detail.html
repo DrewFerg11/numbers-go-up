@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}{{ metric.label }} — numbers-go-up{% endblock %}
 {% block body %}
-<div class="app detail-page" data-metric-key="{{ metric.key }}" data-initial-range="{{ range }}" data-stale="{{ 'true' if metric.stale else 'false' }}" data-updated="{{ metric.updated }}">
+<div class="app detail-page" data-metric-key="{{ metric.key }}" data-initial-range="{{ range }}" data-stale="{{ 'true' if metric.stale else 'false' }}" data-updated="{{ metric.updated }}" data-stale-since="{{ metric.stale_since or '' }}">
   <header class="topbar">
     <div class="brand">
       <span class="brand-mark" aria-hidden="true">&#9650;</span>

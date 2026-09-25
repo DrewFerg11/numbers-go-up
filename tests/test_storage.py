@@ -692,6 +692,103 @@ class TestActiveSeriesFiltering:
 
         assert storage.get_series_by_key(db_path, "demo.retired.count") is None
 
+    def test_get_or_create_series_reactivates_an_inactive_series(self, db_path):
+        series_id = self._series(db_path, "demo.retired.count")
+        _set_active(db_path, series_id, 0)
+
+        # A plugin that just returned this key again is live by definition
+        # (#133), whether it's an exact key reactivating after
+        # retire_series_not_in or a pattern key coming back after
+        # scheduler._reconcile_pattern_series deactivated it.
+        storage.get_or_create_series(
+            db_path, "demo.retired.count", "demo", "cumulative", "Count", "", "", 2000
+        )
+
+        row = storage.list_series(db_path)
+        assert [r["metric_key"] for r in row] == ["demo.retired.count"]
+
+
+class TestRetireSeriesNotIn:
+    def _series(self, db_path, metric_key, plugin_name="demo"):
+        return storage.get_or_create_series(
+            db_path, metric_key, plugin_name, "cumulative", "Count", "", "", 1000
+        )
+
+    def test_retires_series_of_a_plugin_not_in_the_enabled_set(self, db_path):
+        self._series(db_path, "demo.live.count", "demo")
+        self._series(db_path, "removed.old.count", "removed")
+
+        retired = storage.retire_series_not_in(db_path, ["demo"])
+
+        assert retired == {"removed": 1}
+        keys = [row["metric_key"] for row in storage.list_series(db_path)]
+        assert keys == ["demo.live.count"]
+        # History is kept -- only active flips, the row itself survives.
+        assert storage.get_any_series_by_key(db_path, "removed.old.count") is not None
+
+    def test_leaves_an_enabled_plugins_series_untouched(self, db_path):
+        self._series(db_path, "demo.live.count", "demo")
+
+        retired = storage.retire_series_not_in(db_path, ["demo"])
+
+        assert retired == {}
+        assert storage.get_series_by_key(db_path, "demo.live.count") is not None
+
+    def test_already_retired_series_are_not_double_counted(self, db_path):
+        series_id = self._series(db_path, "removed.old.count", "removed")
+        _set_active(db_path, series_id, 0)
+
+        retired = storage.retire_series_not_in(db_path, ["demo"])
+
+        assert retired == {}
+
+    def test_empty_enabled_set_retires_every_active_series(self, db_path):
+        self._series(db_path, "demo.a.count", "demo")
+        self._series(db_path, "demo.b.count", "other")
+
+        retired = storage.retire_series_not_in(db_path, [])
+
+        assert retired == {"demo": 1, "other": 1}
+        assert storage.list_series(db_path) == []
+
+    def test_multiple_plugins_retired_in_one_call(self, db_path):
+        self._series(db_path, "demo.live.count", "demo")
+        self._series(db_path, "removed.a.count", "removed")
+        self._series(db_path, "another_removed.b.count", "another_removed")
+
+        retired = storage.retire_series_not_in(db_path, ["demo"])
+
+        assert retired == {"removed": 1, "another_removed": 1}
+
+
+class TestLastOkRuns:
+    def test_returns_the_newest_ok_finished_at_per_plugin(self, db_path):
+        run_id = storage.start_run(db_path, "acme", 1000)
+        storage.finish_run(
+            db_path, run_id, "ok", None, samples_written=0, finished_at=1000
+        )
+        run_id = storage.start_run(db_path, "acme", 2000)
+        storage.finish_run(
+            db_path, run_id, "ok", None, samples_written=0, finished_at=2000
+        )
+        run_id = storage.start_run(db_path, "other", 1500)
+        storage.finish_run(
+            db_path, run_id, "error", "boom", samples_written=0, finished_at=1500
+        )
+
+        assert storage.last_ok_runs(db_path) == {"acme": 2000}
+
+    def test_plugin_with_no_successful_run_is_absent(self, db_path):
+        run_id = storage.start_run(db_path, "acme", 1000)
+        storage.finish_run(
+            db_path, run_id, "error", "boom", samples_written=0, finished_at=1000
+        )
+
+        assert storage.last_ok_runs(db_path) == {}
+
+    def test_no_runs_at_all_returns_empty_dict(self, db_path):
+        assert storage.last_ok_runs(db_path) == {}
+
 
 class TestValueAsOf:
     def _series(self, db_path):

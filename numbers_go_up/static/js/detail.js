@@ -6,7 +6,7 @@
   var app = document.querySelector(".detail-page");
   var metricKey = app.dataset.metricKey;
   var isStale = app.dataset.stale === "true";
-  var staleSinceTs = isStale && app.dataset.updated ? Date.parse(app.dataset.updated) / 1000 : null;
+  var staleSinceTs = isStale && app.dataset.staleSince ? Date.parse(app.dataset.staleSince) / 1000 : null;
   var state = { range: app.dataset.initialRange || "1M" };
 
   var chart = new window.NguChart(document.getElementById("big-chart"));
