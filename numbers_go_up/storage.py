@@ -17,6 +17,8 @@ from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
+from numbers_go_up.http import BLOCKED_ERROR_PREFIX, RATE_LIMITED_ERROR_PREFIX
+
 logger = logging.getLogger(__name__)
 
 VALID_KINDS = {"gauge", "cumulative"}
@@ -552,6 +554,39 @@ def consecutive_failures(db_path: str | Path, plugin_name: str) -> int:
     count = 0
     for (status,) in rows:
         if status != "ok":
+            count += 1
+        else:
+            break
+    return count
+
+
+def trailing_backoff_count(db_path: str | Path, plugin_name: str) -> int:
+    """Count of the most recent *finished* runs for ``plugin_name`` that
+    were blocked (403) or rate-limited (429), counting back until (and not
+    including) the first run that was neither -- an ok run, an ordinary
+    error, or the plugin's very first run. Interrupted runs are skipped,
+    same as :func:`consecutive_failures`.
+
+    ``build_scheduler``'s startup counterpart to the in-memory
+    ``backoff_state`` counter, which resets to 0 on every restart: without
+    this, a plugin mid-backoff (up to 24h for a 403) would get hit again
+    within the usual 0-60s startup jitter the moment the service restarts.
+    """
+    with contextlib.closing(connect(db_path)) as conn:
+        rows = conn.execute(
+            "SELECT error FROM plugin_runs WHERE plugin_name = ? "
+            "AND finished_at IS NOT NULL "
+            "AND NOT (status = 'error' AND error = ?) "
+            "ORDER BY started_at DESC, id DESC",
+            (plugin_name, _INTERRUPTED_ERROR),
+        ).fetchall()
+
+    count = 0
+    for (error,) in rows:
+        if error is not None and (
+            error.startswith(BLOCKED_ERROR_PREFIX)
+            or error.startswith(RATE_LIMITED_ERROR_PREFIX)
+        ):
             count += 1
         else:
             break

@@ -657,6 +657,93 @@ class TestBuildScheduler:
             <= after + timedelta(seconds=scheduler.FIRST_RUN_MAX_DELAY_SECONDS)
         )
 
+    def test_a_plugin_polled_recently_resumes_its_own_interval(self, tmp_path):
+        # #127b: without this, a plugin 5 minutes into a 30-minute interval
+        # would get re-polled again within the usual 0-60s startup jitter
+        # on every restart.
+        config = self._config(
+            tmp_path, plugins_config={"valid": {"enabled": True, "poll_interval": 1800}}
+        )
+        db_path = config["storage"]["path"]
+        now = int(time.time())
+        run_id = storage.start_run(db_path, "valid", now - 5 * 60)
+        storage.finish_run(
+            db_path, run_id, "ok", None, samples_written=1, finished_at=now - 5 * 60
+        )
+        before = datetime.now(UTC)
+
+        job_scheduler = scheduler.build_scheduler(config)
+
+        after = datetime.now(UTC)
+        job = job_scheduler.get_job("plugin:valid")
+        next_run = job.next_run_time.astimezone(UTC)
+
+        # ~25 minutes out (1800s interval - 300s elapsed), not within the
+        # 60s startup jitter window.
+        assert next_run > before + timedelta(
+            seconds=scheduler.FIRST_RUN_MAX_DELAY_SECONDS
+        )
+        assert (
+            before + timedelta(seconds=1800 - 300 - 5)
+            <= next_run
+            <= after + timedelta(seconds=1800 - 300 + 5)
+        )
+
+    def test_a_plugin_already_due_gets_the_usual_startup_jitter(self, tmp_path):
+        config = self._config(
+            tmp_path, plugins_config={"valid": {"enabled": True, "poll_interval": 1800}}
+        )
+        db_path = config["storage"]["path"]
+        now = int(time.time())
+        run_id = storage.start_run(db_path, "valid", now - 2 * 3600)
+        storage.finish_run(
+            db_path, run_id, "ok", None, samples_written=1, finished_at=now - 2 * 3600
+        )
+        before = datetime.now(UTC)
+
+        job_scheduler = scheduler.build_scheduler(config)
+
+        after = datetime.now(UTC)
+        job = job_scheduler.get_job("plugin:valid")
+        next_run = job.next_run_time.astimezone(UTC)
+
+        assert (
+            before
+            <= next_run
+            <= after + timedelta(seconds=scheduler.FIRST_RUN_MAX_DELAY_SECONDS)
+        )
+
+    def test_a_plugin_mid_backoff_resumes_it_instead_of_polling_immediately(
+        self, tmp_path
+    ):
+        config = self._config(
+            tmp_path, plugins_config={"valid": {"enabled": True, "poll_interval": 1800}}
+        )
+        db_path = config["storage"]["path"]
+        now = int(time.time())
+        for offset in (2, 1):
+            run_id = storage.start_run(db_path, "valid", now - offset * 60)
+            storage.finish_run(
+                db_path,
+                run_id,
+                "error",
+                "blocked (HTTP 403) for url 'https://x'",
+                samples_written=0,
+                finished_at=now - offset * 60,
+            )
+
+        job_scheduler = scheduler.build_scheduler(config)
+
+        job = job_scheduler.get_job("plugin:valid")
+        # 2 trailing blocked runs -> compute_backoff_delay_seconds(1800, None, 2)
+        # = 1800 * 2**2 = 7200s from the last run's start (now - 60s).
+        expected = datetime.fromtimestamp(now - 60) + timedelta(seconds=7200)
+        assert job.next_run_time.replace(tzinfo=None) == expected
+        # backoff_state (job.args[2]) is seeded with the trailing count, so
+        # the next real 403/429 continues the exponential backoff instead
+        # of restarting it at count 1.
+        assert job.args[2]["valid"] == 2
+
     def test_maintenance_job_is_scheduled_daily_with_jitter_and_delayed_first_run(
         self, tmp_path
     ):

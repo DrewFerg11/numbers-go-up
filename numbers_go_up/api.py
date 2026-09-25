@@ -18,7 +18,6 @@ from fastapi import APIRouter, HTTPException, Query, Request, Response
 from pydantic import BaseModel, ValidationError
 
 from numbers_go_up import queries, scheduler, storage
-from numbers_go_up.http import BLOCKED_ERROR_PREFIX
 from numbers_go_up.queries import RangeKey
 
 router = APIRouter(prefix="/api")
@@ -102,6 +101,7 @@ class PluginStatus(BaseModel):
     name: str
     status: PluginStatusName
     enabled: bool
+    health: queries.PluginHealth
     last_poll: str | None
     next_poll: str | None
     consecutive_failures: int
@@ -178,9 +178,6 @@ class IntegrationsResponse(BaseModel):
     mqtt: MqttStatus
     milestones: MilestoneStatus
 
-
-# Matches the dashboard footer's "red" (Failure Handling #2).
-DEFAULT_UNHEALTHY_FAILURES = 3
 
 # A full year of one series was measured at 4.9ms, so this cap is about
 # keeping responses reasonable, not performance.
@@ -436,8 +433,7 @@ def _unhealthy_reason(plugin: dict[str, Any], failure_threshold: int) -> str | N
     in-flight or interrupted run (see its docstring), so there's no
     "currently polling" adjustment to make here.
     """
-    last_error = plugin["last_error"]
-    if last_error is not None and last_error.startswith(BLOCKED_ERROR_PREFIX):
+    if queries.is_blocked(plugin["last_error"]):
         return "blocked"
 
     finished_failures = plugin["consecutive_failures"]
@@ -547,7 +543,7 @@ def integrations(request: Request) -> dict[str, Any]:
 def plugins_health(
     request: Request,
     response: Response,
-    failures: int = Query(DEFAULT_UNHEALTHY_FAILURES, ge=1),
+    failures: int = Query(queries.DEFAULT_UNHEALTHY_FAILURES, ge=1),
 ) -> dict[str, Any]:
     """Plugin health for uptime monitors: 200 when every enabled plugin is
     polling successfully, 503 when any is blocked or has failed ``failures``

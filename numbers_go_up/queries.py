@@ -19,6 +19,11 @@ from fastapi import Request
 from numbers_go_up import storage
 from numbers_go_up.http import BLOCKED_ERROR_PREFIX
 
+# Matches the dashboard footer's "red" (Failure Handling #2). Used both by
+# /health/plugins' own (overridable via its ?failures= query param)
+# unhealthy check and, at this default, by plugin_health()'s health field.
+DEFAULT_UNHEALTHY_FAILURES = 3
+
 # Range bounds in hours, shared by /api/stats/overview, /api/stats/history,
 # and /m/{key} -- the same named ranges everywhere in the app. ALL has no
 # fixed bound: each series (or set of series) starts at its own first
@@ -102,6 +107,58 @@ def is_stale(
     return finished_at is None or now - finished_at > 3 * interval_seconds
 
 
+def is_blocked(error: str | None) -> bool:
+    """Whether a ``plugin_runs.error`` string is a blocked (403) failure.
+
+    The one place that knows what "blocked" means (#127b): a 403 is
+    recorded as an ordinary ``status='error'`` row (the schema's CHECK
+    constraint allows only ``ok``/``error``) with this text prefix, so
+    every reader that needs to tell a blocked source apart from a broken
+    plugin -- ``plugin_statuses``, ``api._unhealthy_reason`` -- goes
+    through here instead of re-checking the prefix itself. JS no longer
+    needs its own copy: ``plugin.health`` already reflects this.
+    """
+    return error is not None and error.startswith(BLOCKED_ERROR_PREFIX)
+
+
+PluginHealth = Literal["disabled", "pending", "ok", "warn", "error"]
+
+
+def plugin_health(
+    status: str,
+    enabled: bool,
+    consecutive_failures: int,
+    last_error: str | None,
+    failure_threshold: int = DEFAULT_UNHEALTHY_FAILURES,
+) -> PluginHealth:
+    """One rolled-up health verdict per plugin, computed once server-side
+    (#127b) instead of dashboard.js's own copy of this exact rule
+    (``statusClass``, which the run-state work's removal of
+    ``consecutive_failures``' in-flight-run double-count left subtly wrong
+    until this replaced it -- it still subtracted 1 for "polling").
+
+    ``disabled``/``pending`` pass ``status`` straight through: neither has
+    a failure history worth rolling up yet. Otherwise: blocked is ``error``
+    unconditionally (a source refusing this client isn't a blip, and the
+    scheduler is already backing off); ``failure_threshold`` or more
+    consecutive finished failures is ``error``; at least one is ``warn``;
+    zero is ``ok`` -- whether ``status`` is currently ``ok`` or ``polling``,
+    since an in-flight retry with no finished failures behind it is a
+    healthy plugin mid-poll, not a reason to downgrade.
+    """
+    if not enabled:
+        return "disabled"
+    if status == "pending":
+        return "pending"
+    if is_blocked(last_error):
+        return "error"
+    if consecutive_failures >= failure_threshold:
+        return "error"
+    if consecutive_failures >= 1:
+        return "warn"
+    return "ok"
+
+
 def plugin_statuses(request: Request) -> list[dict[str, Any]]:
     """One status report per discovered plugin, shared by /api/plugins,
     /health/plugins, and the dashboard overview so none of them can
@@ -148,11 +205,10 @@ def plugin_statuses(request: Request) -> list[dict[str, Any]]:
                 else:
                     last_error = run["error"]
                     # A 403 is recorded as status='error' (the CHECK
-                    # constraint allows only ok/error) with the Blocked
-                    # prefix. Surface it as its own state: a source refusing
-                    # this client needs a different fix than a broken plugin.
-                    blocked = (last_error or "").startswith(BLOCKED_ERROR_PREFIX)
-                    status = "blocked" if blocked else "error"
+                    # constraint allows only ok/error). Surface it as its
+                    # own state: a source refusing this client needs a
+                    # different fix than a broken plugin.
+                    status = "blocked" if is_blocked(last_error) else "error"
 
             # A poll currently in flight is liveness, not an error: report
             # it as its own state, keeping last_poll/last_error from the
@@ -162,14 +218,18 @@ def plugin_statuses(request: Request) -> list[dict[str, Any]]:
             if newest is not None and newest["finished_at"] is None:
                 status = "polling"
 
+        consecutive_failures = storage.consecutive_failures(db_path, name)
         plugins.append(
             {
                 "name": name,
                 "status": status,
                 "enabled": enabled,
+                "health": plugin_health(
+                    status, enabled, consecutive_failures, last_error
+                ),
                 "last_poll": last_poll,
                 "next_poll": next_poll,
-                "consecutive_failures": storage.consecutive_failures(db_path, name),
+                "consecutive_failures": consecutive_failures,
                 "last_error": last_error,
                 "metrics": storage.metric_keys_for_plugin(db_path, name),
             }

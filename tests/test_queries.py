@@ -141,6 +141,110 @@ def test_summarize_span_days_floors_at_one():
     assert result["avg_per_day"] == 12
 
 
+# --- is_blocked / plugin_health (#127b) -----------------------------------
+
+
+def test_is_blocked_true_for_blocked_prefix():
+    assert queries.is_blocked("blocked (HTTP 403) for url 'https://x'") is True
+
+
+def test_is_blocked_false_for_ordinary_error():
+    assert queries.is_blocked("boom") is False
+
+
+def test_is_blocked_false_for_none():
+    assert queries.is_blocked(None) is False
+
+
+def test_plugin_health_disabled_short_circuits_everything_else():
+    assert (
+        queries.plugin_health(
+            "disabled", enabled=False, consecutive_failures=99, last_error="boom"
+        )
+        == "disabled"
+    )
+
+
+def test_plugin_health_pending():
+    assert (
+        queries.plugin_health(
+            "pending", enabled=True, consecutive_failures=0, last_error=None
+        )
+        == "pending"
+    )
+
+
+def test_plugin_health_ok_with_zero_failures():
+    assert (
+        queries.plugin_health(
+            "ok", enabled=True, consecutive_failures=0, last_error=None
+        )
+        == "ok"
+    )
+
+
+def test_plugin_health_ok_while_polling_with_zero_failures():
+    # An in-flight retry with no finished failures behind it is healthy
+    # mid-poll, not a reason to downgrade -- unlike the old JS statusClass,
+    # which still subtracted 1 for "polling" after consecutive_failures()
+    # stopped counting in-flight runs itself.
+    assert (
+        queries.plugin_health(
+            "polling", enabled=True, consecutive_failures=0, last_error=None
+        )
+        == "ok"
+    )
+
+
+def test_plugin_health_warn_below_threshold():
+    assert (
+        queries.plugin_health(
+            "error", enabled=True, consecutive_failures=1, last_error="boom"
+        )
+        == "warn"
+    )
+    assert (
+        queries.plugin_health(
+            "error", enabled=True, consecutive_failures=2, last_error="boom"
+        )
+        == "warn"
+    )
+
+
+def test_plugin_health_error_at_threshold():
+    assert (
+        queries.plugin_health(
+            "error", enabled=True, consecutive_failures=3, last_error="boom"
+        )
+        == "error"
+    )
+
+
+def test_plugin_health_blocked_is_error_even_below_threshold():
+    assert (
+        queries.plugin_health(
+            "blocked",
+            enabled=True,
+            consecutive_failures=1,
+            last_error="blocked (HTTP 403) for url 'https://x'",
+        )
+        == "error"
+    )
+
+
+def test_plugin_health_custom_failure_threshold():
+    assert (
+        queries.plugin_health(
+            "error",
+            enabled=True,
+            consecutive_failures=5,
+            last_error="boom",
+            failure_threshold=10,
+        )
+        == "warn"
+    )
+
+
 # --- plugin_statuses ---------------------------------------------------------
 
 
@@ -170,6 +274,7 @@ def test_plugin_statuses_disabled_plugin(db_path):
             "name": "acme",
             "status": "disabled",
             "enabled": False,
+            "health": "disabled",
             "last_poll": None,
             "next_poll": None,
             "consecutive_failures": 0,
