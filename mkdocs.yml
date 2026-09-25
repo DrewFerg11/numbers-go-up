@@ -65,9 +65,15 @@ markdown_extensions:
 plugins:
   - search
 
-# Every page must be listed here: --strict fails on a page missing from the
-# nav, which is how "every page is reachable" is enforced. Stub pages are
-# placeholders for the Pages-site issues that fill them in.
+# By default MkDocs only logs a page missing from the nav at INFO. Raise it
+# (and broken nav entries) to warnings so --strict fails on them: that is
+# what enforces "every page is reachable from the nav".
+validation:
+  nav:
+    omitted_files: warn
+    not_found: warn
+
+# Stub pages are placeholders for the Pages-site issues that fill them in.
 nav:
   - Home: index.md
   - Getting started:
