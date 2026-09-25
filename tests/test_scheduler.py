@@ -253,9 +253,14 @@ class TestRunPluginOnceFailureIsolation:
                 db_path, plugin, http=None, now=1000, heartbeat_seconds=86400
             )
 
-        # The in-progress run row is never finished, so it still reads as
-        # a failure -- per #14's convention, not a new one.
-        assert storage.consecutive_failures(db_path, "raises_signal") == 1
+        # collect() raising propagates before run_plugin_once's own
+        # try/finally-guarded sections (all after the collect() call) ever
+        # run, so the row is left unfinished -- same shape as a container
+        # being killed mid-poll. consecutive_failures() only counts
+        # *finished* runs (#127), so an in-flight-looking row like this
+        # one doesn't move it; close_interrupted_runs() is what cleans it
+        # up, at the next startup.
+        assert storage.consecutive_failures(db_path, "raises_signal") == 0
 
     def test_systemexit_is_not_swallowed(self, db_path):
         module = ModuleType("raises_signal")

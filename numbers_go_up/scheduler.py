@@ -134,8 +134,21 @@ def run_plugin_once(
     # Snapshot every existing series' last_value for this plugin *before*
     # anything below writes a sample -- the milestone evaluator's
     # "previous". A key with no row here is a brand new series (previous
-    # values default to None via .get() below).
-    last_values_before_run = storage.last_values_for_plugin(db_path, plugin.name)
+    # values default to None via .get() below). Guarded like the other
+    # storage calls in this function: a locked database here must finish
+    # the run as a failure, not leave it orphaned "in progress" forever
+    # (Failure Handling #1 applies to every storage call this function
+    # makes, not just collect()'s own validate/store loop).
+    try:
+        last_values_before_run = storage.last_values_for_plugin(db_path, plugin.name)
+    except Exception as exc:
+        error = storage.error_tail(traceback.format_exc())
+        storage.finish_run(
+            db_path, run_id, "error", error, samples_written=0, finished_at=now
+        )
+        return RunResult(
+            run_id=run_id, status="error", samples_written=0, error=error, exception=exc
+        )
 
     try:
         # Resolve every key exactly once (not once for the cardinality count
@@ -300,7 +313,32 @@ def run_plugin_once(
             current_values=current_values,
         )
 
-    _reconcile_pattern_series(db_path, plugin, returned_keys)
+    try:
+        _reconcile_pattern_series(db_path, plugin, returned_keys)
+    except Exception as exc:
+        # Reconciliation failing after a clean store is a failed run, not
+        # an escaped exception -- samples already written this poll stay
+        # written (samples_written is honest), but the run itself must
+        # finish as an error, same as every other storage call here.
+        error = storage.error_tail(traceback.format_exc())
+        storage.finish_run(
+            db_path,
+            run_id,
+            "error",
+            error,
+            samples_written=samples_written,
+            finished_at=now,
+        )
+        return RunResult(
+            run_id=run_id,
+            status="error",
+            samples_written=samples_written,
+            error=error,
+            exception=exc,
+            returned_keys=frozenset(returned_keys),
+            previous_values=previous_values,
+            current_values=current_values,
+        )
 
     storage.finish_run(
         db_path, run_id, "ok", None, samples_written=samples_written, finished_at=now
@@ -568,6 +606,23 @@ def _run_scheduled_plugin(
         _notify_milestones(
             milestone_evaluator, plugin.name, "error", frozenset(), {}, {}
         )
+    except Exception as exc:
+        # Defense in depth: run_plugin_once guards every storage call it
+        # makes and should never let an ordinary exception escape, but if
+        # one does anyway, it must still go through the normal failure
+        # path -- logged via _log_failure, backoff reset, both hooks
+        # called -- rather than bypass all of that and land only in
+        # APScheduler's generic "Job raised an exception" log. This
+        # handler has no run_id, though, so it can't call finish_run: the
+        # run row, if one exists, stays unfinished until
+        # close_interrupted_runs() at the next startup.
+        signature, detail = describe_failure(exc)
+        _log_failure(failure_streaks, plugin.name, signature, detail, exc)
+        backoff_state[plugin.name] = 0
+        _notify_publisher(publisher, plugin.name, "error", frozenset())
+        _notify_milestones(
+            milestone_evaluator, plugin.name, "error", frozenset(), {}, {}
+        )
     else:
         # Success or an ordinary error: no backoff (Failure Handling #4),
         # and any 429/403 streak is broken -- reset the counter.
@@ -759,15 +814,20 @@ def build_scheduler(
     discovers internally exactly as before, for callers (mainly tests)
     that don't already have a plugin list on hand.
 
-    A single-threaded executor is deliberate: it makes ``max_instances=1``
-    meaningful per job (APScheduler enforces it per job regardless, but a
-    single worker keeps polls serialized against the one SQLite writer
-    rather than relying on ``busy_timeout`` to paper over concurrent
-    writes). Every job also sets ``coalesce=True`` so a missed run (e.g.
-    the container was asleep) doesn't fire a pile of catch-up runs, and
-    ``misfire_grace_time=None`` so a run submitted late to a backed-up
-    executor executes late instead of being silently discarded (which
-    would leave a poll missing from ``plugin_runs``).
+    A pooled executor of ``ThreadPoolExecutor(10)`` runs polls concurrently
+    (up to 10 at once) rather than serialized -- deliberate, not a leftover:
+    a slow or timing-out source (TikTok pages, a 15s timeout x N plugins)
+    would otherwise delay every other plugin's poll behind it. SQLite
+    tolerates this fine (writes are short, ``busy_timeout=5000`` absorbs
+    contention), and the shared ``MqttPublisher``'s bookkeeping is
+    protected by its own lock for the same reason. ``max_instances=1`` is
+    still set per job (redundant with the 10-worker cap only ever letting
+    one instance of a given job run, but explicit is cheap), and every job
+    sets ``coalesce=True`` so a missed run (e.g. the container was asleep)
+    doesn't fire a pile of catch-up runs, and ``misfire_grace_time=None``
+    so a run submitted late to a backed-up executor executes late instead
+    of being silently discarded (which would leave a poll missing from
+    ``plugin_runs``).
 
     ``jitter_fraction``, ``keep_daily``, and ``plugin_runs_retention_days``
     are all validated up front: a bad value raises ``ConfigError`` here and

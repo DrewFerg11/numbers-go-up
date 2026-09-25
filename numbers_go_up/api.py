@@ -572,16 +572,15 @@ def _unhealthy_reason(plugin: dict[str, Any], failure_threshold: int) -> str | N
     Blocked is unhealthy on the first 403: that isn't a blip, it's a source
     refusing this client, and the scheduler is already backing off. Other
     failures only count once ``failure_threshold`` *finished* runs in a row
-    have failed -- consecutive_failures() also counts an in-flight run (its
-    liveness convention, #19), which would flag a healthy plugin mid-poll.
+    have failed -- storage.consecutive_failures() already excludes an
+    in-flight or interrupted run (see its docstring), so there's no
+    "currently polling" adjustment to make here.
     """
     last_error = plugin["last_error"]
     if last_error is not None and last_error.startswith(BLOCKED_ERROR_PREFIX):
         return "blocked"
 
     finished_failures = plugin["consecutive_failures"]
-    if plugin["status"] == "polling":
-        finished_failures = max(finished_failures - 1, 0)
     if finished_failures >= failure_threshold:
         return f"{finished_failures} consecutive failures"
     return None

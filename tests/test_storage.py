@@ -422,6 +422,58 @@ class TestRunLedger:
             )
 
 
+class TestCloseInterruptedRuns:
+    def test_closes_an_unfinished_run_with_the_interrupted_sentinel(self, db_path):
+        run_id = storage.start_run(db_path, "demo", 1000)
+
+        closed = storage.close_interrupted_runs(db_path, now=1050)
+
+        assert closed == 1
+        row = _run_row(db_path, run_id)
+        assert row[2] == 1050  # finished_at
+        assert row[3] == "error"
+        assert "interrupted" in row[4]
+
+    def test_finished_runs_are_left_alone(self, db_path):
+        run_id = storage.start_run(db_path, "demo", 1000)
+        storage.finish_run(
+            db_path, run_id, "ok", None, samples_written=1, finished_at=1002
+        )
+
+        closed = storage.close_interrupted_runs(db_path, now=1050)
+
+        assert closed == 0
+        row = _run_row(db_path, run_id)
+        assert row[2] == 1002
+        assert row[3] == "ok"
+
+    def test_no_unfinished_runs_closes_nothing(self, db_path):
+        assert storage.close_interrupted_runs(db_path, now=1050) == 0
+
+    def test_an_interrupted_run_does_not_count_as_a_consecutive_failure(self, db_path):
+        storage.start_run(db_path, "demo", 1000)
+        storage.close_interrupted_runs(db_path, now=1050)
+
+        assert storage.consecutive_failures(db_path, "demo") == 0
+        # And latest_finished_run skips straight past it too.
+        assert storage.latest_finished_run(db_path, "demo") is None
+
+    def test_interrupted_run_does_not_hide_a_real_failure_behind_it(self, db_path):
+        run_id = storage.start_run(db_path, "demo", 900)
+        storage.finish_run(
+            db_path, run_id, "error", "boom", samples_written=0, finished_at=901
+        )
+        storage.start_run(db_path, "demo", 1000)
+        storage.close_interrupted_runs(db_path, now=1050)
+
+        # The interrupted row is skipped; the real failure behind it is
+        # still counted and still the one latest_finished_run reports.
+        assert storage.consecutive_failures(db_path, "demo") == 1
+        latest = storage.latest_finished_run(db_path, "demo")
+        assert latest["status"] == "error"
+        assert latest["error"] == "boom"
+
+
 class TestPrunePluginRuns:
     def test_deletes_only_rows_past_the_cutoff(self, db_path):
         now = 30 * 86400
@@ -587,6 +639,28 @@ class TestLatestFinishedRun:
 
     def test_never_ran_returns_none(self, db_path):
         assert storage.latest_finished_run(db_path, "demo") is None
+
+    def test_a_started_at_tie_is_broken_by_id(self, db_path):
+        # Two finished runs sharing a started_at (real under
+        # second-resolution timestamps -- a fast error followed by a fast
+        # retry in the same second): ORDER BY started_at DESC alone
+        # leaves SQLite free to return either row, so this must match
+        # consecutive_failures' own id DESC tiebreak or the two can
+        # disagree about which run is newest.
+        older = storage.start_run(db_path, "demo", 1000)
+        storage.finish_run(
+            db_path, older, "ok", None, samples_written=1, finished_at=1000
+        )
+        newer = storage.start_run(db_path, "demo", 1000)
+        storage.finish_run(
+            db_path, newer, "error", "boom", samples_written=0, finished_at=1000
+        )
+        assert newer > older  # insertion order is the only real ordering
+
+        row = storage.latest_finished_run(db_path, "demo")
+
+        assert row["status"] == "error"
+        assert row["error"] == "boom"
 
     def test_ignores_other_plugins(self, db_path):
         other = storage.start_run(db_path, "other", 1000)
