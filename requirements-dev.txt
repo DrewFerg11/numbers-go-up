@@ -1,14 +1,16 @@
-# GENERATED FILE -- do not hand-edit. Regenerate the dev-tool pins after
-# changing the list below with:
+# GENERATED FILE -- do not hand-edit. Regenerate after changing
+# requirements-dev.in with:
 #
-#   printf 'ruff\npytest\n' | uv pip compile - --universal --generate-hashes \
-#       --python-version 3.12 -o /tmp/dev-deps.lock
+#   uv pip compile requirements-dev.in --universal --generate-hashes \
+#       --python-version 3.12 -o requirements-dev.txt
 #
-# then paste everything below the "-r requirements.txt" line from that
-# output in here. requirements.txt (hashed) triggers pip's hash-checking
-# mode for the whole install, which then requires every other requirement
-# in the same `pip install` call to be pinned and hashed too -- so ruff
-# and pytest are locked here rather than left loose.
+# then restore this file's own "-r requirements.txt" line (uv's compiler
+# doesn't know about it -- it's hand-added so this file also carries the
+# pinned runtime deps). requirements.txt (hashed) triggers pip's
+# hash-checking mode for the whole install, which then requires every
+# other requirement in the same `pip install` call to be pinned and
+# hashed too -- so ruff and pytest are locked here rather than left
+# loose.
 -r requirements.txt
 colorama==0.4.6 ; sys_platform == 'win32' \
     --hash=sha256:08695f5cb7ed6e0531a20572697297273c47b8cae5a63ffc6d6ed5c201be6e44 \
