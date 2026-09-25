@@ -18,6 +18,7 @@ import json
 import logging
 import math
 import random
+import re
 import time
 import traceback
 from datetime import UTC, datetime, timedelta
@@ -800,6 +801,24 @@ def _run_maintenance(db_path: str | Path, config: dict[str, Any]) -> None:
     )
 
 
+_RETRY_AFTER_FROM_ERROR_RE = re.compile(
+    re.escape(RATE_LIMITED_ERROR_PREFIX) + r" \(retry_after=([\d.]+)\)"
+)
+
+
+def _retry_after_from_error(error: str | None) -> float | None:
+    """The ``retry_after`` value baked into a rate-limited run's error text
+    (``RateLimited.__init__``'s ``f"{RATE_LIMITED_ERROR_PREFIX}
+    (retry_after={retry_after})"``), or None for anything else -- including
+    a rate-limited run with no Retry-After header, whose error text is
+    literally ``"...retry_after=None)"`` and correctly fails this match.
+    """
+    if error is None:
+        return None
+    match = _RETRY_AFTER_FROM_ERROR_RE.fullmatch(error)
+    return float(match.group(1)) if match else None
+
+
 def _initial_next_run(
     db_path: str | Path,
     plugin: LoadedPlugin,
@@ -823,10 +842,13 @@ def _initial_next_run(
     (:func:`storage.trailing_backoff_count`): seed ``backoff_state`` with
     that count and resume the backoff schedule from the last run's start,
     via the same :func:`compute_backoff_delay_seconds` a live 429/403
-    uses. If that time has already passed, the job fires as soon as
-    the scheduler starts (a past ``next_run_time`` isn't a misfire here --
-    ``misfire_grace_time=None`` just means it runs late instead of being
-    dropped).
+    uses -- including its Retry-After, recovered from the newest run's
+    error text (:func:`_retry_after_from_error`) when it has one, so a
+    restart mid-Retry-After-backoff doesn't re-poll earlier than the
+    source asked for. If that time has already passed, the job fires as
+    soon as the scheduler starts (a past ``next_run_time`` isn't a misfire
+    here -- ``misfire_grace_time=None`` just means it runs late instead of
+    being dropped).
 
     Otherwise: ``max(now + uniform(0, 60), last_started_at + interval)`` --
     a plugin already due (or never run) gets the random startup spread; one
@@ -841,7 +863,10 @@ def _initial_next_run(
     trailing = storage.trailing_backoff_count(db_path, plugin.name)
     if trailing > 0:
         backoff_state[plugin.name] = trailing
-        delay = compute_backoff_delay_seconds(plugin.interval_seconds, None, trailing)
+        retry_after = _retry_after_from_error(run["error"])
+        delay = compute_backoff_delay_seconds(
+            plugin.interval_seconds, retry_after, trailing
+        )
         logger.info(
             "Plugin %s: resuming backoff after restart (%d consecutive "
             "blocked/rate-limited runs); next poll in %.0fs",

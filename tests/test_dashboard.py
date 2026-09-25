@@ -119,6 +119,10 @@ def test_status_class_reads_the_server_computed_health_field(tmp_path):
     assert "plugin.health" in js
     assert "BLOCKED_PREFIX" not in js
     assert "UNHEALTHY_FAILURES" not in js
+    # A future JS-side re-derivation of the rule (e.g. re-reading
+    # consecutive_failures and mapping the ok/warn/error literals again)
+    # would pass the three assertions above; this is the one that bites.
+    assert "consecutive_failures" not in js
 
 
 def test_chart_js_implements_the_stale_dashed_tail(tmp_path):

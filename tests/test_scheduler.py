@@ -744,6 +744,34 @@ class TestBuildScheduler:
         # of restarting it at count 1.
         assert job.args[2]["valid"] == 2
 
+    def test_a_plugin_mid_backoff_resumes_the_last_runs_retry_after(self, tmp_path):
+        # A restart-resumed 429 backoff used to always pass retry_after=None
+        # to compute_backoff_delay_seconds, dropping the source's own
+        # Retry-After and re-polling earlier than it asked for -- see the
+        # gap between this test's expected 7200s (max(retry_after=7200,
+        # interval) capped) and the None-based exponential math the
+        # sibling 403 test above exercises (1800 * 2**1 = 3600s).
+        config = self._config(
+            tmp_path, plugins_config={"valid": {"enabled": True, "poll_interval": 1800}}
+        )
+        db_path = config["storage"]["path"]
+        now = int(time.time())
+        run_id = storage.start_run(db_path, "valid", now - 60)
+        storage.finish_run(
+            db_path,
+            run_id,
+            "error",
+            f"{scheduler.RATE_LIMITED_ERROR_PREFIX} (retry_after=7200.0)",
+            samples_written=0,
+            finished_at=now - 60,
+        )
+
+        job_scheduler = scheduler.build_scheduler(config)
+
+        job = job_scheduler.get_job("plugin:valid")
+        expected = datetime.fromtimestamp(now - 60) + timedelta(seconds=7200)
+        assert job.next_run_time.replace(tzinfo=None) == expected
+
     def test_maintenance_job_is_scheduled_daily_with_jitter_and_delayed_first_run(
         self, tmp_path
     ):
@@ -1300,6 +1328,25 @@ class TestComputeBackoffDelaySeconds:
         )
 
         assert retry_after_delay == scheduler.MAX_BACKOFF_SECONDS
+
+
+class TestRetryAfterFromError:
+    def test_extracts_the_retry_after_value(self):
+        error = f"{scheduler.RATE_LIMITED_ERROR_PREFIX} (retry_after=7200.0)"
+        assert scheduler._retry_after_from_error(error) == 7200.0
+
+    def test_no_retry_after_header_returns_none(self):
+        error = f"{scheduler.RATE_LIMITED_ERROR_PREFIX} (retry_after=None)"
+        assert scheduler._retry_after_from_error(error) is None
+
+    def test_blocked_error_returns_none(self):
+        assert (
+            scheduler._retry_after_from_error("blocked (HTTP 403) for url 'https://x'")
+            is None
+        )
+
+    def test_none_error_returns_none(self):
+        assert scheduler._retry_after_from_error(None) is None
 
 
 class _FakeSchedulerStub:
