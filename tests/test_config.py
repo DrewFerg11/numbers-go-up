@@ -254,6 +254,17 @@ def test_server_external_url_without_scheme_fails_startup(tmp_path):
         load_config(env=_env(tmp_path, NGU_CONFIG_FILE=str(config_file)))
 
 
+def test_server_external_url_without_host_fails_startup(tmp_path):
+    config_file = tmp_path / "config" / "config.yaml"
+    _write_config(
+        config_file,
+        {"server": {"external_url": "http://:8080"}},
+    )
+
+    with pytest.raises(ConfigError, match="external_url"):
+        load_config(env=_env(tmp_path, NGU_CONFIG_FILE=str(config_file)))
+
+
 def test_dashboard_pinned_non_list_fails_startup(tmp_path):
     config_file = tmp_path / "config" / "config.yaml"
     _write_config(config_file, {"dashboard": {"pinned": "acme.x"}})

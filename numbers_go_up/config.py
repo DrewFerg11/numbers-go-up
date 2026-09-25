@@ -270,7 +270,7 @@ class ServerConfig(_Section):
         if value is None:
             return value
         parsed = urlsplit(value)
-        if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        if parsed.scheme not in ("http", "https") or not parsed.hostname:
             raise ValueError(f"must be an http(s) URL with a host, got {value!r}")
         return value
 
