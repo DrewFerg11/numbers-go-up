@@ -145,8 +145,8 @@ jobs:
               cp -r ../site/. .
             else
               rm -rf "$DEPLOY_DIR"
-              mkdir -p "$(dirname "$DEPLOY_DIR")"
-              cp -r ../site "$DEPLOY_DIR"
+              mkdir -p "$DEPLOY_DIR"
+              cp -r ../site/. "$DEPLOY_DIR"
             fi
 
             git add -A
