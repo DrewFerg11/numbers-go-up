@@ -36,7 +36,7 @@ requests to any platform until you enable a plugin.
 git clone https://github.com/DrewFerg11/numbers-go-up.git
 cd numbers-go-up
 mkdir -p data config user-plugins
-docker compose up -d
+docker compose pull && docker compose up -d
 curl localhost:8080/health
 ```
 

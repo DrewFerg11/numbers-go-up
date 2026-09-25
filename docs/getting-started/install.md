@@ -18,10 +18,11 @@ cd numbers-go-up
 ```
 
 The [`docker-compose.yml`](https://github.com/DrewFerg11/numbers-go-up/blob/main/docker-compose.yml)
-at the repo root is the supported way to run it. It runs the published
-`ghcr.io/drewferg11/numbers-go-up:latest` image (its `build: .` also lets
-you build from the checkout), publishes port `8080`, rotates logs, and sets
-up the bind mounts below.
+at the repo root is the supported way to run it. It names the published
+`ghcr.io/drewferg11/numbers-go-up:latest` image, publishes port `8080`,
+rotates logs, and sets up the bind mounts below. It also has `build: .`, so
+Compose can build the image from the checkout instead. Step 5 pulls the
+published image first, so you run the release rather than a local build.
 
 ## 2. Create the folders
 
@@ -82,6 +83,7 @@ under `environment:`. It decides where the daily heartbeat boundary falls.
 ## 5. Start it
 
 ```sh
+docker compose pull
 docker compose up -d
 curl localhost:8080/health
 ```
