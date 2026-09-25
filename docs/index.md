@@ -9,6 +9,9 @@ Most sites show you a number today and no memory of what it was last month.
 numbers-go-up runs on your own hardware, checks those numbers on a schedule,
 and keeps the history — so you can ask what changed, how fast, and since when.
 
+Want to click around first? A [live demo](demo.md) with sample data is on
+the way.
+
 ## What you get
 
 - **One container.** A web service, a scheduler, and a SQLite file. No

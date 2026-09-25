@@ -71,15 +71,21 @@ Everything persistent lives outside the image — the container itself is
 disposable.
 
 ```sh
+git clone https://github.com/DrewFerg11/numbers-go-up.git && cd numbers-go-up
 mkdir -p data config user-plugins
 docker compose up -d
 curl localhost:8080/health
 ```
 
-No `chown` step needed: the container starts as root, matches `./data` and
-`./config` to your host UID/GID (`PUID`/`PGID`, both default `1000`), then
-drops to that user before running anything. See "File ownership (PUID/PGID)"
-below for NAS setups where your user isn't 1000.
+The full walkthrough, covering the bind mounts, file ownership, the
+local-disk requirement for `./data`, and what happens on first run, is the
+[Install guide](https://drewferg11.github.io/numbers-go-up/getting-started/install/).
+Every `config.yaml` key and environment variable is in the
+[Configuration reference](https://drewferg11.github.io/numbers-go-up/getting-started/configuration/).
+
+**`./data` must be local disk, never an NFS/SMB share.** SQLite's locking is
+unreliable over network filesystems, and the container refuses to start on
+one; see "Network filesystems" below.
 
 `/health` only says the process is up. To be alerted when a source stops
 polling, point an uptime monitor (e.g. Uptime Kuma, HTTP type) at
@@ -93,20 +99,6 @@ starts failing and one line when it recovers, not one per poll. Set
 Docker also knows when the app is unhealthy: the image ships a `HEALTHCHECK`
 against `/health`, so `docker ps`, `docker inspect`, and Portainer all show a
 `healthy`/`unhealthy` status without any extra config.
-
-- `./data` — the SQLite DB and migration backups. **Must be local disk, never
-  an NFS/SMB share** — SQLite's WAL locking is unreliable over network
-  filesystems. The container refuses to start if it detects `./data` is on
-  one; see "Network filesystems" below.
-- `./config` — drop a `config.yaml` here (see
-  [`config.yaml.example`](config.yaml.example)). If it's missing, the service
-  writes a commented example next to where it looked and starts with defaults
-  and zero plugins enabled.
-- `./user-plugins` — optional plugins of your own. Named `user-plugins` on the
-  host (not `plugins`, which is the repo's own built-in-plugin source
-  directory) so a bind mount from a clone doesn't shadow the built-ins.
-
-`docker rm` the container any time — none of the above lives inside it.
 
 ### File ownership (PUID/PGID)
 
