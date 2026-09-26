@@ -68,7 +68,16 @@ jobs:
           cache: pip
 
       - name: Install dependencies
-        run: pip install -r requirements-dev.txt && pip install -e . --no-deps
+        # requirements.txt (pulled in by requirements-dev.txt) is a hashed
+        # lock -- pip's hash-checking mode, triggered once any requirement
+        # in a single `install` call has a --hash, refuses to also resolve
+        # an unhashed local path in that same call. Install the pinned
+        # deps first, then this project's own package with --no-deps so it
+        # doesn't try to re-resolve (and re-verify) anything already
+        # satisfied above.
+        run: |
+          pip install -r requirements-dev.txt
+          pip install --no-deps -e .
 
       # A missing secret makes the live test call pytest.skip(), which exits
       # 0 -- a canary that lost its secret would report green forever while
