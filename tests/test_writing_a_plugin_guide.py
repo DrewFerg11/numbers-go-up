@@ -17,8 +17,8 @@ GUIDE = (
 
 
 def test_every_named_symbol_exists_where_the_guide_says_it_does():
-    import numbers_go_up.plugins as plugins_init
     from numbers_go_up import http, scheduler
+    from numbers_go_up import plugins as plugins_init
     from numbers_go_up.plugins import abacus, makerworld
 
     assert hasattr(http, "build_client")
