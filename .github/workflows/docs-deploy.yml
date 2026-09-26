@@ -23,12 +23,22 @@ on:
       - overrides/**
       - mkdocs.yml
       - .github/workflows/docs-deploy.yml
+      # The live demo (docs/demo.md -> site/demo/live/) crawls the real
+      # app -- an app-only change here never touched docs/, but it does
+      # change what the crawl produces, so it must still trigger a
+      # deploy or the published demo goes stale indefinitely.
+      - numbers_go_up/**
+      - scripts/demo/**
+      - pyproject.toml
   pull_request:
     paths:
       - docs/**
       - overrides/**
       - mkdocs.yml
       - .github/workflows/docs-deploy.yml
+      - numbers_go_up/**
+      - scripts/demo/**
+      - pyproject.toml
   workflow_dispatch:
 
 permissions:
@@ -93,7 +103,7 @@ jobs:
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: site/demo/live
-          key: demo-export-${{ hashFiles('numbers_go_up/**', 'scripts/demo/**') }}
+          key: demo-export-${{ hashFiles('numbers_go_up/**', 'scripts/demo/**', 'pyproject.toml', 'docs/requirements.txt') }}
 
       - name: Build demo
         if: steps.demo-cache.outputs.cache-hit != 'true'

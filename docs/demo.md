@@ -2,7 +2,8 @@
 
 A live, read-only demo of the dashboard, with sample data: the real
 dashboard and detail pages, rehosted as static files, not a copy or a
-mockup. Every chart, every range, and the theme toggle all work.
+mockup. The overview's range switcher, its charts, and the theme toggle
+all work.
 
 [Open the demo](live/){ .md-button .md-button--primary }
 
@@ -10,6 +11,13 @@ It's a static snapshot generated at build time, not a live instance --
 there's no auto-refresh, plugin status is frozen as seeded, and "updated"
 times reflect when the site was built, not now. All of that is also called
 out on the demo itself.
+
+A metric's own detail page renders with a real chart, but its range
+buttons don't switch ranges -- the real UI reloads the page server-side to
+recompute the range there, and a static export has no server to do that,
+so clicking one just reloads the same seeded range. The overview's range
+switcher isn't affected: it re-fetches client-side, which the static JSON
+files support.
 
 The series names and numbers are synthetic and platform-neutral. They
 don't come from, or describe, any real account on any real platform.
