@@ -7,11 +7,25 @@ a full seed-and-export round trip stays fast in CI.
 from __future__ import annotations
 
 import asyncio
+import re
 import sqlite3
 
 from scripts.demo import export, seed
 
 DAYS = 5
+
+# Only tags that actually *load* a resource -- <link href>, <script src>,
+# <img src> -- never a plain <a href>, which can legitimately point at an
+# external URL (detail.html's "Open on {{ metric.plugin }}" link) or an
+# app-internal route ("/docs", "/?range=..."). Those are content, not the
+# offline-loading guarantee this test is checking.
+_LOADED_RESOURCE_RE = re.compile(
+    r'<link\b[^>]*\bhref="([^"]+)"|<(?:script|img)\b[^>]*\bsrc="([^"]+)"'
+)
+
+
+def _loaded_resource_urls(html: str) -> list[str]:
+    return [a or b for a, b in _LOADED_RESOURCE_RE.findall(html)]
 
 
 def test_seed_produces_an_up_to_date_migrated_database(tmp_path):
@@ -96,10 +110,25 @@ def test_export_produces_every_range_and_no_third_party_urls(tmp_path):
             assert (output / "api" / f"history-{metric_dir}-{range_key}.json").exists()
 
     index_html = (output / "index.html").read_text()
-    assert "cdn." not in index_html
     detail_html = (output / "m" / "counter.orders" / "index.html").read_text()
-    assert "cdn." not in detail_html
-    assert 'href="static/' in index_html or 'href="/static/' not in index_html
+
+    # index.html sits at the export root, m/<key>/index.html two levels
+    # below it -- each page's loaded resources must be relative at exactly
+    # that depth, and never absolute (a CDN, or a root-absolute /static/...
+    # that 404s once the export isn't served from a domain root).
+    for html, expected_prefix in (
+        (index_html, "static/"),
+        (detail_html, "../../static/"),
+    ):
+        urls = _loaded_resource_urls(html)
+        assert urls, "expected at least one loaded resource"
+        for url in urls:
+            assert not re.match(r"https?://", url), f"third-party resource URL: {url}"
+        static_urls = [u for u in urls if "static/" in u]
+        assert static_urls, "expected at least one static/ asset"
+        for url in static_urls:
+            assert url.startswith(expected_prefix), url
+            assert not url.startswith("/static/"), url
 
     assert not (output / "static" / "img" / "icon-512.png").exists()
     assert (output / "static" / "css" / "dashboard.css").exists()

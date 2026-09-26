@@ -37,6 +37,7 @@ _APP_SCRIPT_RE = re.compile(
     r'<script src="[^"]*static/js/(?:dashboard|detail)\.js[^"]*">'
 )
 _BODY_OPEN_RE = re.compile(r"(<body[^>]*>)")
+_REWRITTEN_STATIC_URL_RE = re.compile(r'(?:href|src)="((?:\.\./)*static/[^"]*)"')
 
 # Neither base.html nor index.html/detail.html links these -- they exist
 # for a future PWA manifest, not for anything the two crawled page shapes
@@ -125,6 +126,26 @@ def _reactivate_demo_series(db_path: Path) -> None:
     storage.set_series_active_bulk(db_path, activate, deactivate)
 
 
+def _verify_static_references(output: Path) -> None:
+    """Turn ``_UNREFERENCED_STATIC_FILES``' "nothing links these" claim,
+    and the rewrite depth generally, from a reviewed-today assumption into
+    a checked one: every ``static/...`` URL any exported page actually
+    references must resolve to a real file in the copied tree. A template
+    that starts referencing a dropped icon, or a page whose relative depth
+    is wrong, fails the export loudly instead of shipping a 404 to the
+    live site.
+    """
+    for html_path in output.rglob("*.html"):
+        html = html_path.read_text()
+        for url in _REWRITTEN_STATIC_URL_RE.findall(html):
+            asset_path = (html_path.parent / url.split("?", 1)[0]).resolve()
+            if not asset_path.is_file():
+                raise RuntimeError(
+                    f"{html_path.relative_to(output)} references missing "
+                    f"static asset {url!r} (resolved to {asset_path})"
+                )
+
+
 async def _crawl(client: httpx.AsyncClient, output: Path) -> None:
     from numbers_go_up.queries import VALID_RANGES
 
@@ -207,6 +228,7 @@ async def export(seed_db: Path, output: Path) -> None:
         ignore=shutil.ignore_patterns(*_UNREFERENCED_STATIC_FILES),
     )
     shutil.copy(Path(__file__).parent / "shim.js", output / "demo-shim.js")
+    _verify_static_references(output)
 
 
 def main_cli(argv: list[str]) -> int:
