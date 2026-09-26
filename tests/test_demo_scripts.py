@@ -9,10 +9,15 @@ from __future__ import annotations
 import asyncio
 import re
 import sqlite3
+from pathlib import Path
 
 from scripts.demo import export, seed
 
 DAYS = 5
+
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+_DASHBOARD_JS = _REPO_ROOT / "numbers_go_up" / "static" / "js" / "dashboard.js"
+_SHIM_JS = _REPO_ROOT / "scripts" / "demo" / "shim.js"
 
 # Only tags that actually *load* a resource -- <link href>, <script src>,
 # <img src> -- never a plain <a href>, which can legitimately point at an
@@ -134,6 +139,30 @@ def test_export_produces_every_range_and_no_third_party_urls(tmp_path):
     assert (output / "static" / "css" / "dashboard.css").exists()
 
 
+def test_export_injects_the_shim_and_banner_at_the_right_depth(tmp_path):
+    db_path = tmp_path / "seed.db"
+    output = tmp_path / "dist"
+    seed.seed(db_path, now=1_800_000_000, days=DAYS)
+
+    asyncio.run(export.export(db_path, output))
+
+    assert (output / "demo-shim.js").exists()
+
+    index_html = (output / "index.html").read_text()
+    assert 'src="demo-shim.js"' in index_html
+    assert index_html.index('src="demo-shim.js"') < index_html.index(
+        "static/js/dashboard.js"
+    )
+    assert 'id="demo-snapshot-banner"' in index_html
+
+    detail_html = (output / "m" / "counter.orders" / "index.html").read_text()
+    assert 'src="../../demo-shim.js"' in detail_html
+    assert detail_html.index('src="../../demo-shim.js"') < detail_html.index(
+        "static/js/detail.js"
+    )
+    assert 'id="demo-snapshot-banner"' in detail_html
+
+
 def test_seed_gauge_values_stay_within_their_declared_bounds():
     # The full shipped DAYS_OF_HISTORY, not the short DAYS used elsewhere
     # in this file -- this is exactly what ships to the public demo once
@@ -153,3 +182,19 @@ def test_seed_gauge_values_stay_within_their_declared_bounds():
                 f"{metric_key} left its declared bounds {bounds}: "
                 f"min={min(values)} max={max(values)}"
             )
+
+
+def test_shim_refresh_delay_matches_dashboard_js_refresh_ms():
+    # demo-shim.js refuses to schedule dashboard.js's auto-refresh by
+    # matching on the hardcoded literal 60000 -- if dashboard.js's own
+    # REFRESH_MS ever drifts from that, the shim silently stops
+    # recognising it and the demo gets a live auto-refresh loop against
+    # static files (a permanent, console-spamming 404/rejection every
+    # interval). Pin both sides so drift is a red test, not a live bug.
+    dashboard_js = _DASHBOARD_JS.read_text()
+    match = re.search(r"var REFRESH_MS = (\d+);", dashboard_js)
+    assert match is not None, "REFRESH_MS constant not found in dashboard.js"
+    refresh_ms = int(match.group(1))
+
+    shim_js = _SHIM_JS.read_text()
+    assert f"if (delay === {refresh_ms}) return -1;" in shim_js

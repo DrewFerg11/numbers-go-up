@@ -33,6 +33,10 @@ REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 DEFAULT_OUTPUT = REPO_ROOT / "demo-dist"
 
 _STATIC_URL_RE = re.compile(r'((?:href|src)=")(/static/[^"]*)"')
+_APP_SCRIPT_RE = re.compile(
+    r'<script src="[^"]*static/js/(?:dashboard|detail)\.js[^"]*">'
+)
+_BODY_OPEN_RE = re.compile(r"(<body[^>]*>)")
 _REWRITTEN_STATIC_URL_RE = re.compile(r'(?:href|src)="((?:\.\./)*static/[^"]*)"')
 
 # Neither base.html nor index.html/detail.html links these -- they exist
@@ -40,6 +44,19 @@ _REWRITTEN_STATIC_URL_RE = re.compile(r'(?:href|src)="((?:\.\./)*static/[^"]*)"'
 # render. At ~200 KB combined they are most of the gap to the ~1 MB
 # export budget, for zero visible difference in the demo.
 _UNREFERENCED_STATIC_FILES = ("icon-512.png", "icon-192.png")
+
+_BANNER_HTML = """
+<div id="demo-snapshot-banner" style="position:relative;z-index:1000;
+  background:#3a2f00;color:#f4d35e;font:14px/1.4 system-ui,sans-serif;
+  padding:.6em 2.2em .6em 1em;text-align:center">
+  This is a static snapshot generated at build time -- no live auto-refresh,
+  plugin status is frozen as seeded, and "updated" times are build time, not
+  now.
+  <button onclick="this.parentElement.remove()" aria-label="Dismiss" style="
+    position:absolute;right:.4em;top:.4em;background:none;border:0;
+    color:inherit;font-size:1.1em;cursor:pointer">&times;</button>
+</div>
+""".strip()
 
 
 @contextmanager
@@ -66,12 +83,25 @@ def _no_sockets():
         socket.socket = real_socket
 
 
-def _rewrite_static_urls(html: str, depth: int) -> str:
-    """Rewrite ``/static/...`` (with its cache-busting ``?v=`` query kept
-    intact) to a path relative to a page ``depth`` directories below the
-    export root -- 0 for ``index.html``, 2 for ``m/<key>/index.html``."""
+def _postprocess_html(html: str, depth: int) -> str:
+    """Rewrite a crawled page for static hosting: relative asset URLs, the
+    injected fetch/navigation shim, and the snapshot banner.
+
+    ``depth`` is how many directories the page sits below the export root
+    -- 0 for ``index.html``, 2 for ``m/<key>/index.html`` -- and applies to
+    both the ``/static/...`` rewrite and where ``demo-shim.js`` (written
+    once, at the export root) is loaded from.
+    """
     prefix = "../" * depth
-    return _STATIC_URL_RE.sub(lambda m: f'{m.group(1)}{prefix}{m.group(2)[1:]}"', html)
+    html = _STATIC_URL_RE.sub(lambda m: f'{m.group(1)}{prefix}{m.group(2)[1:]}"', html)
+    # Inserted right before dashboard.js/detail.js so its window.fetch and
+    # window.setInterval overrides are in place before either ever calls
+    # the real ones (see shim.js's own docstring for why both matter).
+    html = _APP_SCRIPT_RE.sub(
+        f'<script src="{prefix}demo-shim.js"></script>\n\\g<0>', html, count=1
+    )
+    html = _BODY_OPEN_RE.sub(f"\\1\n{_BANNER_HTML}", html, count=1)
+    return html
 
 
 def _reactivate_demo_series(db_path: Path) -> None:
@@ -121,7 +151,7 @@ async def _crawl(client: httpx.AsyncClient, output: Path) -> None:
 
     index = await client.get("/")
     index.raise_for_status()
-    (output / "index.html").write_text(_rewrite_static_urls(index.text, depth=0))
+    (output / "index.html").write_text(_postprocess_html(index.text, depth=0))
 
     metrics_resp = await client.get("/api/metrics")
     metrics_resp.raise_for_status()
@@ -143,7 +173,7 @@ async def _crawl(client: httpx.AsyncClient, output: Path) -> None:
         page_dir.mkdir(parents=True, exist_ok=True)
         # output/m/<key>/index.html is two directories below the export
         # root (m/, then <key>/), so it needs "../../static/...".
-        (page_dir / "index.html").write_text(_rewrite_static_urls(detail.text, depth=2))
+        (page_dir / "index.html").write_text(_postprocess_html(detail.text, depth=2))
 
         for range_key in VALID_RANGES:
             history = await client.get(
@@ -197,6 +227,7 @@ async def export(seed_db: Path, output: Path) -> None:
         dirs_exist_ok=True,
         ignore=shutil.ignore_patterns(*_UNREFERENCED_STATIC_FILES),
     )
+    shutil.copy(Path(__file__).parent / "shim.js", output / "demo-shim.js")
     _verify_static_references(output)
 
 
