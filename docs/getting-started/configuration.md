@@ -95,10 +95,7 @@ plugins:
 Both are optional, and both are off when their block is absent: no block
 means no MQTT connection and no webhook calls. Their keys are covered on
 the [Home Assistant](../home-assistant/index.md) page, alongside the
-Home Assistant setup they feed. Until that page is written, the fully
-commented
-[`config.yaml.example`](https://github.com/DrewFerg11/numbers-go-up/blob/main/config.yaml.example)
-shows every key.
+Home Assistant setup they feed.
 
 ## Environment variables
 
@@ -125,7 +122,7 @@ leave them alone unless you change the mounts.
 | Variable | Default | Meaning |
 |---|---|---|
 | `PUID` / `PGID` | `1000` | Host user and group that own `./data` and `./config`. See [Install](install.md#3-file-ownership). |
-| `TZ` | unset (UTC) | Container timezone |
+| `TZ` | unset (UTC) | Timezone for log timestamps. Stored data and backup filenames are always UTC. |
 | `NGU_LOG_LEVEL` | `INFO` | Log verbosity. `DEBUG` shows every repeated plugin failure, not just the first of a streak. |
 | `NGU_CONFIG_STRICT` | `1` | `0` downgrades config validation failures to a warning. See [Validation](#validation). |
 | `NGU_ALLOW_NETWORK_FS` | unset | `1` lets the database run on a network filesystem despite the risk. See [Install](install.md). |
