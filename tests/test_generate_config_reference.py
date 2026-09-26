@@ -6,9 +6,23 @@ from scripts.generate_config_reference import generate
 
 
 def test_every_config_field_has_a_description():
-    from numbers_go_up.config import BackupsConfig, Config, PollConfig, StorageConfig
+    from numbers_go_up.config import (
+        BackupsConfig,
+        Config,
+        DashboardConfig,
+        PollConfig,
+        ServerConfig,
+        StorageConfig,
+    )
 
-    for model in (Config, PollConfig, StorageConfig, BackupsConfig):
+    for model in (
+        Config,
+        PollConfig,
+        StorageConfig,
+        BackupsConfig,
+        ServerConfig,
+        DashboardConfig,
+    ):
         for name, field in model.model_fields.items():
             assert field.description, f"{model.__name__}.{name} has no description"
 
