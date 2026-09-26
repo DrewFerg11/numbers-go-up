@@ -453,10 +453,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#4-set-your-timezone" class="md-nav__link">
+  <a href="#4-set-your-timezone-optional" class="md-nav__link">
     <span class="md-ellipsis">
       
-        4. Set your timezone
+        4. Set your timezone (optional)
       
     </span>
   </a>
@@ -940,10 +940,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#4-set-your-timezone" class="md-nav__link">
+  <a href="#4-set-your-timezone-optional" class="md-nav__link">
     <span class="md-ellipsis">
       
-        4. Set your timezone
+        4. Set your timezone (optional)
       
     </span>
   </a>
@@ -1084,9 +1084,12 @@ first user is usually <code>1026</code>, Unraid uses <code>99:100</code>), set b
 <p>If you'd rather manage ownership yourself, set <code>user: "1000:1000"</code> on the
 service instead. The container then skips the ownership step entirely, and
 you run <code>chown -R 1000:1000 data config</code> on the host once.</p>
-<h2 id="4-set-your-timezone">4. Set your timezone<a class="headerlink" href="#4-set-your-timezone" title="Permanent link">&para;</a></h2>
-<p><code>TZ</code> isn't set by default, so the container runs in UTC. Add your zone
-under <code>environment:</code>. It decides where the daily heartbeat boundary falls.</p>
+<h2 id="4-set-your-timezone-optional">4. Set your timezone (optional)<a class="headerlink" href="#4-set-your-timezone-optional" title="Permanent link">&para;</a></h2>
+<p><code>TZ</code> isn't set by default, so the container runs in UTC. To read log
+timestamps in local time, add your zone under <code>environment:</code>. It only
+changes how log lines are printed: samples are stored as UTC timestamps,
+the heartbeat is a fixed interval rather than a local-midnight boundary,
+and backup filenames use UTC.</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">TZ=America/New_York</span>
 </code></pre></div>
 <h2 id="5-start-it">5. Start it<a class="headerlink" href="#5-start-it" title="Permanent link">&para;</a></h2>
