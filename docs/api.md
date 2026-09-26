@@ -25,10 +25,12 @@ same key is what appears in the dashboard's URL as `/m/<key>` and in
 
 ## The `range` vocabulary
 
-`/api/stats/history` and `/api/stats/delta` take a `range` query parameter
-from a fixed, shared vocabulary -- the same one the dashboard's range
-switcher uses: `1H`, `6H`, `12H`, `1D`, `1W`, `1M`, `3M`, `1Y`, and `ALL`.
-`ALL` has no fixed bound: each series starts at its own first sample.
+`/api/stats/history` takes a `range` query parameter from a fixed vocabulary
+-- the same one the dashboard's range switcher uses: `1H`, `6H`, `12H`,
+`1D`, `1W`, `1M`, `3M`, `1Y`, and `ALL`. `/api/stats/delta` takes a plain
+`hours` window instead (integer hours back from now, capped at 8760 --
+366 days). `ALL` has no fixed bound: each series starts at its own first
+sample.
 
 ## What is not here, on purpose
 
