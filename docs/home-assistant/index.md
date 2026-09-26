@@ -130,7 +130,9 @@ Downloads passed 500") instead of watching a dashboard. Milestones don't
 need MQTT: they call a Home Assistant webhook directly.
 
 **1. In Home Assistant**, create an automation with a **Webhook** trigger,
-and a notify action that reads the payload's `message`:
+and a notify action that reads the payload's `message`. This is the
+automation's own YAML (in the automation editor, **⋮ → Edit in YAML**), not
+something to paste into `configuration.yaml`:
 
 ```yaml
 triggers:
