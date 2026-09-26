@@ -199,7 +199,13 @@ class _Section(BaseModel):
 
 
 class BackupsConfig(_Section):
-    keep_daily: StrictInt = 7
+    keep_daily: StrictInt = Field(
+        7,
+        description=(
+            "How many daily SQLite backups to keep under the storage path's "
+            "backups/ directory. Must be >= 0; 0 disables backups entirely."
+        ),
+    )
 
     @field_validator("keep_daily")
     @classmethod
@@ -210,10 +216,32 @@ class BackupsConfig(_Section):
 
 
 class StorageConfig(_Section):
-    path: str
-    heartbeat_seconds: StrictInt = 86400
-    plugin_runs_retention_days: StrictInt = 30
-    backups: BackupsConfig = Field(default_factory=BackupsConfig)
+    path: str = Field(
+        description=(
+            "Filesystem path to the SQLite database file. Required -- no "
+            "default. Set by NGU_DATA_DIR/stats.db in normal deployments; "
+            "not something most installs need to override directly."
+        )
+    )
+    heartbeat_seconds: StrictInt = Field(
+        86400,
+        description=(
+            "Force one sample per series even when its value hasn't changed, "
+            "so a flat metric doesn't look dead. Must be a positive integer "
+            "(> 0), in seconds."
+        ),
+    )
+    plugin_runs_retention_days: StrictInt = Field(
+        30,
+        description=(
+            "How many days of plugin_runs history to keep before pruning. "
+            "Must be >= 0; the newest finished run for each plugin is kept "
+            "regardless of age."
+        ),
+    )
+    backups: BackupsConfig = Field(
+        default_factory=BackupsConfig, description="Daily database backup retention."
+    )
 
     @field_validator("heartbeat_seconds")
     @classmethod
@@ -231,8 +259,22 @@ class StorageConfig(_Section):
 
 
 class PollConfig(_Section):
-    default_interval: StrictInt = 1800
-    jitter_fraction: float = 0.2
+    default_interval: StrictInt = Field(
+        1800,
+        description=(
+            "Default poll interval in seconds for a plugin that doesn't set "
+            "its own poll_interval. Must be a positive integer (> 0)."
+        ),
+    )
+    jitter_fraction: float = Field(
+        0.2,
+        description=(
+            "Fraction of a plugin's interval to randomly jitter each poll's "
+            "schedule by, so multiple plugins don't all fire in lockstep. "
+            "Must be a finite number in [0, 1) -- a quoted string is a type "
+            "error, not coerced."
+        ),
+    )
 
     @field_validator("default_interval")
     @classmethod
@@ -264,14 +306,32 @@ class PollConfig(_Section):
 
 
 class ServerConfig(_Section):
-    external_url: StrictStr | None = None
+    external_url: StrictStr | None = Field(
+        None,
+        description=(
+            'Optional external URL (e.g. "http://192.168.1.50:8080") '
+            'feeding Home Assistant\'s device "Visit" link. Must be an '
+            "http(s) URL with a host. Does not change what the container "
+            "listens on."
+        ),
+    )
     # Deprecated: kept only so an existing config with these set still
     # boots (with a warning, logged in load_config -- not here, since a
     # validator shouldn't have side effects) instead of failing outright.
     # The container always listens on 0.0.0.0:8080; the outside port is a
     # docker-compose port-mapping concern.
-    host: StrictStr | None = None
-    port: StrictInt | None = None
+    host: StrictStr | None = Field(
+        None,
+        description=(
+            "Deprecated, has no effect. The container always listens on "
+            "0.0.0.0:8080; change the outside port with docker-compose's "
+            "port mapping instead."
+        ),
+    )
+    port: StrictInt | None = Field(
+        None,
+        description=("Deprecated, has no effect -- same as host above."),
+    )
 
     @field_validator("external_url")
     @classmethod
@@ -285,7 +345,14 @@ class ServerConfig(_Section):
 
 
 class DashboardConfig(_Section):
-    pinned: list[StrictStr] = Field(default_factory=list)
+    pinned: list[StrictStr] = Field(
+        default_factory=list,
+        description=(
+            "Metric keys to pin at the top of the dashboard overview, in "
+            "order. Empty by default -- the dashboard falls back to its own "
+            "default selection."
+        ),
+    )
 
 
 class Config(_Section):
@@ -299,13 +366,40 @@ class Config(_Section):
     one.
     """
 
-    poll: PollConfig = Field(default_factory=PollConfig)
-    storage: StorageConfig
-    server: ServerConfig = Field(default_factory=ServerConfig)
-    dashboard: DashboardConfig = Field(default_factory=DashboardConfig)
-    plugins: dict[str, dict[str, Any]] = Field(default_factory=dict)
-    mqtt: dict[str, Any] | None = None
-    milestones: dict[str, Any] | None = None
+    poll: PollConfig = Field(
+        default_factory=PollConfig, description="Default polling behavior."
+    )
+    storage: StorageConfig = Field(description="Where and how history is stored.")
+    server: ServerConfig = Field(
+        default_factory=ServerConfig, description="Optional server-facing settings."
+    )
+    dashboard: DashboardConfig = Field(
+        default_factory=DashboardConfig, description="Dashboard overview settings."
+    )
+    plugins: dict[str, dict[str, Any]] = Field(
+        default_factory=dict,
+        description=(
+            "Per-plugin settings, keyed by plugin name. Free-form: each "
+            "plugin validates its own entry, not this schema -- see that "
+            "plugin's own page for its keys. Every plugin is off "
+            "(`enabled: false`, implicitly, by absence) until explicitly "
+            "given `enabled: true` here."
+        ),
+    )
+    mqtt: dict[str, Any] | None = Field(
+        None,
+        description=(
+            "Optional Home Assistant MQTT discovery settings. Validated by "
+            "mqtt.py, not this schema -- see the Home Assistant page."
+        ),
+    )
+    milestones: dict[str, Any] | None = Field(
+        None,
+        description=(
+            "Optional milestone-webhook settings. Validated by "
+            "milestones.py, not this schema."
+        ),
+    )
 
 
 def _format_validation_error(exc: ValidationError) -> str:

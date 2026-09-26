@@ -90,6 +90,12 @@ jobs:
         # is the default for a single-line run step).
         run: python scripts/export_openapi.py
 
+      - name: Generate config reference
+        # Same reasoning as the OpenAPI export above: no config/db/server
+        # needed, and a failure here must fail the build rather than
+        # deploy a stale table.
+        run: python scripts/generate_config_reference.py
+
       - name: Build site
         run: mkdocs build --strict
 
