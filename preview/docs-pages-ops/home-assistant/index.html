@@ -1192,7 +1192,9 @@ want it gone.</p>
 Downloads passed 500") instead of watching a dashboard. Milestones don't
 need MQTT: they call a Home Assistant webhook directly.</p>
 <p><strong>1. In Home Assistant</strong>, create an automation with a <strong>Webhook</strong> trigger,
-and a notify action that reads the payload's <code>message</code>:</p>
+and a notify action that reads the payload's <code>message</code>. This is the
+automation's own YAML (in the automation editor, <strong>⋮ → Edit in YAML</strong>), not
+something to paste into <code>configuration.yaml</code>:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="nt">triggers</span><span class="p">:</span>
 <a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">trigger</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">webhook</span>
 <a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="w">    </span><span class="nt">webhook_id</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">numbers-go-up-milestones</span>
