@@ -173,7 +173,7 @@ jobs:
 
             if [ "$DEPLOY_DIR" = "." ]; then
               # main: replace the site root but keep every branch preview.
-              find . -maxdepth 1 ! -name '.' ! -name '.git' ! -name 'preview' ! -name '.nojekyll' -exec rm -rf {} +
+              find . -maxdepth 1 ! -name '.' ! -name '.git' ! -name 'preview' ! -name '.nojekyll' ! -name 'status' -exec rm -rf {} +
               cp -r ../site/. .
             else
               rm -rf "$DEPLOY_DIR"
