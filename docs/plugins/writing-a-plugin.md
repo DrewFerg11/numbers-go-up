@@ -45,6 +45,9 @@ METRICS = {
     "abacus.counter.{key}.value": {
         "kind": "cumulative",  # Abacus counters only rise in normal operation
         "label": "Abacus Counter",
+        # Fixed and generic, not per-counter: see the module docstring's
+        # "unit and the plugin contract" section -- config's per-counter
+        # `unit` rides in attrs["unit"] instead.
         "unit": "count",
         "icon": "mdi:counter",
     },
@@ -153,7 +156,7 @@ and drives `collect()` against an `httpx.MockTransport` -- no network,
 which is what CI actually runs:
 
 ```python
-def _client(handler):
+def _client(handler) -> httpx.Client:
     return http.build_client(transport=httpx.MockTransport(handler))
 
 

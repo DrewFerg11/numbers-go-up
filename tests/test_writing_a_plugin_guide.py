@@ -35,21 +35,32 @@ def test_every_named_symbol_exists_where_the_guide_says_it_does():
 
 
 def test_the_quoted_metrics_dict_matches_the_real_one_exactly():
+    # Byte-identical to the real source, comments included -- exec()'d
+    # dict-equality alone can't see a dropped comment, which is exactly
+    # what slipped through review once already (see #176's Hermes pass).
+    real = (
+        Path(__file__).parent.parent / "numbers_go_up" / "plugins" / "abacus.py"
+    ).read_text()
+    start = real.index("METRICS = {")
+    end = real.index("\n}", start) + len("\n}")
+    quoted_real = real[start:end]
+
+    assert quoted_real in GUIDE
+
     from numbers_go_up.plugins.abacus import METRICS
 
-    quoted = """METRICS = {
-    "abacus.counter.{key}.value": {
-        "kind": "cumulative",  # Abacus counters only rise in normal operation
-        "label": "Abacus Counter",
-        "unit": "count",
-        "icon": "mdi:counter",
-    },
-}"""
-    assert quoted in GUIDE
-
     namespace: dict = {}
-    exec(compile(quoted, "<guide>", "exec"), namespace)  # noqa: S102
+    exec(compile(quoted_real, "<guide>", "exec"), namespace)  # noqa: S102
     assert namespace["METRICS"] == METRICS
+
+
+def test_the_quoted_client_helper_matches_the_real_one_exactly():
+    real = (Path(__file__).parent / "test_abacus_plugin.py").read_text()
+    start = real.index("def _client(handler)")
+    end = real.index("\n\n", start)
+    quoted_real = real[start:end]
+
+    assert quoted_real in GUIDE
 
 
 def test_the_quoted_live_test_matches_the_real_one_exactly():
