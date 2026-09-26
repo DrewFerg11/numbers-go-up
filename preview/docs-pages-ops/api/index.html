@@ -694,6 +694,24 @@
         
       
       
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    API reference
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
       <a href="./" class="md-nav__link md-nav__link--active">
         
   
@@ -710,6 +728,80 @@
   
 
       </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#auth" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Auth
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#rate-limits" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Rate limits
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#the-metric-key-format" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The metric key format
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#the-range-vocabulary" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The range vocabulary
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#what-is-not-here-on-purpose" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What is not here, on purpose
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
       
     </li>
   
@@ -762,6 +854,69 @@
     
   
   
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#auth" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Auth
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#rate-limits" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Rate limits
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#the-metric-key-format" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The metric key format
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#the-range-vocabulary" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The range vocabulary
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#what-is-not-here-on-purpose" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What is not here, on purpose
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
 </nav>
                   </div>
                 </div>
@@ -786,12 +941,43 @@
 
 
 <h1 id="api-reference">API reference<a class="headerlink" href="#api-reference" title="Permanent link">&para;</a></h1>
-<div class="admonition note">
-<p class="admonition-title">Coming soon</p>
-<p>A reference for the REST API. Until then, every running instance serves
-its own interactive API docs at <code>/docs</code> (Swagger UI, no CDN needed) and
-the raw schema at <code>/openapi.json</code>.</p>
-</div>
+<p>Every running instance exposes a small, read-only REST API. This page is
+generated from the app's own OpenAPI schema on every deploy, so it can never
+drift from what a running instance actually serves.</p>
+<h2 id="auth">Auth<a class="headerlink" href="#auth" title="Permanent link">&para;</a></h2>
+<p>None. There is no login, token or API key. Anyone who can reach the port can
+read every endpoint below. Put the app behind a reverse proxy or your own
+network controls if that is not what you want.</p>
+<h2 id="rate-limits">Rate limits<a class="headerlink" href="#rate-limits" title="Permanent link">&para;</a></h2>
+<p>None. The app does not throttle requests; it relies on the reverse proxy or
+network in front of it for that.</p>
+<h2 id="the-metric-key-format">The <code>metric</code> key format<a class="headerlink" href="#the-metric-key-format" title="Permanent link">&para;</a></h2>
+<p>Every metric belongs to a plugin and is addressed as <code>&lt;plugin-name&gt;</code> for a
+plugin's single default series, or <code>&lt;plugin-name&gt;.&lt;sub-key&gt;</code> for a plugin
+that reports more than one series (per-model counters, for example). The
+same key is what appears in the dashboard's URL as <code>/m/&lt;key&gt;</code> and in
+<code>/api/stats/history</code> and <code>/api/stats/delta</code>'s <code>metric</code> query parameter.</p>
+<h2 id="the-range-vocabulary">The <code>range</code> vocabulary<a class="headerlink" href="#the-range-vocabulary" title="Permanent link">&para;</a></h2>
+<p><code>/api/stats/history</code> takes a <code>range</code> query parameter from a fixed vocabulary
+-- the same one the dashboard's range switcher uses: <code>1H</code>, <code>6H</code>, <code>12H</code>,
+<code>1D</code>, <code>1W</code>, <code>1M</code>, <code>3M</code>, <code>1Y</code>, and <code>ALL</code>. <code>/api/stats/delta</code> takes a plain
+<code>hours</code> window instead (integer hours back from now, capped at 8760 --
+366 days). <code>ALL</code> has no fixed bound: each series starts at its own first
+sample.</p>
+<h2 id="what-is-not-here-on-purpose">What is not here, on purpose<a class="headerlink" href="#what-is-not-here-on-purpose" title="Permanent link">&para;</a></h2>
+<p>The dashboard's own routes (<code>/</code>, <code>/m/{key}</code>, <code>/api/stats/overview</code>) are
+excluded from this schema. They are the dashboard UI's private backend, not
+a public contract, and may change shape or disappear without notice. Do not
+build against them.</p>
+<div id="redoc-container"></div>
+<script src="../assets/redoc.standalone.js"></script>
+<script>
+  Redoc.init(
+    "../assets/openapi.json",
+    {},
+    document.getElementById("redoc-container")
+  );
+</script>
 
 
 
