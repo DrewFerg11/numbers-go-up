@@ -12,6 +12,10 @@ your published models.
 
 ## What it collects
 
+See the [metric catalogue](metrics.md) for the full, generated key/kind/unit
+table across every plugin -- the tables below add the "what the number
+means" context it doesn't carry.
+
 **Profile counters**, one request per poll:
 
 | Metric key | Kind | What the number is |

@@ -45,7 +45,9 @@ stored and what Home Assistant does with it:
 - **`gauge`**: a current level that can go down as well as up (followers,
   stars, likes). Home Assistant gets `state_class: measurement`.
 
-Each plugin page lists the kind of every metric it emits.
+Each plugin page lists the kind of every metric it emits. For the complete,
+generated list across every shipped plugin -- including the ones without a
+prose page of their own yet -- see the [metric catalogue](metrics.md).
 
 ## When a plugin fails
 

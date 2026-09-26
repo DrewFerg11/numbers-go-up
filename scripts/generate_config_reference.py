@@ -31,7 +31,11 @@ DEFAULT_OUTPUT = (
 # they're intentionally loose dicts validated by their own module, not
 # part of this strict schema. See Config's own docstring in config.py.
 _FREEFORM_TOP_LEVEL = {
-    "plugins": "See each [plugin's own page](../plugins/index.md) for its keys.",
+    "plugins": (
+        "See each [plugin's own page](../plugins/index.md) for its config "
+        "keys, or the [metric catalogue](../plugins/metrics.md) for what "
+        "each one can emit."
+    ),
     "mqtt": "See the [Home Assistant](../home-assistant/index.md) page.",
     "milestones": "Validated by `milestones.py`; not covered by this reference.",
 }

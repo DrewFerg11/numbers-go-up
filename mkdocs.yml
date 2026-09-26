@@ -85,6 +85,7 @@ nav:
       - MakerWorld: plugins/makerworld.md
       - GitHub: plugins/github.md
       - YouTube: plugins/youtube.md
+      - Metric catalogue: plugins/metrics.md
       - Writing a plugin: plugins/writing-a-plugin.md
   - Home Assistant: home-assistant/index.md
   - Operations: operations.md

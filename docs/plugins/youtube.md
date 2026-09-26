@@ -10,6 +10,10 @@ views and likes for individual videos you choose.
 
 ## What it collects
 
+See the [metric catalogue](metrics.md) for the full, generated key/kind/unit
+table across every plugin -- the table below adds the "what the number
+means" context it doesn't carry.
+
 For each configured channel (`{key}` is a slug you choose; see below):
 
 | Metric key | Kind | What the number is |

@@ -86,6 +86,9 @@ jobs:
         # deploy a stale table.
         run: python scripts/generate_config_reference.py
 
+      - name: Generate metric catalogue
+        run: python scripts/generate_metric_catalogue.py
+
       - name: Build site
         run: mkdocs build --strict
 
