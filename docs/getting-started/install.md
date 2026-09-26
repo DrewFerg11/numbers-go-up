@@ -71,10 +71,13 @@ If you'd rather manage ownership yourself, set `user: "1000:1000"` on the
 service instead. The container then skips the ownership step entirely, and
 you run `chown -R 1000:1000 data config` on the host once.
 
-## 4. Set your timezone
+## 4. Set your timezone (optional)
 
-`TZ` isn't set by default, so the container runs in UTC. Add your zone
-under `environment:`. It decides where the daily heartbeat boundary falls.
+`TZ` isn't set by default, so the container runs in UTC. To read log
+timestamps in local time, add your zone under `environment:`. It only
+changes how log lines are printed: samples are stored as UTC timestamps,
+the heartbeat is a fixed interval rather than a local-midnight boundary,
+and backup filenames use UTC.
 
 ```yaml
   - TZ=America/New_York
