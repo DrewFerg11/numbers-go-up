@@ -287,6 +287,12 @@ jobs:
         if: github.ref_name == (github.event.repository.default_branch || 'main')
         working-directory: gh-pages-dir
         run: |
+          # Verify the merge output exists before proceeding
+          if [ ! -f /tmp/sources.json ]; then
+            echo "::error::Merge step did not produce /tmp/sources.json; aborting publish"
+            exit 1
+          fi
+
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
