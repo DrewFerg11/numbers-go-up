@@ -14,10 +14,10 @@
  *     Nothing else using setInterval is affected.
  *   - clicks on an internal, root-relative link (the metric tiles/rows'
  *     JS-set "/m/<key>?range=..." and detail.html's server-rendered
- *     "/?range=...") are rewritten relative to this export's own root --
- *     the app always builds these assuming it's served at "/", which
- *     isn't true once the demo lives under /demo/live/ or a branch
- *     preview.
+ *     "/?range=...", plus base.html's static "/docs" topbar link) are
+ *     rewritten relative to this export's own root -- the app always
+ *     builds these assuming it's served at "/", which isn't true once
+ *     the demo lives under /demo/live/ or a branch preview.
  */
 (function () {
   "use strict";
@@ -49,7 +49,11 @@
 
   var realSetInterval = window.setInterval.bind(window);
   window.setInterval = function (fn, delay) {
-    if (delay === 60000) return 0;
+    // A truthy sentinel, not 0 -- dashboard.js never reads this return
+    // value today, but 0 is falsy and would silently break any future
+    // `if (state.refreshTimer)` guard the same way a real interval ID
+    // (always a positive integer) never would.
+    if (delay === 60000) return -1;
     return realSetInterval.apply(null, arguments);
   };
 
@@ -57,6 +61,14 @@
     var parts = href.split("?");
     var query = parts[1] ? "?" + parts[1] : "";
     if (parts[0] === "/") return root + "index.html" + query;
+    if (parts[0] === "/docs") {
+      // base.html's topbar API link. The demo always lives exactly two
+      // directories below the docs site root (demo/live/, or
+      // preview/<branch>/demo/live/), so "../../api/" reaches the real,
+      // generated API reference page regardless of deployment prefix --
+      // the same reasoning the JSON mapping above relies on via `root`.
+      return root + "../../api/";
+    }
     var m = parts[0].match(/^\/m\/(.+)$/);
     if (m) return root + "m/" + decodeURIComponent(m[1]) + "/index.html" + query;
     return null;
