@@ -667,6 +667,24 @@
         
       
       
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Troubleshooting
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
       <a href="./" class="md-nav__link md-nav__link--active">
         
   
@@ -683,6 +701,91 @@
   
 
       </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#a-plugins-dot-is-amber-or-red" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        A plugin's dot is amber or red
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#a-source-shows-blocked" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        A source shows blocked
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#a-home-assistant-entity-is-unavailable" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        A Home Assistant entity is unavailable
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#database-is-locked" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        "database is locked"
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#the-container-wont-start" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The container won't start
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#where-to-look" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Where to look
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
       
     </li>
   
@@ -762,6 +865,80 @@
     
   
   
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#a-plugins-dot-is-amber-or-red" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        A plugin's dot is amber or red
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#a-source-shows-blocked" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        A source shows blocked
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#a-home-assistant-entity-is-unavailable" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        A Home Assistant entity is unavailable
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#database-is-locked" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        "database is locked"
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#the-container-wont-start" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The container won't start
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#where-to-look" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Where to look
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
 </nav>
                   </div>
                 </div>
@@ -786,11 +963,140 @@
 
 
 <h1 id="troubleshooting">Troubleshooting<a class="headerlink" href="#troubleshooting" title="Permanent link">&para;</a></h1>
-<div class="admonition note">
-<p class="admonition-title">Coming soon</p>
-<p>What a red status dot, a blocked source, an unavailable Home Assistant entity, or a locked database means, and what to do about it. This page is a placeholder — it is tracked in
-<a href="https://github.com/DrewFerg11/numbers-go-up/issues/107">#107</a>.</p>
-</div>
+<p>Start with the symptom you're seeing.</p>
+<h2 id="a-plugins-dot-is-amber-or-red">A plugin's dot is amber or red<a class="headerlink" href="#a-plugins-dot-is-amber-or-red" title="Permanent link">&para;</a></h2>
+<p>The status line at the bottom of the dashboard has one dot per enabled
+plugin. <strong>Hover the dot</strong> to see the last error.</p>
+<ul>
+<li><strong>Amber:</strong> the last one or two polls failed. Often transient, such as a
+  network blip or a source hiccup, and it clears on the next good poll.</li>
+<li><strong>Red:</strong> three or more polls in a row failed, or the source answered
+  <code>403</code> (see the next section).</li>
+</ul>
+<p>The same information is in <code>GET /api/plugins</code>: <code>status</code>, <code>last_error</code>,
+<code>consecutive_failures</code>, and <code>next_poll</code>. The most common causes:</p>
+<table>
+<thead>
+<tr>
+<th><code>last_error</code> mentions</th>
+<th>Likely cause</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>... is not configured</code> / <code>must be configured</code></td>
+<td>The plugin is enabled but has no account, repo, channel or video set. It makes no request until you add one.</td>
+</tr>
+<tr>
+<td><code>NGU_..._API_KEY is not set</code></td>
+<td>A required secret is missing from the container's environment</td>
+</tr>
+<tr>
+<td><code>missing expected field</code>, <code>not valid JSON</code></td>
+<td>The source changed its response or served a maintenance page. For an unofficial source, open a "Broken data source" issue.</td>
+</tr>
+<tr>
+<td><code>exceeds ... max</code></td>
+<td>More items are configured or selected than the plugin's <code>max</code> safety cap. Raise the cap on purpose, or track fewer.</td>
+</tr>
+<tr>
+<td>a <code>404</code></td>
+<td>An ID, repo or handle is wrong, or no longer exists</td>
+</tr>
+</tbody>
+</table>
+<p>Each plugin page has a <strong>When it fails</strong> section with its specifics.</p>
+<h2 id="a-source-shows-blocked">A source shows <code>blocked</code><a class="headerlink" href="#a-source-shows-blocked" title="Permanent link">&para;</a></h2>
+<p><code>blocked</code> means the source answered <strong><code>403 Forbidden</code></strong>: it's refusing
+this client. That's a different problem from a broken plugin, so it gets
+its own status, and it turns the dot red and <code>/health/plugins</code> unhealthy on
+the <strong>first</strong> occurrence. The plugin keeps its schedule and backs off.</p>
+<p>Common reasons:</p>
+<ul>
+<li><strong>An API quota or rate limit ran out.</strong> YouTube's daily quota and
+  GitHub's hourly limit both answer <code>403</code>. Look for <code>quotaExceeded</code> or a
+  rate-limit message in <code>last_error</code>, then poll less often or track fewer
+  items. For GitHub, add <code>NGU_GITHUB_TOKEN</code>.</li>
+<li><strong>The source is refusing your network.</strong> Unofficial sources sometimes
+  block whole IP ranges, such as cloud or VPN addresses, and not others.
+  Check whether the same page loads from your browser on the same
+  connection. It can be network-dependent: a 403 from one place may not
+  reproduce from another.</li>
+</ul>
+<h2 id="a-home-assistant-entity-is-unavailable">A Home Assistant entity is unavailable<a class="headerlink" href="#a-home-assistant-entity-is-unavailable" title="Permanent link">&para;</a></h2>
+<p>Entities go <strong>unavailable</strong> on purpose when their data stops arriving,
+rather than freezing on a stale number:</p>
+<ul>
+<li><strong>Its plugin hasn't polled successfully for 3× its interval</strong> (90 minutes
+  at the default). Check that plugin's dot or <code>/api/plugins</code>. The entity
+  comes back on the next successful poll.</li>
+<li><strong>Every entity went unavailable at once:</strong> the service stopped, or lost
+  its broker connection, and its MQTT last-will fired. Check
+  <code>docker compose ps</code> and the <code>mqtt</code> section of <code>GET /api/integrations</code>.</li>
+<li><strong>You excluded it</strong> with <code>mqtt.exclude</code> (or left it out of <code>include</code>). It
+  stops updating and expires. Delete it in Home Assistant if you don't want
+  it.</li>
+</ul>
+<h2 id="database-is-locked">"database is locked"<a class="headerlink" href="#database-is-locked" title="Permanent link">&para;</a></h2>
+<p>This almost always means <strong><code>./data</code> is on a network share</strong> (NFS, SMB),
+where SQLite's locking doesn't work reliably. The container refuses to
+start on the common network filesystems, so seeing this usually means the
+check was overridden with <code>NGU_ALLOW_NETWORK_FS=1</code>, or the share is a type
+it can't recognise.</p>
+<p>Move <code>./data</code> to local disk: stop the container, copy the folder, update
+the bind mount, start it again. See
+<a href="../getting-started/install/#2-create-the-folders">Install</a>.</p>
+<p>Also make sure only <strong>one</strong> container uses that <code>./data</code> folder.</p>
+<h2 id="the-container-wont-start">The container won't start<a class="headerlink" href="#the-container-wont-start" title="Permanent link">&para;</a></h2>
+<p>Run <code>docker compose logs numbers-go-up</code>. The startup error names the
+problem:</p>
+<ul>
+<li><strong>A config error</strong> names the bad key, often with a "did you mean"
+  suggestion. See <a href="../getting-started/configuration/#validation">Configuration → Validation</a>.</li>
+<li><strong>A network-filesystem error</strong> means <code>./data</code> is on a share. See the
+  previous section.</li>
+<li><strong><code>PUID must not be 0</code></strong>: the app never runs as root. Set <code>PUID</code>/<code>PGID</code>
+  to a real user.</li>
+<li><strong>A database newer than this build</strong> means an older image is running
+  against a database that a newer one already migrated. See
+  <a href="../operations/#updating">Operations → Updating</a>.</li>
+</ul>
+<h2 id="where-to-look">Where to look<a class="headerlink" href="#where-to-look" title="Permanent link">&para;</a></h2>
+<p><strong>Logs.</strong> <code>docker compose logs -f numbers-go-up</code>. Plugin failures are
+logged when their state changes, not on every poll, so the log stays
+readable during a long outage:</p>
+<ul>
+<li><strong>WARNING</strong> on the first failure of a streak, and again if the kind of
+  failure changes</li>
+<li><strong>INFO</strong> when the plugin recovers</li>
+<li><strong>DEBUG</strong> for every repeat in between. Set <code>NGU_LOG_LEVEL=DEBUG</code> to see
+  those.</li>
+</ul>
+<p><strong>Health endpoints.</strong> There are two, for two different jobs:</p>
+<table>
+<thead>
+<tr>
+<th>Endpoint</th>
+<th>Answers</th>
+<th>Point at it</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>/health</code></td>
+<td>Is the process up? Stays <code>200</code> even if every plugin is failing.</td>
+<td>Docker's own <code>HEALTHCHECK</code> already uses it, so <code>docker ps</code> and Portainer show healthy/unhealthy.</td>
+</tr>
+<tr>
+<td><code>/health/plugins</code></td>
+<td>Are the sources actually polling? Returns <code>503</code> when an enabled plugin is blocked, or has failed 3 polls in a row. Tune that with <code>?failures=N</code>.</td>
+<td><strong>Your uptime monitor</strong> (Uptime Kuma or similar, HTTP type)</td>
+</tr>
+</tbody>
+</table>
+<p><strong>API.</strong> <code>GET /api/plugins</code> for per-plugin status, and
+<code>GET /api/integrations</code> for the maintenance job, MQTT and milestone
+deliveries. The container serves interactive API docs at <code>/docs</code>.</p>
 
 
 
