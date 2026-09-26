@@ -110,7 +110,9 @@ jobs:
             export "${EXTRA_SECRET_NAME}=${EXTRA_SECRET_VALUE}"
           fi
           pytest -q -m live -k "$PLUGIN" 2>&1 | tee /tmp/canary-output.txt
-          exit "${PIPESTATUS[0]}"
+          code="${PIPESTATUS[0]}"
+          echo "exit_code=$code" >> "$GITHUB_OUTPUT"
+          exit "$code"
         env:
           PLUGIN: ${{ matrix.plugin }}
           SECRET_NAME: ${{ matrix.secret_name }}
@@ -210,6 +212,105 @@ jobs:
           TAIL: ${{ steps.tail.outputs.tail }}
           GH_TOKEN: ${{ github.token }}
 
+      # A status enum plus a plain integer exit code -- never captured
+      # output, which is exactly where the probe's secret could leak (the
+      # scrub step above only protects the issue-filing path, not this
+      # one). steps.probe.outcome is empty if the job failed before the
+      # probe step ran (the secret-verify step above) -- "skipped" covers
+      # that along with an actual cancellation, matching the JSON schema
+      # scripts/merge_source_status.py expects.
+      - name: Write status result
+        if: always()
+        run: |
+          export CHECKED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          python3 -c '
+          import json, os, sys
+          json.dump(
+              {
+                  "plugin": os.environ["PLUGIN"],
+                  "status": os.environ["STATUS"],
+                  "checked_at": os.environ["CHECKED_AT"],
+                  "exit_code": int(v) if (v := os.environ.get("EXIT_CODE")) else None,
+              },
+              sys.stdout,
+          )
+          ' > "/tmp/status-${PLUGIN}.json"
+        env:
+          PLUGIN: ${{ matrix.plugin }}
+          STATUS: ${{ steps.probe.outcome == 'success' && 'ok' || (steps.probe.outcome == 'failure' && 'broken' || 'skipped') }}
+          EXIT_CODE: ${{ steps.probe.outputs.exit_code }}
+
+      - name: Upload status artifact
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: status-${{ matrix.plugin }}
+          path: /tmp/status-${{ matrix.plugin }}.json
+          retention-days: 1
+
       - name: Fail job if probe failed
         if: steps.probe.outcome != 'success'
         run: exit 1
+
+  publish-status:
+    name: Publish source status
+    needs: probe
+    # Every matrix job's own "Fail job if probe failed" step means a
+    # broken source fails that job -- needs: probe would otherwise skip
+    # this one exactly when there's a result worth publishing.
+    if: always()
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: status-*
+          path: /tmp/status
+          merge-multiple: true
+
+      - name: Merge into one result
+        run: python3 scripts/merge_source_status.py /tmp/status /tmp/sources.json
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: gh-pages
+          path: gh-pages-dir
+
+      - name: Publish to gh-pages
+        # The schedule always fires against the default branch, but
+        # workflow_dispatch can be run from any branch to test this
+        # workflow -- that must never overwrite the real, shared
+        # status/sources.json with a test run's result.
+        if: github.ref_name == (github.event.repository.default_branch || 'main')
+        working-directory: gh-pages-dir
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          # Same fetch/reset/commit/retry shape as docs-deploy.yml's own
+          # gh-pages push -- this job and a docs deploy can land in the
+          # same minute, and neither must be able to lose the other's
+          # write.
+          for attempt in 1 2 3; do
+            git fetch origin gh-pages
+            git reset --hard origin/gh-pages
+
+            mkdir -p status
+            cp /tmp/sources.json status/sources.json
+
+            git add status/sources.json
+            if git diff --cached --quiet; then
+              echo "No change to status/sources.json"
+              exit 0
+            fi
+            git commit -q -m "Publish source status @ $GITHUB_SHA"
+            if git push origin HEAD:gh-pages; then
+              exit 0
+            fi
+            echo "Push rejected (attempt $attempt); retrying on the new tip"
+            sleep $((attempt * 5))
+          done
+          exit 1
