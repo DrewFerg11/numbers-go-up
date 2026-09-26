@@ -47,50 +47,118 @@ DAYS_OF_HISTORY = 60
 STEPS_PER_DAY = 1
 HEARTBEAT_SECONDS = 86400  # matches the step cadence: every tick writes
 
-# (metric_key, kind, label, unit, icon)
-_SeriesDef = tuple[str, str, str, str | None, str | None]
+# (metric_key, kind, label, unit, icon, bounds). bounds is (min, max) for
+# a gauge -- _walk reflects the random walk at these instead of letting it
+# wander (compounding +-6%/step drift over 60 steps can land anywhere,
+# and this is the public demo's face once #161 lands) -- or None for a
+# cumulative series, which is unbounded by definition.
+_SeriesDef = tuple[str, str, str, str | None, str | None, tuple[float, float] | None]
 
 # Five fake plugins. Two are special: "demo-flaky" never has a successful
 # poll (exercises the stale/error status dot), and "demo-legacy" is
 # retired entirely after being seeded (exercises the inactive-series path).
 PLUGINS: dict[str, list[_SeriesDef]] = {
     "demo-tracker": [
-        ("tracker.cpu_pct", "gauge", "CPU usage", "%", "mdi:cpu-64-bit"),
-        ("tracker.mem_pct", "gauge", "Memory usage", "%", "mdi:memory"),
-        ("tracker.disk_pct", "gauge", "Disk usage", "%", "mdi:harddisk"),
-        ("tracker.queue_depth", "gauge", "Queue depth", "jobs", "mdi:tray-full"),
-        ("tracker.workers_active", "gauge", "Active workers", None, "mdi:cog"),
+        ("tracker.cpu_pct", "gauge", "CPU usage", "%", "mdi:cpu-64-bit", (0, 100)),
+        ("tracker.mem_pct", "gauge", "Memory usage", "%", "mdi:memory", (0, 100)),
+        ("tracker.disk_pct", "gauge", "Disk usage", "%", "mdi:harddisk", (0, 100)),
+        (
+            "tracker.queue_depth",
+            "gauge",
+            "Queue depth",
+            "jobs",
+            "mdi:tray-full",
+            (0, 200),
+        ),
+        (
+            "tracker.workers_active",
+            "gauge",
+            "Active workers",
+            None,
+            "mdi:cog",
+            (0, 50),
+        ),
     ],
     "demo-counter": [
-        ("counter.signups", "cumulative", "Signups", None, "mdi:account-plus"),
-        ("counter.orders", "cumulative", "Orders", None, "mdi:cart"),
-        ("counter.messages_sent", "cumulative", "Messages sent", None, "mdi:email"),
-        ("counter.pageviews", "cumulative", "Pageviews", None, "mdi:eye"),
-        ("counter.api_calls", "cumulative", "API calls", None, "mdi:api"),
+        ("counter.signups", "cumulative", "Signups", None, "mdi:account-plus", None),
+        ("counter.orders", "cumulative", "Orders", None, "mdi:cart", None),
+        (
+            "counter.messages_sent",
+            "cumulative",
+            "Messages sent",
+            None,
+            "mdi:email",
+            None,
+        ),
+        ("counter.pageviews", "cumulative", "Pageviews", None, "mdi:eye", None),
+        ("counter.api_calls", "cumulative", "API calls", None, "mdi:api", None),
     ],
     "demo-sensors": [
-        ("sensors.temp_c", "gauge", "Temperature", "°C", "mdi:thermometer"),
-        ("sensors.humidity_pct", "gauge", "Humidity", "%", "mdi:water-percent"),
-        ("sensors.light_lux", "gauge", "Light level", "lux", "mdi:brightness-6"),
-        ("sensors.battery_pct", "gauge", "Battery", "%", "mdi:battery"),
-        ("sensors.noise_db", "gauge", "Noise level", "dB", "mdi:volume-high"),
+        (
+            "sensors.temp_c",
+            "gauge",
+            "Temperature",
+            "°C",
+            "mdi:thermometer",
+            (-10, 45),
+        ),
+        (
+            "sensors.humidity_pct",
+            "gauge",
+            "Humidity",
+            "%",
+            "mdi:water-percent",
+            (0, 100),
+        ),
+        (
+            "sensors.light_lux",
+            "gauge",
+            "Light level",
+            "lux",
+            "mdi:brightness-6",
+            (0, 2000),
+        ),
+        ("sensors.battery_pct", "gauge", "Battery", "%", "mdi:battery", (0, 100)),
+        ("sensors.noise_db", "gauge", "Noise level", "dB", "mdi:volume-high", (0, 120)),
     ],
     "demo-ledger": [
-        ("ledger.deposits", "cumulative", "Deposits", "credits", "mdi:cash-plus"),
+        ("ledger.deposits", "cumulative", "Deposits", "credits", "mdi:cash-plus", None),
         (
             "ledger.withdrawals",
             "cumulative",
             "Withdrawals",
             "credits",
             "mdi:cash-minus",
+            None,
         ),
-        ("ledger.transfers", "cumulative", "Transfers", "credits", "mdi:bank-transfer"),
+        (
+            "ledger.transfers",
+            "cumulative",
+            "Transfers",
+            "credits",
+            "mdi:bank-transfer",
+            None,
+        ),
     ],
     "demo-flaky": [
-        ("flaky.heartbeat", "gauge", "Flaky heartbeat", None, "mdi:heart-pulse"),
+        (
+            "flaky.heartbeat",
+            "gauge",
+            "Flaky heartbeat",
+            None,
+            "mdi:heart-pulse",
+            (0, 100),
+        ),
     ],
     "demo-legacy": [
-        ("legacy.widget_count", "gauge", "Legacy widgets", None, "mdi:archive"),
+        (
+            "legacy.widget_count",
+            "gauge",
+            "Legacy widgets",
+            None,
+            "mdi:archive",
+            (0, 500),
+        ),
     ],
 }
 
@@ -99,10 +167,22 @@ FLAKY_PLUGIN = "demo-flaky"
 
 
 def _walk(
-    rng: random.Random, start: float, steps: int, cumulative: bool
+    rng: random.Random,
+    start: float,
+    steps: int,
+    cumulative: bool,
+    bounds: tuple[float, float] | None = None,
 ) -> list[float]:
     """A plausible-looking series: monotonically non-decreasing for a
-    cumulative counter, mean-reverting noise for a gauge."""
+    cumulative counter, a bounded random walk for a gauge.
+
+    The gauge branch's drift has no mean-reversion term, so compounding
+    +-6%/step over many steps can wander arbitrarily far -- reflecting at
+    ``bounds`` (required for every gauge series; see ``_SeriesDef``) keeps
+    a percentage gauge inside 0-100 and every other gauge inside its own
+    plausible range, rather than the raw walk value, which is this data's
+    published face once #161 serves it.
+    """
     values = [start]
     for _ in range(steps - 1):
         prev = values[-1]
@@ -114,6 +194,13 @@ def _walk(
         else:
             drift = rng.uniform(-0.06, 0.06) * max(abs(prev), 1)
             new = prev + drift
+            if bounds is not None:
+                lo, hi = bounds
+                if new < lo:
+                    new = lo + (lo - new)
+                elif new > hi:
+                    new = hi - (new - hi)
+                new = min(hi, max(lo, new))
             values.append(round(new, 2))
     return values
 
@@ -143,11 +230,12 @@ def seed(
         values_by_key = {
             metric_key: _walk(
                 rng,
-                rng.uniform(10, 200) if kind == "gauge" else rng.uniform(0, 50),
+                rng.uniform(*bounds) if kind == "gauge" else rng.uniform(0, 50),
                 steps,
                 cumulative=kind == "cumulative",
+                bounds=bounds,
             )
-            for metric_key, kind, _label, _unit, _icon in series_defs
+            for metric_key, kind, _label, _unit, _icon, bounds in series_defs
         }
 
         for tick in range(steps):
@@ -162,7 +250,7 @@ def seed(
                     icon,
                     None,
                 )
-                for metric_key, kind, label, unit, icon in series_defs
+                for metric_key, kind, label, unit, icon, _bounds in series_defs
             ]
             storage.store_poll(db_path, plugin_name, ts, HEARTBEAT_SECONDS, items)
 
