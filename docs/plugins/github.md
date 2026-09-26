@@ -10,6 +10,10 @@ optionally the total download count of their release assets.
 
 ## What it collects
 
+See the [metric catalogue](metrics.md) for the full, generated key/kind/unit
+table across every plugin -- the table below adds the "what the number
+means" context it doesn't carry.
+
 For each configured repo (`{id}` is the repo's permanent numeric ID):
 
 | Metric key | Kind | What the number is |
