@@ -156,3 +156,24 @@ def test_export_injects_the_shim_and_banner_at_the_right_depth(tmp_path):
         "static/js/detail.js"
     )
     assert 'id="demo-snapshot-banner"' in detail_html
+
+
+def test_seed_gauge_values_stay_within_their_declared_bounds():
+    # The full shipped DAYS_OF_HISTORY, not the short DAYS used elsewhere
+    # in this file -- this is exactly what ships to the public demo once
+    # #161 lands, and the random walk's drift compounds with step count.
+    rng = seed.random.Random(20260925)  # seed.seed()'s own default seed_value
+    steps = seed.DAYS_OF_HISTORY * seed.STEPS_PER_DAY
+    for series_defs in seed.PLUGINS.values():
+        for metric_key, kind, _label, _unit, _icon, bounds in series_defs:
+            if bounds is None:
+                continue
+            start = rng.uniform(*bounds) if kind == "gauge" else rng.uniform(0, 50)
+            values = seed._walk(
+                rng, start, steps, cumulative=kind == "cumulative", bounds=bounds
+            )
+            lo, hi = bounds
+            assert all(lo <= v <= hi for v in values), (
+                f"{metric_key} left its declared bounds {bounds}: "
+                f"min={min(values)} max={max(values)}"
+            )
