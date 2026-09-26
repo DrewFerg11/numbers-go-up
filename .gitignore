@@ -1,8 +1,8 @@
 # Runtime state — bind-mounted from the host, never committed.
-# See docs/implementation-guide.md → Phase 0 volume layout.
-# NOTE: built-in plugins under plugins/ ARE tracked source and are not ignored.
-# Only a deployment host's user-plugin directory is runtime state, and that
-# lives next to docker-compose.yml on the host, not in a clone of this repo.
+# NOTE: built-in plugins under numbers_go_up/plugins/ ARE tracked source and
+# are not ignored. Only a deployment host's user-plugin directory is runtime
+# state, and that lives next to docker-compose.yml on the host, not in a
+# clone of this repo.
 /data/
 /config/
 config.yaml

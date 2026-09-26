@@ -1,13 +1,13 @@
 name: Build task (maintainers)
-description: A unit of planned work from the implementation guide — roughly one reviewable PR. Not for feature or bug reports.
-title: "[Phase N] "
+description: A unit of planned work — roughly one reviewable PR. Not for feature or bug reports.
+title: ""
 labels: []
 body:
   - type: markdown
     attributes:
       value: |
-        For planned work off the implementation guide. If you're reporting a
-        problem or proposing a source, use one of the other templates.
+        For planned work. If you're reporting a problem or proposing a
+        source, use one of the other templates.
 
         One issue per acceptance-criterion cluster, not per phase. If this would
         take a week and five PRs, split it.
@@ -15,11 +15,10 @@ body:
   - type: input
     id: doc-link
     attributes:
-      label: Source section
-      description: Link to the section of the implementation guide (or another doc) this comes from.
-      placeholder: docs/implementation-guide.md#phase-1--storage-layer--migrations
+      label: Source
+      description: Link to the issue, discussion, or code comment this comes from, if any.
     validations:
-      required: true
+      required: false
 
   - type: textarea
     id: build
@@ -34,11 +33,11 @@ body:
     attributes:
       label: Acceptance criteria
       description: >
-        Copy these **verbatim** from the source doc. This is what a reviewer checks
-        the PR against — paraphrasing here is how intent gets lost.
+        Copy these **verbatim** from the source, if there is one. This is what a
+        reviewer checks the PR against — paraphrasing here is how intent gets lost.
       placeholder: |
         - [ ] `pytest` green with no network access
-        - [ ] `sqlite3 data/stats.db ".schema"` matches `database.md` exactly
+        - [ ] `ruff check .` and `ruff format --check .` clean
     validations:
       required: true
 
@@ -46,6 +45,6 @@ body:
     id: notes
     attributes:
       label: Notes and gotchas
-      description: Anything the doc flags — measured numbers, known traps, ordering constraints.
+      description: Anything worth flagging — measured numbers, known traps, ordering constraints.
     validations:
       required: false

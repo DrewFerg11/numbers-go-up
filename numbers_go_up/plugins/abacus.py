@@ -63,10 +63,9 @@ fixed once, at declare time, and can never vary per poll
 ``unit_of_measurement`` -- only ``label``/``attrs`` can vary per counter.
 Rather than silently discard the configured value, it's carried through
 into ``attrs["unit"]`` so it's still visible via the API/dashboard, and
-this file's ``METRICS`` unit stays generic (``"count"``). This is a
-deliberate, documented deviation from the issue's metrics table (which
-lists unit as "from config") forced by the plugin contract, not an
-oversight -- see the README's Abacus section.
+this file's ``METRICS`` unit stays generic (``"count"``). This is forced
+by the plugin contract, not an oversight -- see the README's Abacus
+section.
 """
 
 import json

@@ -1,11 +1,10 @@
 """Refuse to run the database on a network filesystem.
 
-SQLite's WAL locking is unreliable over NFS/SMB (``database.md``, "Failure
-Handling"): two processes -- or even two mounts of the same share -- can
-silently corrupt the file instead of erroring. This module finds the mount
-that holds a given path and checks its filesystem type before migrations
-run, so the failure happens loudly at startup rather than as a corrupted DB
-weeks later.
+SQLite's WAL locking is unreliable over NFS/SMB: two processes -- or even
+two mounts of the same share -- can silently corrupt the file instead of
+erroring. This module finds the mount that holds a given path and checks
+its filesystem type before migrations run, so the failure happens loudly
+at startup rather than as a corrupted DB weeks later.
 """
 
 from __future__ import annotations
