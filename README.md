@@ -56,9 +56,9 @@ so you can ask what changed, how fast, and since when.
 
 | Source | Status |
 |---|---|
-| MakerWorld | Shipped |
-| GitHub | Shipped |
-| YouTube | Shipped |
+| [MakerWorld](https://drewferg11.github.io/numbers-go-up/plugins/makerworld/) | Shipped |
+| [GitHub](https://drewferg11.github.io/numbers-go-up/plugins/github/) | Shipped |
+| [YouTube](https://drewferg11.github.io/numbers-go-up/plugins/youtube/) | Shipped |
 | TikTok | Shipped |
 | Abacus | Shipped |
 | Anything else | Write a plugin — that's the point |
@@ -335,62 +335,17 @@ tracks official-API numbers only, accepting the rounding described below.
 
 ### GitHub
 
-Tracks stars, forks, watchers, and open issues (which include open pull
-requests) per repo, plus optional release-asset download totals, via the
-official REST API. Configure `plugins.github.repos` with one or more
-`"owner/name"` strings (see
-[`config.yaml.example`](config.yaml.example)).
-
-- **Token (optional):** set the `NGU_GITHUB_TOKEN` environment variable,
-  never in `config.yaml`, to raise the unauthenticated rate limit (60
-  requests/hour) to 5,000/hour. It's sent only to `api.github.com`.
-- **Renamed or transferred repos:** GitHub redirects the old `owner/name` to
-  the new one and this plugin follows it. Series are keyed by the repo's
-  permanent numeric ID, not by name, so history survives a rename.
-- **Known limitation:** `release_downloads` sums `download_count` across
-  every release. Deleting a release lowers that sum. Storage doesn't reject
-  a falling cumulative series, and Home Assistant will read the drop as a
-  counter reset — this is expected, not a bug.
+Stars, forks, watchers, open issues and release downloads per repo, via the
+official REST API. Setup, metrics, the optional `NGU_GITHUB_TOKEN`, and
+known limitations are on the
+[GitHub plugin page](https://drewferg11.github.io/numbers-go-up/plugins/github/).
 
 ### YouTube
 
-Tracks subscribers, views, and video count for your own channel(s), plus
-views and likes for individual videos, via the official Data API v3 — the
-only source this plugin ships (see the spike note above on why the
-unofficial `livecounts` path was dropped before it shipped).
-
-- **Finding your channel ID:** it's the `UC...` string (24 characters,
-  case-sensitive) in your channel's Advanced Settings on YouTube Studio, or
-  in a channel URL of the form `youtube.com/channel/UCxxxx...`. A handle
-  (`@yourname`) or custom URL is **not** accepted — resolving one to an ID
-  costs an extra request and can be ambiguous, so paste the ID directly.
-- **API key (required):** create one in Google Cloud Console (YouTube Data
-  API v3 enabled) and set it via the `NGU_YOUTUBE_API_KEY` environment
-  variable — never in `config.yaml`. It costs 1 quota unit per poll against
-  a free 10,000/day quota, whether the request is against `channels` or
-  `videos`.
-- **Exact vs. rounded:** the official API rounds `subscriberCount` to about
-  3 significant figures once a channel gets reasonably large, so day-to-day
-  changes on a bigger channel may show as a flat line most days with an
-  occasional step. `views`/`videos` are commonly understood to be exact.
-  Switching `source` is a deliberate, one-time user action — a series never
-  switches sources automatically, since that would write a fake jump in its
-  history — and the chart will show one visible step if you ever change it.
-- A channel that hides its public subscriber count, or whose subscriber
-  count reads exactly 0, fails the poll rather than writing a bogus 0.
-- Series labels use the channel's current YouTube title (falling back to
-  its `key` if unavailable), so a renamed channel's label drifts to match
-  on its next poll — the same trade-off the GitHub plugin makes with
-  `full_name`.
-- **Per-video views and likes (#115):** configure `plugins.youtube.videos`
-  with the 11-character `id` from a video's URL
-  (`youtube.com/watch?v={id}`) — no channel needed alongside it, and
-  independent of `channels` entirely (track videos with no channel
-  configured, or vice versa, or both). Uses the same `videos` endpoint and
-  API key as `channels`, so no scraping is involved. A video's `viewCount`
-  has no zero-value guard (a freshly uploaded video legitimately starts at
-  0), but `likeCount` is simply omitted from that poll's series when the
-  uploader has hidden it, rather than failing the whole poll.
+Subscribers, views and video count per channel, plus views and likes per
+video, via the official Data API v3 (needs `NGU_YOUTUBE_API_KEY`). Finding
+your channel ID, quota, and the subscriber-rounding caveat are on the
+[YouTube plugin page](https://drewferg11.github.io/numbers-go-up/plugins/youtube/).
 
 ### Abacus
 
