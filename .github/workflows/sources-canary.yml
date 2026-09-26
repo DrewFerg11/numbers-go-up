@@ -68,7 +68,16 @@ jobs:
           cache: pip
 
       - name: Install dependencies
-        run: pip install -e . -r requirements-dev.txt
+        # requirements.txt (pulled in by requirements-dev.txt) is a hashed
+        # lock -- pip's hash-checking mode, triggered once any requirement
+        # in a single `install` call has a --hash, refuses to also resolve
+        # an unhashed local path in that same call. Install the pinned
+        # deps first, then this project's own package with --no-deps so it
+        # doesn't try to re-resolve (and re-verify) anything already
+        # satisfied above.
+        run: |
+          pip install -r requirements-dev.txt
+          pip install --no-deps -e .
 
       # A missing secret makes the live test call pytest.skip(), which exits
       # 0 -- a canary that lost its secret would report green forever while
@@ -287,6 +296,12 @@ jobs:
         if: github.ref_name == (github.event.repository.default_branch || 'main')
         working-directory: gh-pages-dir
         run: |
+          # Verify the merge output exists before proceeding
+          if [ ! -f /tmp/sources.json ]; then
+            echo "::error::Merge step did not produce /tmp/sources.json; aborting publish"
+            exit 1
+          fi
+
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
