@@ -496,6 +496,24 @@
         
       
       
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    MakerWorld
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
       <a href="./" class="md-nav__link md-nav__link--active">
         
   
@@ -512,6 +530,80 @@
   
 
       </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#what-it-collects" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What it collects
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#configuration" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Configuration
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#credentials-and-requests" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Credentials and requests
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#when-it-fails" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        When it fails
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#stability" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Stability
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
       
     </li>
   
@@ -764,6 +856,69 @@
     
   
   
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#what-it-collects" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What it collects
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#configuration" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Configuration
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#credentials-and-requests" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Credentials and requests
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#when-it-fails" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        When it fails
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#stability" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Stability
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
 </nav>
                   </div>
                 </div>
@@ -788,11 +943,189 @@
 
 
 <h1 id="makerworld-plugin">MakerWorld plugin<a class="headerlink" href="#makerworld-plugin" title="Permanent link">&para;</a></h1>
-<div class="admonition note">
-<p class="admonition-title">Coming soon</p>
-<p>What this plugin collects, how to configure it, and how it fails. This page is a placeholder — it is tracked in
-<a href="https://github.com/DrewFerg11/numbers-go-up/issues/106">#106</a>.</p>
+<p>Tracks the public counters on your own MakerWorld profile (downloads,
+prints, likes, followers) and, if you opt in, the same counters for each of
+your published models.</p>
+<div class="admonition warning">
+<p class="admonition-title">Unofficial endpoint</p>
+<p>MakerWorld has no public API. This plugin reads the same unauthenticated
+JSON endpoint the site's own pages use, which can change without notice.
+When it does, the plugin fails its poll clearly rather than writing wrong
+numbers. See <a href="#when-it-fails">When it fails</a>.</p>
 </div>
+<h2 id="what-it-collects">What it collects<a class="headerlink" href="#what-it-collects" title="Permanent link">&para;</a></h2>
+<p><strong>Profile counters</strong>, one request per poll:</p>
+<table>
+<thead>
+<tr>
+<th>Metric key</th>
+<th>Kind</th>
+<th>What the number is</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>makerworld.profile.design_downloads</code></td>
+<td>cumulative</td>
+<td>Downloads of your designs</td>
+</tr>
+<tr>
+<td><code>makerworld.profile.design_prints</code></td>
+<td>cumulative</td>
+<td>Prints of your designs</td>
+</tr>
+<tr>
+<td><code>makerworld.profile.instance_downloads</code></td>
+<td>cumulative</td>
+<td>Downloads of your print profiles (MakerWorld's "instances")</td>
+</tr>
+<tr>
+<td><code>makerworld.profile.instance_prints</code></td>
+<td>cumulative</td>
+<td>Prints of your print profiles</td>
+</tr>
+<tr>
+<td><code>makerworld.profile.likes</code></td>
+<td>gauge</td>
+<td>Likes across your content</td>
+</tr>
+<tr>
+<td><code>makerworld.profile.collections</code></td>
+<td>gauge</td>
+<td>Times your content was added to a collection</td>
+</tr>
+<tr>
+<td><code>makerworld.profile.followers</code></td>
+<td>gauge</td>
+<td>Followers</td>
+</tr>
+<tr>
+<td><code>makerworld.profile.level</code></td>
+<td>gauge</td>
+<td>Your creator level</td>
+</tr>
+</tbody>
+</table>
+<p>The download and print counts come from the profile's <code>MWCount</code> breakdown.
+The response also has a top-level <code>downloadCount</code>, but it's inflated
+relative to the real per-type counts, so this plugin deliberately ignores
+it.</p>
+<p><strong>Per-model counters</strong>, only with <code>models.enabled: true</code>, for each
+published model (<code>{id}</code> is the model's numeric ID):</p>
+<table>
+<thead>
+<tr>
+<th>Metric key</th>
+<th>Kind</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>makerworld.model.{id}.downloads</code></td>
+<td>cumulative</td>
+</tr>
+<tr>
+<td><code>makerworld.model.{id}.prints</code></td>
+<td>cumulative</td>
+</tr>
+<tr>
+<td><code>makerworld.model.{id}.likes</code></td>
+<td>gauge</td>
+</tr>
+<tr>
+<td><code>makerworld.model.{id}.collections</code></td>
+<td>gauge</td>
+</tr>
+<tr>
+<td><code>makerworld.model.{id}.comments</code></td>
+<td>gauge</td>
+</tr>
+</tbody>
+</table>
+<p>Each model series is labelled with the model's current title, and links to
+the model's page. A model you unpublish stops being returned, and its series
+are retired automatically. Their history is kept.</p>
+<h2 id="configuration">Configuration<a class="headerlink" href="#configuration" title="Permanent link">&para;</a></h2>
+<p>Like every plugin, it's off until you set <code>enabled: true</code>, and it makes no
+request until its identifiers are configured. See
+<a href="../#opt-in-and-inert-by-default">Opt-in and inert by default</a>.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nt">plugins</span><span class="p">:</span>
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="w">  </span><span class="nt">makerworld</span><span class="p">:</span>
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="w">    </span><span class="nt">enabled</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">true</span>
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="w">    </span><span class="nt">user_id</span><span class="p">:</span><span class="w"> </span><span class="s">"1234567890"</span><span class="w">      </span><span class="c1"># your numeric MakerWorld user ID</span>
+<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="w">    </span><span class="c1"># poll_interval: 1800</span>
+<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a><span class="w">    </span><span class="c1"># models:</span>
+<a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a><span class="w">    </span><span class="c1">#   enabled: true          # adds per-model counters</span>
+<a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a><span class="w">    </span><span class="c1">#   include: []            # model IDs to track; empty = every published model</span>
+<a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a><span class="w">    </span><span class="c1">#   max: 50                # safety cap, checked after include</span>
+</code></pre></div>
+<table>
+<thead>
+<tr>
+<th>Key</th>
+<th>Required</th>
+<th>Default</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>user_id</code></td>
+<td>yes</td>
+<td>none</td>
+<td>Your MakerWorld user ID. Digits only: this is <strong>not</strong> your <code>@handle</code>.</td>
+</tr>
+<tr>
+<td><code>models.enabled</code></td>
+<td>no</td>
+<td><code>false</code></td>
+<td>Also track each published model</td>
+</tr>
+<tr>
+<td><code>models.include</code></td>
+<td>no</td>
+<td><code>[]</code></td>
+<td>Numeric model IDs to track. Empty tracks every published model. An ID that isn't in your published list is skipped, with one warning.</td>
+</tr>
+<tr>
+<td><code>models.max</code></td>
+<td>no</td>
+<td><code>50</code></td>
+<td>If more models than this are selected, the poll fails instead of creating that many series. Raise it deliberately if you have a big catalogue.</td>
+</tr>
+</tbody>
+</table>
+<h2 id="credentials-and-requests">Credentials and requests<a class="headerlink" href="#credentials-and-requests" title="Permanent link">&para;</a></h2>
+<p><strong>No credentials.</strong> It reads public data about your own account and never
+asks for a password or cookie.</p>
+<ul>
+<li><strong>Profile only:</strong> one request per poll.</li>
+<li><strong>With <code>models.enabled</code>:</strong> plus one paged listing request per 100
+  published models.</li>
+</ul>
+<p>Requests go to MakerWorld's backend API host (<code>api.bambulab.com</code>), which
+serves the same data as the website without the website's bot challenge.</p>
+<h2 id="when-it-fails">When it fails<a class="headerlink" href="#when-it-fails" title="Permanent link">&para;</a></h2>
+<p>The plugin fails the poll, and never writes a partial or zero value, when:</p>
+<ul>
+<li><code>user_id</code> is missing or isn't numeric (no request is made at all)</li>
+<li>the response isn't JSON, which usually means a maintenance or challenge
+  page</li>
+<li>an expected field is missing, which usually means the endpoint changed
+  shape. Open a "Broken data source" issue.</li>
+<li>more models are selected than <code>models.max</code></li>
+</ul>
+<p>A <strong><code>403</code></strong> shows as <code>blocked</code> in <code>/api/plugins</code> and turns the dashboard dot
+red immediately. MakerWorld's edge has refused some networks in the past,
+so a 403 can depend on where you poll from. Before reporting one, check
+whether it reproduces from another connection.</p>
+<p>See <a href="../#when-a-plugin-fails">When a plugin fails</a> for how failures
+show up in general.</p>
+<h2 id="stability">Stability<a class="headerlink" href="#stability" title="Permanent link">&para;</a></h2>
+<p><strong>Unofficial, so expect occasional breakage.</strong> The endpoint isn't
+documented or promised by MakerWorld. The project runs a daily canary
+against the live source to notice shape changes early, but a change on
+MakerWorld's side can still break polling until the plugin is updated.</p>
 
 
 

@@ -754,6 +754,58 @@
     
   
   
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#opt-in-and-inert-by-default" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Opt-in and inert by default
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#metric-kinds" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Metric kinds
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#when-a-plugin-fails" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        When a plugin fails
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#writing-your-own" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Writing your own
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
 </nav>
                   </div>
                 </div>
@@ -778,25 +830,147 @@
 
 
 <h1 id="plugins">Plugins<a class="headerlink" href="#plugins" title="Permanent link">&para;</a></h1>
-<p>Each data source is a plugin: one Python file that the scheduler discovers and
-polls on an interval.</p>
-<p><strong>Every plugin is opt-in and inert by default.</strong> A fresh install makes zero
-outbound requests to any platform until you configure one, and no user IDs or
-handles are baked into the image.</p>
-<p>The image ships more built-in plugins than are documented here so far —
-the full set is in
-<a href="https://github.com/DrewFerg11/numbers-go-up/tree/main/numbers_go_up/plugins"><code>numbers_go_up/plugins/</code></a>.
-Pages so far:</p>
+<p>Each data source is a plugin: one Python file that the scheduler discovers
+and polls on an interval. Pages for the built-in plugins:</p>
+<table>
+<thead>
+<tr>
+<th>Plugin</th>
+<th>Reads</th>
+<th>Source</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><a href="makerworld/">MakerWorld</a></td>
+<td>Profile counters, and optionally per-model counters, for your own account</td>
+<td>Unofficial endpoint</td>
+</tr>
+<tr>
+<td><a href="github/">GitHub</a></td>
+<td>Stars, forks, watchers, open issues and release downloads for your repos</td>
+<td><strong>Official</strong>, documented API</td>
+</tr>
+<tr>
+<td><a href="youtube/">YouTube</a></td>
+<td>Subscribers, views and video count for your channels, and views/likes for individual videos</td>
+<td><strong>Official</strong>, documented API</td>
+</tr>
+</tbody>
+</table>
+<p>The image ships more built-in plugins than are documented here so far.
+The full set is in
+<a href="https://github.com/DrewFerg11/numbers-go-up/tree/main/numbers_go_up/plugins"><code>numbers_go_up/plugins/</code></a>,
+and each one is configured in the commented
+<a href="https://github.com/DrewFerg11/numbers-go-up/blob/main/config.yaml.example"><code>config.yaml.example</code></a>.</p>
+<h2 id="opt-in-and-inert-by-default">Opt-in and inert by default<a class="headerlink" href="#opt-in-and-inert-by-default" title="Permanent link">&para;</a></h2>
+<p>This rule applies to every plugin, built-in or your own:</p>
 <ul>
-<li><a href="makerworld/">MakerWorld</a></li>
-<li><a href="github/">GitHub</a></li>
-<li><a href="youtube/">YouTube</a></li>
+<li><strong>Off until you enable it.</strong> A plugin does nothing until its block in
+  <code>config.yaml</code> sets <code>enabled: true</code>.</li>
+<li><strong>No request without an identifier.</strong> An enabled plugin with no account,
+  repo or channel configured fails its poll without making a request. It
+  never fetches something and throws it away.</li>
+<li><strong>Nothing baked in.</strong> No user IDs, handles or repos ship in the image, so
+  a fresh install makes <strong>zero outbound requests</strong> to any platform.</li>
+<li><strong>Public data about your own accounts.</strong> No plugin reads anyone's private
+  data, and none asks for your password or session cookies.</li>
+<li><strong>Polite.</strong> A 30-minute default interval that can't go below 5 minutes,
+  an honest User-Agent (the TikTok plugin is the one documented
+  exception: its pages only serve data to a browser-shaped request), real
+  backoff when a source answers
+  <code>429 Too Many Requests</code>, and as few requests per poll as the source
+  allows. Each plugin page says exactly what it requests.</li>
 </ul>
-<p>Want a source that isn't here? See <a href="writing-a-plugin/">Writing a plugin</a>.</p>
-<div class="admonition note">
-<p class="admonition-title">More to come</p>
-<p>Per-plugin pages are tracked in <a href="https://github.com/DrewFerg11/numbers-go-up/issues/106">#106</a>.</p>
-</div>
+<h2 id="metric-kinds">Metric kinds<a class="headerlink" href="#metric-kinds" title="Permanent link">&para;</a></h2>
+<p>Every metric a plugin declares is one of two kinds, which decides how it's
+stored and what Home Assistant does with it:</p>
+<ul>
+<li><strong><code>cumulative</code></strong>: a running total that only goes up (downloads, views).
+  Home Assistant gets <code>state_class: total_increasing</code>.</li>
+<li><strong><code>gauge</code></strong>: a current level that can go down as well as up (followers,
+  stars, likes). Home Assistant gets <code>state_class: measurement</code>.</li>
+</ul>
+<p>Each plugin page lists the kind of every metric it emits.</p>
+<h2 id="when-a-plugin-fails">When a plugin fails<a class="headerlink" href="#when-a-plugin-fails" title="Permanent link">&para;</a></h2>
+<p>A failure is always <strong>one failed poll, never a crash</strong>. The service stays
+up, other plugins keep running, and the failed plugin tries again on its
+next scheduled poll.</p>
+<p><strong>On the dashboard</strong>, the status line shows one dot per enabled plugin.
+Hover it to see the last error:</p>
+<table>
+<thead>
+<tr>
+<th>Dot</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Green</td>
+<td>The last finished poll succeeded</td>
+</tr>
+<tr>
+<td>Amber</td>
+<td>The last one or two finished polls failed, even while a retry is running</td>
+</tr>
+<tr>
+<td>Red</td>
+<td>Three or more polls in a row failed, <strong>or</strong> the source answered <code>403</code></td>
+</tr>
+<tr>
+<td>Grey</td>
+<td>Enabled, but no poll has finished yet</td>
+</tr>
+</tbody>
+</table>
+<p><strong>In the API</strong>, <code>GET /api/plugins</code> returns the same verdict as <code>health</code>
+(<code>ok</code>, <code>warn</code>, <code>error</code>, or <code>pending</code>/<code>disabled</code>), alongside each plugin's
+<code>status</code>:</p>
+<table>
+<thead>
+<tr>
+<th><code>status</code></th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>disabled</code></td>
+<td>Not enabled in <code>config.yaml</code></td>
+</tr>
+<tr>
+<td><code>pending</code></td>
+<td>Enabled, but no poll has finished yet</td>
+</tr>
+<tr>
+<td><code>ok</code></td>
+<td>The last finished poll succeeded</td>
+</tr>
+<tr>
+<td><code>error</code></td>
+<td>The last finished poll failed. <code>last_error</code> says why, and <code>consecutive_failures</code> counts the streak.</td>
+</tr>
+<tr>
+<td><code>blocked</code></td>
+<td>The last finished poll got a <code>403</code>: the source is refusing this client. That's a different problem from a broken plugin, and it can depend on the network you're polling from.</td>
+</tr>
+<tr>
+<td><code>polling</code></td>
+<td>A poll is running right now</td>
+</tr>
+</tbody>
+</table>
+<p>To be alerted rather than check, point an uptime monitor at
+<code>/health/plugins</code>, which returns <code>503</code> in exactly the cases that turn a dot
+red.</p>
+<h2 id="writing-your-own">Writing your own<a class="headerlink" href="#writing-your-own" title="Permanent link">&para;</a></h2>
+<p>Want a source that isn't here? A plugin is one Python file in
+<code>./user-plugins</code>. Start from the commented
+<a href="https://github.com/DrewFerg11/numbers-go-up/blob/main/numbers_go_up/plugins/_template.py"><code>_template.py</code></a>,
+and read the plugin rules in
+<a href="https://github.com/DrewFerg11/numbers-go-up/blob/main/CONTRIBUTING.md"><code>CONTRIBUTING.md</code></a>
+first. More in <a href="writing-a-plugin/">Writing a plugin</a>.</p>
 
 
 
