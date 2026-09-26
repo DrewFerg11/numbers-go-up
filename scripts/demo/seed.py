@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
 """Build a demo SQLite database with synthetic, plausible history.
 
-Shared with ``benchmarks/schema_sizing.py`` (#101): whichever of the two
-lands first owns this module and the other imports it, so the fixture
-generator never forks. This landed first.
+Intended to be shared with ``benchmarks/schema_sizing.py`` (#101), which
+needs the same thing: a seeded DB with realistic store-on-change history.
+Neither had landed as of this module's own PR; whichever lands first owns
+this module and the other should import it, so the fixture generator
+never forks. This landed first -- #101 should import from here rather
+than writing its own generator.
 
 Every series is written through the real storage layer and the real
 migration runner, never hand-written SQL, so the fixture cannot describe a
