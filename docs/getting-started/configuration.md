@@ -29,6 +29,11 @@ anyway. It's an escape hatch for getting a broken config booting while you
 fix it, not a setting to leave on, because it accepts exactly the typos the
 check exists to catch.
 
+The tables below cover the common keys and why they matter. For the
+complete list -- every key, its exact type, and every constraint a
+validator enforces, generated from the schema itself so it can't drift --
+see the [config reference](config-reference.md).
+
 ## `poll`
 
 Scheduling defaults for every plugin.

@@ -79,6 +79,7 @@ nav:
   - Getting started:
       - Install: getting-started/install.md
       - Configuration: getting-started/configuration.md
+      - Config reference: getting-started/config-reference.md
   - Plugins:
       - plugins/index.md
       - MakerWorld: plugins/makerworld.md
