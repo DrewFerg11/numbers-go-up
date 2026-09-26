@@ -524,6 +524,24 @@
         
       
       
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    GitHub
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
       <a href="./" class="md-nav__link md-nav__link--active">
         
   
@@ -540,6 +558,91 @@
   
 
       </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#what-it-collects" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What it collects
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#configuration" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Configuration
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#credentials-and-requests" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Credentials and requests
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#when-it-fails" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        When it fails
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#known-limitation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Known limitation
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#stability" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Stability
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
       
     </li>
   
@@ -764,6 +867,80 @@
     
   
   
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#what-it-collects" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What it collects
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#configuration" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Configuration
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#credentials-and-requests" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Credentials and requests
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#when-it-fails" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        When it fails
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#known-limitation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Known limitation
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#stability" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Stability
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
 </nav>
                   </div>
                 </div>
@@ -788,11 +965,139 @@
 
 
 <h1 id="github-plugin">GitHub plugin<a class="headerlink" href="#github-plugin" title="Permanent link">&para;</a></h1>
-<div class="admonition note">
-<p class="admonition-title">Coming soon</p>
-<p>What this plugin collects, how to configure it, and how it fails. This page is a placeholder — it is tracked in
-<a href="https://github.com/DrewFerg11/numbers-go-up/issues/106">#106</a>.</p>
+<p>Tracks stars, forks, watchers and open issues for your repositories, and
+optionally the total download count of their release assets.</p>
+<div class="admonition success">
+<p class="admonition-title">Official, documented API</p>
+<p>Uses GitHub's REST API, an official, documented API. The fields it reads
+are part of GitHub's published contract, so breakage from GitHub's side
+is unlikely.</p>
 </div>
+<h2 id="what-it-collects">What it collects<a class="headerlink" href="#what-it-collects" title="Permanent link">&para;</a></h2>
+<p>For each configured repo (<code>{id}</code> is the repo's permanent numeric ID):</p>
+<table>
+<thead>
+<tr>
+<th>Metric key</th>
+<th>Kind</th>
+<th>What the number is</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>github.repo.{id}.stars</code></td>
+<td>gauge</td>
+<td>Stars</td>
+</tr>
+<tr>
+<td><code>github.repo.{id}.forks</code></td>
+<td>gauge</td>
+<td>Forks</td>
+</tr>
+<tr>
+<td><code>github.repo.{id}.watchers</code></td>
+<td>gauge</td>
+<td>Watchers: people subscribed to notifications</td>
+</tr>
+<tr>
+<td><code>github.repo.{id}.open_issues</code></td>
+<td>gauge</td>
+<td>Open issues <strong>and</strong> open pull requests. GitHub counts them together, and splitting them would cost extra requests.</td>
+</tr>
+<tr>
+<td><code>github.repo.{id}.release_downloads</code></td>
+<td>cumulative</td>
+<td>Downloads of every asset across every release. Only with <code>release_downloads: true</code>.</td>
+</tr>
+</tbody>
+</table>
+<p>Two details worth knowing:</p>
+<ul>
+<li><strong>Series follow renames.</strong> Series are keyed by the repo's numeric ID, not
+  <code>owner/name</code>, so renaming or transferring a repo keeps its history.
+  GitHub redirects the old name and the plugin follows. The label updates
+  to the new name on the next poll.</li>
+<li><strong>Watchers are real watchers.</strong> GitHub's API has a <code>watchers_count</code> field
+  that, confusingly, always equals the star count. This plugin reads
+  <code>subscribers_count</code> instead, which is the number GitHub's UI shows as
+  "Watching".</li>
+</ul>
+<h2 id="configuration">Configuration<a class="headerlink" href="#configuration" title="Permanent link">&para;</a></h2>
+<p>Like every plugin, it's off until you set <code>enabled: true</code>, and it makes no
+request until its identifiers are configured. See
+<a href="../#opt-in-and-inert-by-default">Opt-in and inert by default</a>.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nt">plugins</span><span class="p">:</span>
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="w">  </span><span class="nt">github</span><span class="p">:</span>
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="w">    </span><span class="nt">enabled</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">true</span>
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="w">    </span><span class="nt">repos</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="s">"owner/name"</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="s">"owner/other-repo"</span><span class="p p-Indicator">]</span>
+<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="w">    </span><span class="c1"># release_downloads: false</span>
+<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a><span class="w">    </span><span class="c1"># max: 20</span>
+<a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a><span class="w">    </span><span class="c1"># poll_interval: 1800</span>
+</code></pre></div>
+<table>
+<thead>
+<tr>
+<th>Key</th>
+<th>Required</th>
+<th>Default</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>repos</code></td>
+<td>yes</td>
+<td>none</td>
+<td><code>"owner/name"</code> strings, exactly as in the repo's URL: <code>github.com/owner/name</code></td>
+</tr>
+<tr>
+<td><code>release_downloads</code></td>
+<td>no</td>
+<td><code>false</code></td>
+<td>Also track total release-asset downloads per repo</td>
+</tr>
+<tr>
+<td><code>max</code></td>
+<td>no</td>
+<td><code>20</code></td>
+<td>If more repos than this are configured, the poll fails instead of creating that many series</td>
+</tr>
+</tbody>
+</table>
+<h2 id="credentials-and-requests">Credentials and requests<a class="headerlink" href="#credentials-and-requests" title="Permanent link">&para;</a></h2>
+<p><strong>No credentials required.</strong> Unauthenticated, GitHub allows 60 API
+requests per hour from your IP, which easily covers a handful of repos at
+the 30-minute default.</p>
+<p>For more repos or a shorter interval, set a token in the
+<strong><code>NGU_GITHUB_TOKEN</code></strong> environment variable, never in <code>config.yaml</code>. That
+raises the limit to 5,000 requests per hour. A token with no scopes is
+enough for public repos. The token is sent only to
+<code>api.github.com</code>.</p>
+<ul>
+<li><strong>Per poll:</strong> one request per repo.</li>
+<li><strong>With <code>release_downloads</code>:</strong> plus one request per 100 releases, per repo.</li>
+</ul>
+<h2 id="when-it-fails">When it fails<a class="headerlink" href="#when-it-fails" title="Permanent link">&para;</a></h2>
+<p>A poll is all-or-nothing: if any repo fails, the whole poll fails, rather
+than some series updating and others silently going stale. It fails when:</p>
+<ul>
+<li><code>repos</code> is missing or empty (no request is made), or a repo isn't
+  <code>owner/name</code></li>
+<li>a repo doesn't exist or isn't visible (<code>404</code>)</li>
+<li>more repos are configured than <code>max</code></li>
+</ul>
+<p>Running out of rate limit usually comes back as a <strong><code>403</code></strong>, which shows as
+<code>blocked</code> in <code>/api/plugins</code> and turns the dashboard dot red. Add a token,
+poll less often, or track fewer repos.</p>
+<p>See <a href="../#when-a-plugin-fails">When a plugin fails</a> for how failures
+show up in general.</p>
+<h2 id="known-limitation">Known limitation<a class="headerlink" href="#known-limitation" title="Permanent link">&para;</a></h2>
+<p><code>release_downloads</code> is the <strong>sum</strong> across all current releases. Deleting a
+release lowers it. Storage accepts the drop, and Home Assistant treats it
+as a counter reset. That's expected, not a bug.</p>
+<h2 id="stability">Stability<a class="headerlink" href="#stability" title="Permanent link">&para;</a></h2>
+<p><strong>Stable.</strong> An official, versioned API, so breakage from GitHub's side is
+unlikely.</p>
 
 
 

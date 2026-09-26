@@ -552,6 +552,24 @@
         
       
       
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    YouTube
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
       <a href="./" class="md-nav__link md-nav__link--active">
         
   
@@ -568,6 +586,108 @@
   
 
       </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#what-it-collects" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What it collects
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#configuration" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Configuration
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Configuration">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#finding-your-channel-id" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Finding your channel ID
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#credentials-and-requests" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Credentials and requests
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#exact-vs-rounded" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Exact vs. rounded
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#when-it-fails" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        When it fails
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#stability" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Stability
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
       
     </li>
   
@@ -764,6 +884,97 @@
     
   
   
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#what-it-collects" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What it collects
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#configuration" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Configuration
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Configuration">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#finding-your-channel-id" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Finding your channel ID
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#credentials-and-requests" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Credentials and requests
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#exact-vs-rounded" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Exact vs. rounded
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#when-it-fails" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        When it fails
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#stability" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Stability
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
 </nav>
                   </div>
                 </div>
@@ -788,11 +999,188 @@
 
 
 <h1 id="youtube-plugin">YouTube plugin<a class="headerlink" href="#youtube-plugin" title="Permanent link">&para;</a></h1>
-<div class="admonition note">
-<p class="admonition-title">Coming soon</p>
-<p>What this plugin collects, how to configure it, and how it fails. This page is a placeholder — it is tracked in
-<a href="https://github.com/DrewFerg11/numbers-go-up/issues/106">#106</a>.</p>
+<p>Tracks subscribers, total views and video count for your own channels, and
+views and likes for individual videos you choose.</p>
+<div class="admonition success">
+<p class="admonition-title">Official, documented API</p>
+<p>Uses the YouTube Data API v3 with your own free API key. No scraping.
+The one caveat is that the API rounds large subscriber counts; see
+<a href="#exact-vs-rounded">Exact vs. rounded</a>.</p>
 </div>
+<h2 id="what-it-collects">What it collects<a class="headerlink" href="#what-it-collects" title="Permanent link">&para;</a></h2>
+<p>For each configured channel (<code>{key}</code> is a slug you choose; see below):</p>
+<table>
+<thead>
+<tr>
+<th>Metric key</th>
+<th>Kind</th>
+<th>What the number is</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>youtube.channel.{key}.subscribers</code></td>
+<td>gauge</td>
+<td>Subscribers (rounded by YouTube on larger channels)</td>
+</tr>
+<tr>
+<td><code>youtube.channel.{key}.views</code></td>
+<td>cumulative</td>
+<td>Total views across the channel</td>
+</tr>
+<tr>
+<td><code>youtube.channel.{key}.videos</code></td>
+<td>gauge</td>
+<td>Public videos on the channel</td>
+</tr>
+</tbody>
+</table>
+<p>For each configured video:</p>
+<table>
+<thead>
+<tr>
+<th>Metric key</th>
+<th>Kind</th>
+<th>What the number is</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>youtube.video.{key}.views</code></td>
+<td>cumulative</td>
+<td>Views of that video</td>
+</tr>
+<tr>
+<td><code>youtube.video.{key}.likes</code></td>
+<td>gauge</td>
+<td>Likes on that video. Skipped for that poll if the uploader hides it.</td>
+</tr>
+</tbody>
+</table>
+<p>Channels and videos are independent: you can track videos without a
+channel, a channel without videos, or both. Series are labelled with the
+channel's or video's current title.</p>
+<h2 id="configuration">Configuration<a class="headerlink" href="#configuration" title="Permanent link">&para;</a></h2>
+<p>Like every plugin, it's off until you set <code>enabled: true</code>, and it makes no
+request until its identifiers are configured. See
+<a href="../#opt-in-and-inert-by-default">Opt-in and inert by default</a>.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nt">plugins</span><span class="p">:</span>
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="w">  </span><span class="nt">youtube</span><span class="p">:</span>
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="w">    </span><span class="nt">enabled</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">true</span>
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="w">    </span><span class="nt">source</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">official</span>
+<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="w">    </span><span class="nt">channels</span><span class="p">:</span>
+<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a><span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">key</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">main</span><span class="w">                          </span><span class="c1"># your choice: a-z, 0-9, _ and -</span>
+<a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a><span class="w">        </span><span class="nt">id</span><span class="p">:</span><span class="w"> </span><span class="s">"UCxxxxxxxxxxxxxxxxxxxxxx"</span><span class="w">      </span><span class="c1"># the channel ID, not the @handle</span>
+<a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a><span class="w">    </span><span class="c1"># videos:</span>
+<a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a><span class="w">    </span><span class="c1">#   - key: launch_video</span>
+<a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a><span class="w">    </span><span class="c1">#     id: "dQw4w9WgXcQ"                 # from youtube.com/watch?v=&lt;id&gt;</span>
+<a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a><span class="w">    </span><span class="c1"># max: 5</span>
+<a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a><span class="w">    </span><span class="c1"># videos_max: 20</span>
+</code></pre></div>
+<table>
+<thead>
+<tr>
+<th>Key</th>
+<th>Required</th>
+<th>Default</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>source</code></td>
+<td>yes</td>
+<td>none</td>
+<td>Must be <code>official</code>, the only source this plugin ships</td>
+</tr>
+<tr>
+<td><code>channels[].key</code></td>
+<td>yes, per channel</td>
+<td>none</td>
+<td>A permanent slug for the metric key, matching <code>[a-z0-9_-]+</code>. Pick it once: changing it starts a new series.</td>
+</tr>
+<tr>
+<td><code>channels[].id</code></td>
+<td>yes, per channel</td>
+<td>none</td>
+<td>The channel ID</td>
+</tr>
+<tr>
+<td><code>videos[].key</code></td>
+<td>yes, per video</td>
+<td>none</td>
+<td>A permanent slug, as for channels</td>
+</tr>
+<tr>
+<td><code>videos[].id</code></td>
+<td>yes, per video</td>
+<td>none</td>
+<td>The 11-character video ID</td>
+</tr>
+<tr>
+<td><code>max</code></td>
+<td>no</td>
+<td><code>5</code></td>
+<td>If more channels than this are configured, the poll fails</td>
+</tr>
+<tr>
+<td><code>videos_max</code></td>
+<td>no</td>
+<td><code>20</code></td>
+<td>If more videos than this are configured, the poll fails</td>
+</tr>
+</tbody>
+</table>
+<p>At least one channel or video must be configured.</p>
+<p><strong>Why a <code>key</code> and not the ID?</strong> Channel IDs are case-sensitive and mixed
+case, which doesn't fit a metric key or a Home Assistant entity ID. The slug
+you choose does, and it stays stable for the life of the series.</p>
+<p><strong>Why <code>source</code> at all?</strong> A series must never switch between an exact and a
+rounded data source on its own. The history only stores changes, so a
+switch would write a fake jump. The choice is explicit so it can only ever
+change on purpose.</p>
+<h3 id="finding-your-channel-id">Finding your channel ID<a class="headerlink" href="#finding-your-channel-id" title="Permanent link">&para;</a></h3>
+<p>It's the 24-character string starting with <code>UC</code>, in YouTube Studio →
+Settings → Channel → Advanced settings, or in a URL of the form
+<code>youtube.com/channel/UC…</code>. A handle (<code>@yourname</code>) or custom URL isn't
+accepted: resolving one costs an extra request and can be ambiguous, so
+paste the ID itself.</p>
+<h2 id="credentials-and-requests">Credentials and requests<a class="headerlink" href="#credentials-and-requests" title="Permanent link">&para;</a></h2>
+<p><strong>An API key is required</strong>, set in the <strong><code>NGU_YOUTUBE_API_KEY</code></strong>
+environment variable, never in <code>config.yaml</code>. Create one in the Google Cloud
+Console with the <em>YouTube Data API v3</em> enabled. It's free and needs no OAuth
+consent: the key only reads public data.</p>
+<ul>
+<li><strong>Per poll:</strong> one request per channel plus one per video.</li>
+<li><strong>Quota:</strong> each request costs 1 unit of the free 10,000 units per day.
+  Five channels and twenty videos at the 30-minute default use 1,200 a day.</li>
+</ul>
+<h2 id="exact-vs-rounded">Exact vs. rounded<a class="headerlink" href="#exact-vs-rounded" title="Permanent link">&para;</a></h2>
+<p>The API rounds <code>subscribers</code> to about three significant figures once a
+channel is reasonably large. On a bigger channel, day-to-day changes show as
+a flat line with an occasional step. Views and video counts are commonly
+understood to be exact.</p>
+<h2 id="when-it-fails">When it fails<a class="headerlink" href="#when-it-fails" title="Permanent link">&para;</a></h2>
+<p>A poll is all-or-nothing: if any channel or video fails, the whole poll
+fails. It fails when:</p>
+<ul>
+<li><code>NGU_YOUTUBE_API_KEY</code> isn't set, <code>source</code> isn't <code>official</code>, or nothing is
+  configured (no request is made)</li>
+<li>a channel or video ID isn't found</li>
+<li>a channel hides its subscriber count, or it reads exactly <code>0</code>. That
+  looks like a broken reading, so the poll fails rather than store a false
+  zero. A new video's <code>0</code> views is not guarded; that's legitimate.</li>
+<li>more channels or videos are configured than <code>max</code>/<code>videos_max</code></li>
+</ul>
+<p>Running out of daily quota comes back as a <strong><code>403</code></strong> with
+<code>reason=quotaExceeded</code> in the error, and shows as <code>blocked</code>. The quota
+resets daily, Pacific time.</p>
+<p>See <a href="../#when-a-plugin-fails">When a plugin fails</a> for how failures
+show up in general.</p>
+<h2 id="stability">Stability<a class="headerlink" href="#stability" title="Permanent link">&para;</a></h2>
+<p><strong>Stable.</strong> An official, versioned API. The API key is redacted from
+every error the plugin raises, so it never lands in <code>/api/plugins</code> or the
+logs.</p>
 
 
 
