@@ -456,6 +456,8 @@
       
         
       
+        
+      
     
     
     
@@ -581,6 +583,34 @@
     
   
     YouTube
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="metrics/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Metric catalogue
   
 
     
@@ -948,7 +978,9 @@ stored and what Home Assistant does with it:</p>
 <li><strong><code>gauge</code></strong>: a current level that can go down as well as up (followers,
   stars, likes). Home Assistant gets <code>state_class: measurement</code>.</li>
 </ul>
-<p>Each plugin page lists the kind of every metric it emits.</p>
+<p>Each plugin page lists the kind of every metric it emits. For the complete,
+generated list across every shipped plugin -- including the ones without a
+prose page of their own yet -- see the <a href="metrics/">metric catalogue</a>.</p>
 <h2 id="when-a-plugin-fails">When a plugin fails<a class="headerlink" href="#when-a-plugin-fails" title="Permanent link">&para;</a></h2>
 <p>A failure is always <strong>one failed poll, never a crash</strong>. The service stays
 up, other plugins keep running, and the failed plugin tries again on its
