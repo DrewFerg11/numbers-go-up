@@ -1163,10 +1163,7 @@ and the fully commented
 <p>Both are optional, and both are off when their block is absent: no block
 means no MQTT connection and no webhook calls. Their keys are covered on
 the <a href="../../home-assistant/">Home Assistant</a> page, alongside the
-Home Assistant setup they feed. Until that page is written, the fully
-commented
-<a href="https://github.com/DrewFerg11/numbers-go-up/blob/main/config.yaml.example"><code>config.yaml.example</code></a>
-shows every key.</p>
+Home Assistant setup they feed.</p>
 <h2 id="environment-variables">Environment variables<a class="headerlink" href="#environment-variables" title="Permanent link">&para;</a></h2>
 <p><strong>Paths.</strong> <code>docker-compose.yml</code> already sets these to the bind mounts, so
 leave them alone unless you change the mounts.</p>
@@ -1241,7 +1238,7 @@ leave them alone unless you change the mounts.</p>
 <tr>
 <td><code>TZ</code></td>
 <td>unset (UTC)</td>
-<td>Container timezone</td>
+<td>Timezone for log timestamps. Stored data and backup filenames are always UTC.</td>
 </tr>
 <tr>
 <td><code>NGU_LOG_LEVEL</code></td>
