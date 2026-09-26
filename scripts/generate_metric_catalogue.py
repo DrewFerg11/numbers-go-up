@@ -23,14 +23,12 @@ DEFAULT_OUTPUT = (
     Path(__file__).resolve().parent.parent / "docs" / "plugins" / "metrics.md"
 )
 
-# Plugin pages that exist today (#106); a plugin without one links to its
+# A plugin with a prose page (#106) links to it; one without links to its
 # source on GitHub instead (same fallback docs/plugins/index.md already
-# uses for "more plugins ship than are documented here so far").
-_PROSE_PAGE = {
-    "makerworld": "makerworld.md",
-    "github": "github.md",
-    "youtube": "youtube.md",
-}
+# uses for "more plugins ship than are documented here so far"). Checked
+# against the docs directory itself, not a hand-maintained list, so a new
+# prose page is picked up automatically instead of silently going stale.
+_DOCS_PLUGINS_DIR = Path(__file__).resolve().parent.parent / "docs" / "plugins"
 _SOURCE_URL_TEMPLATE = (
     "https://github.com/DrewFerg11/numbers-go-up/blob/main/"
     "numbers_go_up/plugins/{name}.py"
@@ -38,8 +36,8 @@ _SOURCE_URL_TEMPLATE = (
 
 
 def _plugin_link(name: str) -> str:
-    if name in _PROSE_PAGE:
-        return f"[{name}]({_PROSE_PAGE[name]})"
+    if (_DOCS_PLUGINS_DIR / f"{name}.md").exists():
+        return f"[{name}]({name}.md)"
     return f"[{name}]({_SOURCE_URL_TEMPLATE.format(name=name)})"
 
 
