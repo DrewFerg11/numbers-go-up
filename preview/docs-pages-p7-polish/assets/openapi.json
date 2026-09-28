@@ -1,0 +1,1222 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "numbers-go-up",
+    "description": "Self-hosted, plugin-based tracker for the counters you care about, with history, rate-of-change, and a Home Assistant integration. This is the REST API a running instance exposes; see the project's [README](https://github.com/DrewFerg11/numbers-go-up) for setup.",
+    "contact": {
+      "name": "numbers-go-up",
+      "url": "https://github.com/DrewFerg11/numbers-go-up"
+    },
+    "license": {
+      "name": "MIT",
+      "url": "https://github.com/DrewFerg11/numbers-go-up/blob/main/LICENSE"
+    },
+    "version": "0.1.dev1"
+  },
+  "paths": {
+    "/api/stats/latest": {
+      "get": {
+        "tags": [
+          "stats"
+        ],
+        "summary": "Latest value and staleness for every active metric",
+        "description": "Batched (#128): one connection for the whole request rather than\n2-3 fresh connections (5 PRAGMAs each) per series -- with 500 active\nseries this endpoint was measurably slower than /api/stats/overview,\nwhich does far more work but was already batched (#91).",
+        "operationId": "stats_latest_api_stats_latest_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StatsLatestResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/stats/history": {
+      "get": {
+        "tags": [
+          "stats"
+        ],
+        "summary": "Time series and bucketed change bars for one metric",
+        "operationId": "stats_history_api_stats_history_get",
+        "parameters": [
+          {
+            "name": "metric",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Metric"
+            }
+          },
+          {
+            "name": "hours",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "maximum": 8760,
+                  "exclusiveMinimum": 0
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Hours"
+            }
+          },
+          {
+            "name": "range",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "1H",
+                    "6H",
+                    "12H",
+                    "1D",
+                    "1W",
+                    "1M",
+                    "3M",
+                    "1Y",
+                    "ALL"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Range"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StatsHistoryResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/stats/delta": {
+      "get": {
+        "tags": [
+          "stats"
+        ],
+        "summary": "Change and rate over a trailing window for one metric",
+        "operationId": "stats_delta_api_stats_delta_get",
+        "parameters": [
+          {
+            "name": "metric",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Metric"
+            }
+          },
+          {
+            "name": "hours",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "maximum": 8760,
+              "exclusiveMinimum": 0,
+              "title": "Hours"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StatsDeltaResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/metrics": {
+      "get": {
+        "tags": [
+          "metrics"
+        ],
+        "summary": "Catalogue of every metric series that has ever existed",
+        "operationId": "list_metrics_api_metrics_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ListMetricsResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/plugins": {
+      "get": {
+        "tags": [
+          "plugins"
+        ],
+        "summary": "Poll status for every discovered plugin",
+        "operationId": "list_plugins_api_plugins_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ListPluginsResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/integrations": {
+      "get": {
+        "tags": [
+          "integrations"
+        ],
+        "summary": "Status of the maintenance job, MQTT publisher, and milestone webhooks",
+        "description": "Status of background integrations that aren't a plugin poll: the\nscheduled maintenance job (pruning, backups, PRAGMA tuning), the MQTT\npublisher, and milestone webhooks. Never includes a password, broker\ncredential, or webhook URL -- only connectivity/delivery status.",
+        "operationId": "integrations_api_integrations_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IntegrationsResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/health/plugins": {
+      "get": {
+        "tags": [
+          "health"
+        ],
+        "summary": "Plugin health for uptime monitors",
+        "description": "Plugin health for uptime monitors: 200 when every enabled plugin is\npolling successfully, 503 when any is blocked or has failed ``failures``\nfinished polls in a row. Disabled plugins are ignored, and so is a plugin\nthat hasn't finished its first poll yet.\n\nSeparate from /health on purpose: that one is liveness, and a source\nbeing down is no reason for Docker to restart the container.",
+        "operationId": "plugins_health_health_plugins_get",
+        "parameters": [
+          {
+            "name": "failures",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "default": 3,
+              "title": "Failures"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PluginsHealthResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/health": {
+      "get": {
+        "tags": [
+          "health"
+        ],
+        "summary": "Liveness probe",
+        "description": "Liveness only: 200 while the process serves requests. Deliberately\nignores plugin state -- a source being down is not a reason to restart\nthe container. Monitor plugin polling with ``/health/plugins``.",
+        "operationId": "health_health_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HealthResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "ChangeBar": {
+        "properties": {
+          "ts": {
+            "type": "integer",
+            "title": "Ts"
+          },
+          "change": {
+            "type": "number",
+            "title": "Change"
+          }
+        },
+        "type": "object",
+        "required": [
+          "ts",
+          "change"
+        ],
+        "title": "ChangeBar"
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "type": "array",
+            "title": "Detail"
+          }
+        },
+        "type": "object",
+        "title": "HTTPValidationError"
+      },
+      "HealthResponse": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "const": "ok",
+            "title": "Status"
+          },
+          "version": {
+            "type": "string",
+            "title": "Version"
+          }
+        },
+        "type": "object",
+        "required": [
+          "status",
+          "version"
+        ],
+        "title": "HealthResponse"
+      },
+      "HistoryPoint": {
+        "properties": {
+          "ts": {
+            "type": "integer",
+            "title": "Ts"
+          },
+          "value": {
+            "type": "number",
+            "title": "Value"
+          }
+        },
+        "type": "object",
+        "required": [
+          "ts",
+          "value"
+        ],
+        "title": "HistoryPoint"
+      },
+      "IntegrationsResponse": {
+        "properties": {
+          "maintenance": {
+            "$ref": "#/components/schemas/MaintenanceStatus"
+          },
+          "mqtt": {
+            "$ref": "#/components/schemas/MqttStatus"
+          },
+          "milestones": {
+            "$ref": "#/components/schemas/MilestoneStatus"
+          }
+        },
+        "type": "object",
+        "required": [
+          "maintenance",
+          "mqtt",
+          "milestones"
+        ],
+        "title": "IntegrationsResponse"
+      },
+      "ListMetricsResponse": {
+        "properties": {
+          "metrics": {
+            "items": {
+              "$ref": "#/components/schemas/MetricCatalogueEntry"
+            },
+            "type": "array",
+            "title": "Metrics"
+          }
+        },
+        "type": "object",
+        "required": [
+          "metrics"
+        ],
+        "title": "ListMetricsResponse"
+      },
+      "ListPluginsResponse": {
+        "properties": {
+          "plugins": {
+            "items": {
+              "$ref": "#/components/schemas/PluginStatus"
+            },
+            "type": "array",
+            "title": "Plugins"
+          }
+        },
+        "type": "object",
+        "required": [
+          "plugins"
+        ],
+        "title": "ListPluginsResponse"
+      },
+      "MaintenanceLastRun": {
+        "properties": {
+          "ts": {
+            "type": "integer",
+            "title": "Ts"
+          },
+          "pruned_rows": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pruned Rows"
+          },
+          "backup_file": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Backup File"
+          },
+          "backup_bytes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Backup Bytes"
+          },
+          "errors": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Errors"
+          }
+        },
+        "type": "object",
+        "required": [
+          "ts",
+          "pruned_rows",
+          "backup_file",
+          "backup_bytes",
+          "errors"
+        ],
+        "title": "MaintenanceLastRun"
+      },
+      "MaintenanceStatus": {
+        "properties": {
+          "last_run": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MaintenanceLastRun"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "next_run": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Run"
+          }
+        },
+        "type": "object",
+        "required": [
+          "last_run",
+          "next_run"
+        ],
+        "title": "MaintenanceStatus"
+      },
+      "MetricCatalogueEntry": {
+        "properties": {
+          "key": {
+            "type": "string",
+            "title": "Key"
+          },
+          "plugin": {
+            "type": "string",
+            "title": "Plugin"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "gauge",
+              "cumulative"
+            ],
+            "title": "Kind"
+          },
+          "label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Label"
+          },
+          "unit": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Unit"
+          },
+          "icon": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Icon"
+          },
+          "last_value": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Value"
+          },
+          "last_seen": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Seen"
+          },
+          "active": {
+            "type": "boolean",
+            "title": "Active"
+          },
+          "attrs": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Attrs"
+          }
+        },
+        "type": "object",
+        "required": [
+          "key",
+          "plugin",
+          "kind",
+          "label",
+          "unit",
+          "icon",
+          "last_value",
+          "last_seen",
+          "active",
+          "attrs"
+        ],
+        "title": "MetricCatalogueEntry"
+      },
+      "MetricLatest": {
+        "properties": {
+          "value": {
+            "type": "number",
+            "title": "Value"
+          },
+          "label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Label"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "gauge",
+              "cumulative"
+            ],
+            "title": "Kind"
+          },
+          "unit": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Unit"
+          },
+          "icon": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Icon"
+          },
+          "updated": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updated"
+          },
+          "stale": {
+            "type": "boolean",
+            "title": "Stale"
+          },
+          "delta_1h": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Delta 1H"
+          },
+          "delta_24h": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Delta 24H"
+          }
+        },
+        "type": "object",
+        "required": [
+          "value",
+          "label",
+          "kind",
+          "unit",
+          "icon",
+          "updated",
+          "stale",
+          "delta_1h",
+          "delta_24h"
+        ],
+        "title": "MetricLatest"
+      },
+      "MilestonePending": {
+        "properties": {
+          "metric": {
+            "type": "string",
+            "title": "Metric"
+          },
+          "threshold": {
+            "type": "number",
+            "title": "Threshold"
+          },
+          "since": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Since"
+          }
+        },
+        "type": "object",
+        "required": [
+          "metric",
+          "threshold",
+          "since"
+        ],
+        "title": "MilestonePending"
+      },
+      "MilestoneRule": {
+        "properties": {
+          "metric": {
+            "type": "string",
+            "title": "Metric"
+          },
+          "every": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Every"
+          },
+          "at": {
+            "items": {
+              "type": "number"
+            },
+            "type": "array",
+            "title": "At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "metric",
+          "every",
+          "at"
+        ],
+        "title": "MilestoneRule"
+      },
+      "MilestoneStatus": {
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "title": "Enabled"
+          },
+          "rules": {
+            "items": {
+              "$ref": "#/components/schemas/MilestoneRule"
+            },
+            "type": "array",
+            "title": "Rules"
+          },
+          "pending": {
+            "items": {
+              "$ref": "#/components/schemas/MilestonePending"
+            },
+            "type": "array",
+            "title": "Pending"
+          },
+          "last_sent": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Sent"
+          },
+          "last_error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Error"
+          }
+        },
+        "type": "object",
+        "required": [
+          "enabled",
+          "rules",
+          "pending",
+          "last_sent",
+          "last_error"
+        ],
+        "title": "MilestoneStatus"
+      },
+      "MqttStatus": {
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "title": "Enabled"
+          },
+          "connected": {
+            "type": "boolean",
+            "title": "Connected"
+          },
+          "broker": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Broker"
+          },
+          "last_publish": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Publish"
+          },
+          "last_error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Error"
+          }
+        },
+        "type": "object",
+        "required": [
+          "enabled",
+          "connected",
+          "broker",
+          "last_publish",
+          "last_error"
+        ],
+        "title": "MqttStatus"
+      },
+      "PluginStatus": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "disabled",
+              "pending",
+              "ok",
+              "error",
+              "blocked",
+              "polling"
+            ],
+            "title": "Status"
+          },
+          "enabled": {
+            "type": "boolean",
+            "title": "Enabled"
+          },
+          "health": {
+            "type": "string",
+            "enum": [
+              "disabled",
+              "pending",
+              "ok",
+              "warn",
+              "error"
+            ],
+            "title": "Health"
+          },
+          "last_poll": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Poll"
+          },
+          "next_poll": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Poll"
+          },
+          "consecutive_failures": {
+            "type": "integer",
+            "title": "Consecutive Failures"
+          },
+          "last_error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Error"
+          },
+          "metrics": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Metrics"
+          }
+        },
+        "type": "object",
+        "required": [
+          "name",
+          "status",
+          "enabled",
+          "health",
+          "last_poll",
+          "next_poll",
+          "consecutive_failures",
+          "last_error",
+          "metrics"
+        ],
+        "title": "PluginStatus"
+      },
+      "PluginsHealthResponse": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "ok",
+              "unhealthy"
+            ],
+            "title": "Status"
+          },
+          "failure_threshold": {
+            "type": "integer",
+            "title": "Failure Threshold"
+          },
+          "unhealthy": {
+            "items": {
+              "$ref": "#/components/schemas/UnhealthyPlugin"
+            },
+            "type": "array",
+            "title": "Unhealthy"
+          }
+        },
+        "type": "object",
+        "required": [
+          "status",
+          "failure_threshold",
+          "unhealthy"
+        ],
+        "title": "PluginsHealthResponse"
+      },
+      "StatsDeltaResponse": {
+        "properties": {
+          "metric": {
+            "type": "string",
+            "title": "Metric"
+          },
+          "window_hours": {
+            "type": "integer",
+            "title": "Window Hours"
+          },
+          "delta": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Delta"
+          },
+          "rate_per_hour": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rate Per Hour"
+          },
+          "current": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Current"
+          },
+          "previous": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Previous"
+          }
+        },
+        "type": "object",
+        "required": [
+          "metric",
+          "window_hours",
+          "delta",
+          "rate_per_hour",
+          "current",
+          "previous"
+        ],
+        "title": "StatsDeltaResponse"
+      },
+      "StatsHistoryResponse": {
+        "properties": {
+          "metric": {
+            "type": "string",
+            "title": "Metric"
+          },
+          "points": {
+            "items": {
+              "$ref": "#/components/schemas/HistoryPoint"
+            },
+            "type": "array",
+            "title": "Points"
+          },
+          "bars": {
+            "items": {
+              "$ref": "#/components/schemas/ChangeBar"
+            },
+            "type": "array",
+            "title": "Bars"
+          }
+        },
+        "type": "object",
+        "required": [
+          "metric",
+          "points",
+          "bars"
+        ],
+        "title": "StatsHistoryResponse"
+      },
+      "StatsLatestResponse": {
+        "properties": {
+          "timestamp": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Timestamp"
+          },
+          "metrics": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/MetricLatest"
+            },
+            "type": "object",
+            "title": "Metrics"
+          }
+        },
+        "type": "object",
+        "required": [
+          "timestamp",
+          "metrics"
+        ],
+        "title": "StatsLatestResponse"
+      },
+      "UnhealthyPlugin": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "reason": {
+            "type": "string",
+            "title": "Reason"
+          },
+          "consecutive_failures": {
+            "type": "integer",
+            "title": "Consecutive Failures"
+          },
+          "last_poll": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Poll"
+          },
+          "last_error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Error"
+          }
+        },
+        "type": "object",
+        "required": [
+          "name",
+          "reason",
+          "consecutive_failures",
+          "last_poll",
+          "last_error"
+        ],
+        "title": "UnhealthyPlugin"
+      },
+      "ValidationError": {
+        "properties": {
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "type": "array",
+            "title": "Location"
+          },
+          "msg": {
+            "type": "string",
+            "title": "Message"
+          },
+          "type": {
+            "type": "string",
+            "title": "Error Type"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "ctx": {
+            "type": "object",
+            "title": "Context"
+          }
+        },
+        "type": "object",
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError"
+      }
+    }
+  }
+}
