@@ -66,6 +66,12 @@ jobs:
           # Failure is reported through the tracking issue below, not by
           # turning the run red and hoping someone reads the email.
           fail: false
+          # failIfEmpty is deliberately left at its default (true). lychee
+          # exits 0 both for "all links OK" and for "0 links checked", so the
+          # report step below cannot tell them apart. With the default, a
+          # link-free report fails this step before that gate runs. Do not
+          # set failIfEmpty: false alongside fail: false -- that would let a
+          # broken checker read as green.
         env:
           # Authenticated requests keep github.com links off the
           # unauthenticated rate limit that a shared runner IP exhausts.
