@@ -1,0 +1,45 @@
+# External link checker config for .github/workflows/docs-links.yml, run
+# against the BUILT site (site/), not the Markdown source, so the generated
+# pages (API reference, config reference, metric catalogue) are covered.
+#
+# Internal links are not this tool's job: `mkdocs build --strict` already
+# fails the PR build on those. Only http(s) URLs are checked here.
+
+scheme = ["https", "http"]
+
+# Localhost, RFC1918 addresses and the like appear in config examples and
+# are meant to be placeholders, not reachable URLs.
+exclude_all_private = true
+exclude_loopback = true
+
+max_retries = 3
+retry_wait_time = 5
+timeout = 30
+# 429 is a rate limit, not a dead link (GitHub in particular, from a shared
+# runner IP). 403 is handled per-host in the allowlist below instead of
+# globally, so a real 403 elsewhere is still reported.
+accept = ["200..=299", "429"]
+
+exclude = [
+  # Placeholder hosts written as `http://<host>` / `http://<home-assistant>`
+  # in the docs. They are not URLs; the `<` is what the docs use to say
+  # "substitute your own".
+  '^https?://<',
+
+  # The site's own URL (canonical links, sitemap.xml, social metadata). A
+  # page added in a PR is not live yet, so these would 404 until deploy;
+  # internal reachability is `mkdocs build --strict`'s job, not this check's.
+  '^https://drewferg11\.github\.io/numbers-go-up/',
+
+  # GitHub "edit this page" links that Material adds to every page. They
+  # need a signed-in session and redirect to a login page, so a checker
+  # reads them as noise while they work fine in a browser.
+  '^https://github\.com/[^/]+/[^/]+/edit/',
+
+  # Sources that 403 GitHub-hosted (Azure) IP ranges while working fine from
+  # a browser -- see CONTRIBUTING.md and the "Broken data source" template.
+  # A CI-run checker would report these as dead every week. The daily
+  # sources canary (sources-canary.yml) is what actually watches them.
+  '^https://(www\.)?makerworld\.com/',
+  '^https://(www\.)?tiktok\.com/',
+]
