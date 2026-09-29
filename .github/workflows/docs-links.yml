@@ -1,0 +1,120 @@
+# Weekly check that the docs site's EXTERNAL links still resolve.
+#
+# Deliberately not per-PR: a third-party 503 must never block a merge. The
+# per-PR guard is `mkdocs build --strict` in docs-deploy.yml, which fails on
+# broken internal links and pages missing from the nav; this workflow does
+# not move that check onto a schedule.
+#
+# It builds the site (generated pages included) and runs lychee over the
+# HTML in site/, so links on the API reference, config reference and metric
+# catalogue are covered too. The demo tree is not built here: it is exported
+# HTML, not authored pages, and internal links are --strict's job anyway.
+#
+# Filing policy (same shape as sources-canary.yml): one tracking issue,
+# commented on for each later failed run rather than a new issue per run.
+# Recovery comments "green again" instead of closing the issue.
+#
+# The allowlist of links expected to fail from CI lives in .lychee.toml, one
+# comment per entry.
+
+name: Monitor / Docs Links
+
+on:
+  schedule:
+    # Mondays 07:41 UTC. Off the hour, and off the canary's 06:27.
+    - cron: "41 7 * * 1"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  check:
+    name: External links
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.x"
+          cache: pip
+          cache-dependency-path: docs/requirements.txt
+
+      - name: Install dependencies
+        run: |
+          pip install -r docs/requirements.txt
+          pip install -e .
+
+      - name: Generate reference pages
+        run: |
+          python scripts/export_openapi.py
+          python scripts/generate_config_reference.py
+          python scripts/generate_metric_catalogue.py
+
+      - name: Build site
+        run: mkdocs build --strict
+
+      - id: lychee
+        name: Check external links
+        uses: lycheeverse/lychee-action@e7477775783ea5526144ba13e8db5eec57747ce8 # v2.9.0
+        with:
+          args: --config .lychee.toml --no-progress --format markdown site/
+          output: lychee-report.md
+          jobSummary: true
+          # Failure is reported through the tracking issue below, not by
+          # turning the run red and hoping someone reads the email.
+          fail: false
+          # failIfEmpty is deliberately left at its default (true). lychee
+          # exits 0 both for "all links OK" and for "0 links checked", so the
+          # report step below cannot tell them apart. With the default, a
+          # link-free report fails this step before that gate runs. Do not
+          # set failIfEmpty: false alongside fail: false -- that would let a
+          # broken checker read as green.
+        env:
+          # Authenticated requests keep github.com links off the
+          # unauthenticated rate limit that a shared runner IP exhausts.
+          GITHUB_TOKEN: ${{ github.token }}
+
+      - name: Report result
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          EXIT_CODE: ${{ steps.lychee.outputs.exit_code }}
+        run: |
+          TITLE="Docs site: broken external links"
+          RUN_URL="${GITHUB_SERVER_URL}/${REPO}/actions/runs/${GITHUB_RUN_ID}"
+
+          EXISTING=$(gh issue list --repo "$REPO" --label area:site --state open \
+            --search "in:title \"${TITLE}\"" --json number,title \
+            --jq "[.[] | select(.title == \"${TITLE}\")][0].number // empty")
+
+          # lychee exits 0 = all links ok, 2 = at least one link failed;
+          # anything else (1 = runtime error, or an empty code) is the tool
+          # itself breaking, which is not a dead link and must not be filed
+          # as one.
+          if [ "$EXIT_CODE" = "0" ]; then
+            if [ -n "$EXISTING" ]; then
+              gh issue comment "$EXISTING" --repo "$REPO" --body "Green again as of ${RUN_URL}."
+            fi
+            exit 0
+          fi
+          if [ "$EXIT_CODE" != "2" ]; then
+            echo "::error::lychee exited ${EXIT_CODE:-<none>}, which is a checker failure rather than a dead link; not filing."
+            exit 1
+          fi
+
+          {
+            printf '**Symptom:** the weekly external link check found dead links on the built docs site.\n'
+            printf '**Run:** %s\n\n' "$RUN_URL"
+            printf 'A 403 from a host that works in a browser belongs in the allowlist in `.lychee.toml` (with a comment saying why), not a fix on the page.\n\n'
+            cat lychee-report.md
+          } > issue-body.md
+
+          if [ -n "$EXISTING" ]; then
+            gh issue comment "$EXISTING" --repo "$REPO" --body-file issue-body.md
+          else
+            gh issue create --repo "$REPO" --title "$TITLE" \
+              --label area:site --label documentation --body-file issue-body.md
+          fi
