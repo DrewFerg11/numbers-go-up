@@ -8,9 +8,10 @@ and polls on an interval. Pages for the built-in plugins:
 | [MakerWorld](makerworld.md) | Profile counters, and optionally per-model counters, for your own account | Unofficial endpoint |
 | [GitHub](github.md) | Stars, forks, watchers, open issues and release downloads for your repos | **Official**, documented API |
 | [YouTube](youtube.md) | Subscribers, views and video count for your channels, and views/likes for individual videos | **Official**, documented API |
+| [Abacus](abacus.md) | Any public Abacus counter, by namespace and name | **Official**, documented API |
+| [TikTok](tiktok.md) | Followers, following and video count for your handles, and views/likes for individual videos | Unofficial: reads a rendered page |
 
-The image ships more built-in plugins than are documented here so far.
-The full set is in
+The full set is also in
 [`numbers_go_up/plugins/`](https://github.com/DrewFerg11/numbers-go-up/tree/main/numbers_go_up/plugins),
 and each one is configured in the commented
 [`config.yaml.example`](https://github.com/DrewFerg11/numbers-go-up/blob/main/config.yaml.example).
@@ -46,8 +47,8 @@ stored and what Home Assistant does with it:
   stars, likes). Home Assistant gets `state_class: measurement`.
 
 Each plugin page lists the kind of every metric it emits. For the complete,
-generated list across every shipped plugin -- including the ones without a
-prose page of their own yet -- see the [metric catalogue](metrics.md).
+generated list across every shipped plugin, see the
+[metric catalogue](metrics.md).
 
 ## When a plugin fails
 

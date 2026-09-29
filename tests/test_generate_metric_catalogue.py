@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 from numbers_go_up.plugins import discover
-from scripts.generate_metric_catalogue import generate
+from scripts.generate_metric_catalogue import _plugin_link, generate
 
 
-def test_every_shipped_plugin_appears_including_ones_with_no_prose_page():
+def test_every_shipped_plugin_appears():
     output = generate()
 
     for plugin in ("abacus", "github", "makerworld", "tiktok", "youtube"):
@@ -41,15 +41,20 @@ def test_pattern_keys_are_visibly_distinguished_from_exact_keys():
     assert "| `makerworld.profile.likes` | No |" in output
 
 
-def test_plugins_with_a_prose_page_link_to_it_others_link_to_source():
+def test_every_shipped_plugin_links_to_its_prose_page():
     output = generate()
 
-    assert "## [github](github.md)" in output
-    assert "## [makerworld](makerworld.md)" in output
-    assert "## [youtube](youtube.md)" in output
-    assert (
-        "## [abacus](https://github.com/DrewFerg11/numbers-go-up/blob/main/"
-        "numbers_go_up/plugins/abacus.py)" in output
+    for plugin in ("abacus", "github", "makerworld", "tiktok", "youtube"):
+        assert f"## [{plugin}]({plugin}.md)" in output, plugin
+
+
+def test_a_plugin_without_a_prose_page_links_to_its_source():
+    # Every shipped plugin has a page now, so the fallback is exercised
+    # directly: a plugin added later, before its page is written, must
+    # still get a working link rather than a dead relative one.
+    assert _plugin_link("no_such_plugin") == (
+        "[no_such_plugin](https://github.com/DrewFerg11/numbers-go-up/blob/"
+        "main/numbers_go_up/plugins/no_such_plugin.py)"
     )
 
 
