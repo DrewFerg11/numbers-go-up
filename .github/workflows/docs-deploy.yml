@@ -100,7 +100,18 @@ jobs:
         run: python scripts/generate_metric_catalogue.py
 
       - name: Build site
+        # NGU_PREVIEW makes mkdocs.yml's extra.preview true, which adds a
+        # noindex tag (overrides/main.html) so branch previews are never
+        # indexed. Only a push to main is the real, indexable site.
+        env:
+          NGU_PREVIEW: ${{ (github.event_name == 'pull_request' || github.ref_name != 'main') && '1' || '' }}
         run: mkdocs build --strict
+
+      # Properties of the built output that --strict cannot see: a sitemap
+      # that is empty or lists the 404, a 404 whose links are relative, and
+      # any third-party font or API reference creeping back in.
+      - name: Check built site
+        run: python scripts/check_site.py site
 
       # Cached on a hash of everything the crawl can observe: the app
       # itself, and the two scripts that build and crawl it. A docs-only

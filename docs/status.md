@@ -40,13 +40,15 @@ requests.
     "sometimes blocks -- see the note above. Unverified, not broken.";
 
   var STATUS_LABEL = { ok: "OK", broken: "Broken", skipped: "Skipped (no result)" };
-  var STATUS_COLOR = { ok: "#2e7d32", broken: "#c62828", skipped: "#888" };
+  // Class names, not inline colours: the colours live in assets/extra.css so
+  // they can differ per theme and meet contrast in both.
+  var STATUS_CLASS = { ok: "status-ok", broken: "status-broken", skipped: "status-muted" };
 
   function row(cells) {
     var tr = document.createElement("tr");
     cells.forEach(function (cell) {
       var td = document.createElement("td");
-      if (cell.color) td.style.color = cell.color;
+      if (cell.cls) td.className = cell.cls;
       td.textContent = cell.text;
       if (cell.title) td.title = cell.title;
       tr.appendChild(td);
@@ -58,7 +60,7 @@ requests.
     document.getElementById("status-meta").textContent = message;
     var body = document.getElementById("status-body");
     body.textContent = "";
-    body.appendChild(row([{ text: "—" }, { text: message, color: "#888" }, { text: "—" }]));
+    body.appendChild(row([{ text: "—" }, { text: message, cls: "status-muted" }, { text: "—" }]));
   }
 
   function renderResult(data) {
@@ -81,7 +83,7 @@ requests.
           { text: source.plugin },
           {
             text: label,
-            color: isCaveatedBroken ? "#b8860b" : STATUS_COLOR[source.status] || "#888",
+            cls: isCaveatedBroken ? "status-caveat" : STATUS_CLASS[source.status] || "status-muted",
             title: isCaveatedBroken ? AZURE_CAVEAT_NOTE : undefined,
           },
           { text: source.checked_at },

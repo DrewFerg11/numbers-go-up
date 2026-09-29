@@ -112,6 +112,16 @@ a {
   padding: 3px;
 }
 
+/* Nine range buttons are ~375px wide, which pushes the whole page sideways
+   on a phone (#120). Cap the switcher at its row and let it scroll inside
+   itself; the buttons are focusable, so keyboard focus scrolls them into view. */
+@media (max-width: 640px) {
+  .range-switcher {
+    max-width: 100%;
+    overflow-x: auto;
+  }
+}
+
 .range-btn {
   border: none;
   background: transparent;
@@ -640,4 +650,18 @@ a {
 
 .dot.error {
   background: var(--down);
+}
+
+/* Content for assistive tech only: a page-level heading the design does
+   not show. */
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
 }

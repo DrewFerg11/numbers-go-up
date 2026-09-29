@@ -1,0 +1,29 @@
+{#-
+  GitHub Pages serves the site-root 404.html for any bad path, at any depth
+  (including inside preview/<branch>/), so every link here goes through the
+  `url` filter, which resolves against the site's own base path rather than
+  the address that was requested. A docs/404.md would not do: MkDocs renders
+  it at /404/, which Pages never serves for a missing page, and Material's
+  own 404.html template would still be the one at the site root.
+-#}
+{% extends "main.html" %}
+
+{% block content %}
+  <h1>Page not found</h1>
+
+  <p>
+    That address is not part of this site. It may have moved, or the link that
+    brought you here may be out of date.
+  </p>
+
+  <p>These are good places to start:</p>
+  <ul>
+    <li><a href="{{ '.' | url }}">Home</a></li>
+    <li><a href="{{ 'getting-started/install/' | url }}">Install</a></li>
+    <li><a href="{{ 'plugins/' | url }}">Plugins</a></li>
+    <li><a href="{{ 'api/' | url }}">API reference</a></li>
+    <li><a href="{{ 'troubleshooting/' | url }}">Troubleshooting</a></li>
+  </ul>
+
+  <p>The search box at the top of the page searches every page on the site.</p>
+{% endblock %}
