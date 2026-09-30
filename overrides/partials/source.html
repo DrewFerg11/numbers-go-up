@@ -1,0 +1,16 @@
+{#-
+  Material's stock partial marks this link data-md-component="source", which
+  makes its JavaScript call api.github.com on every page view to show the
+  repository's star and release facts. That is a third-party request from
+  every page, and this site follows the app's rule of making none (see
+  docs/privacy.md). Same markup and styling, minus the component hook.
+-#}
+<a href="{{ config.repo_url }}" title="{{ lang.t('source') }}" class="md-source">
+  <div class="md-source__icon md-icon">
+    {% set icon = config.theme.icon.repo or "fontawesome/brands/git-alt" %}
+    {% include ".icons/" ~ icon ~ ".svg" %}
+  </div>
+  <div class="md-source__repository">
+    {{ config.repo_name }}
+  </div>
+</a>

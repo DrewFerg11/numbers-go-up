@@ -46,7 +46,8 @@ _REWRITTEN_STATIC_URL_RE = re.compile(r'(?:href|src)="((?:\.\./)*static/[^"]*)"'
 _UNREFERENCED_STATIC_FILES = ("icon-512.png", "icon-192.png")
 
 _BANNER_HTML = """
-<div id="demo-snapshot-banner" style="position:relative;z-index:1000;
+<div id="demo-snapshot-banner" role="region" aria-label="Demo notice"
+  style="position:relative;z-index:1000;
   background:#3a2f00;color:#f4d35e;font:14px/1.4 system-ui,sans-serif;
   padding:.6em 2.2em .6em 1em;text-align:center">
   This is a static snapshot generated at build time -- no live auto-refresh,

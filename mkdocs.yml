@@ -21,6 +21,13 @@ exclude_docs: |
 
 theme:
   name: material
+  # overrides/main.html adds the social-preview and noindex meta tags.
+  custom_dir: overrides
+  # No Google Fonts: Material's default fetches Roboto from fonts.googleapis.com
+  # on every page view, which is a third-party request. The docs site follows
+  # the same rule as the app -- no third-party network requests -- so the
+  # system font stack is used instead. Code blocks use the system monospace.
+  font: false
   logo: assets/icon.png
   favicon: assets/icon.png
   features:
@@ -49,6 +56,12 @@ theme:
   icon:
     repo: fontawesome/brands/github
 
+extra_css:
+  - assets/extra.css
+
+extra_javascript:
+  - assets/a11y.js
+
 markdown_extensions:
   - admonition
   - attr_list
@@ -62,8 +75,24 @@ markdown_extensions:
   - pymdownx.inlinehilite
   - pymdownx.superfences
 
+# Decisions recorded here rather than left as omissions (issue #167):
+#
+# - No analytics plugin or tracking snippet, ever -- see docs/privacy.md.
+# - No `social` plugin. It needs mkdocs-material[imaging] plus Cairo and
+#   Pango in the workflow, and it is the feature most likely to need redoing
+#   if the site moves off Material for MkDocs (#152). Shared links use one
+#   static card image via overrides/main.html instead, which ports anywhere.
+# - No `mike` (versioned docs). The site describes `latest`, which is right
+#   for a single-deployment project. Revisit only if a release ships a
+#   breaking config change that strands people on an older image.
 plugins:
   - search
+
+extra:
+  # True only in branch-preview builds (docs-deploy.yml sets NGU_PREVIEW);
+  # overrides/main.html turns it into a noindex tag so previews are never
+  # indexed. Unset or empty means a normal build.
+  preview: !ENV [NGU_PREVIEW, false]
 
 # By default MkDocs only logs a page missing from the nav at INFO. Raise it
 # (and broken nav entries) to warnings so --strict fails on them: that is
@@ -93,3 +122,4 @@ nav:
   - API reference: api.md
   - Demo: demo.md
   - Source status: status.md
+  - Privacy: privacy.md
