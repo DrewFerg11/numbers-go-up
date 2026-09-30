@@ -471,6 +471,10 @@
       
         
       
+        
+      
+        
+      
     
     
     
@@ -596,6 +600,62 @@
     
   
     YouTube
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="abacus/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Abacus
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="tiktok/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    TikTok
   
 
     
@@ -983,10 +1043,19 @@ and polls on an interval. Pages for the built-in plugins:</p>
 <td>Subscribers, views and video count for your channels, and views/likes for individual videos</td>
 <td><strong>Official</strong>, documented API</td>
 </tr>
+<tr>
+<td><a href="abacus/">Abacus</a></td>
+<td>Any public Abacus counter, by namespace and name</td>
+<td><strong>Official</strong>, documented API</td>
+</tr>
+<tr>
+<td><a href="tiktok/">TikTok</a></td>
+<td>Followers, following and video count for your handles, and views/likes for individual videos</td>
+<td>Unofficial: reads a rendered page</td>
+</tr>
 </tbody>
 </table>
-<p>The image ships more built-in plugins than are documented here so far.
-The full set is in
+<p>The full set is also in
 <a href="https://github.com/DrewFerg11/numbers-go-up/tree/main/numbers_go_up/plugins"><code>numbers_go_up/plugins/</code></a>,
 and each one is configured in the commented
 <a href="https://github.com/DrewFerg11/numbers-go-up/blob/main/config.yaml.example"><code>config.yaml.example</code></a>.</p>
@@ -1019,8 +1088,8 @@ stored and what Home Assistant does with it:</p>
   stars, likes). Home Assistant gets <code>state_class: measurement</code>.</li>
 </ul>
 <p>Each plugin page lists the kind of every metric it emits. For the complete,
-generated list across every shipped plugin -- including the ones without a
-prose page of their own yet -- see the <a href="metrics/">metric catalogue</a>.</p>
+generated list across every shipped plugin, see the
+<a href="metrics/">metric catalogue</a>.</p>
 <h2 id="when-a-plugin-fails">When a plugin fails<a class="headerlink" href="#when-a-plugin-fails" title="Permanent link">&para;</a></h2>
 <p>A failure is always <strong>one failed poll, never a crash</strong>. The service stays
 up, other plugins keep running, and the failed plugin tries again on its
