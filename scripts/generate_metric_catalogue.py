@@ -23,11 +23,11 @@ DEFAULT_OUTPUT = (
     Path(__file__).resolve().parent.parent / "docs" / "plugins" / "metrics.md"
 )
 
-# A plugin with a prose page (#106) links to it; one without links to its
-# source on GitHub instead (same fallback docs/plugins/index.md already
-# uses for "more plugins ship than are documented here so far"). Checked
-# against the docs directory itself, not a hand-maintained list, so a new
-# prose page is picked up automatically instead of silently going stale.
+# A plugin with a prose page (#106, #168) links to it; one without links to
+# its source on GitHub instead, so a plugin added before its page is
+# written still gets a working link. Checked against the docs directory
+# itself, not a hand-maintained list, so a new prose page is picked up
+# automatically instead of silently going stale.
 _DOCS_PLUGINS_DIR = Path(__file__).resolve().parent.parent / "docs" / "plugins"
 _SOURCE_URL_TEMPLATE = (
     "https://github.com/DrewFerg11/numbers-go-up/blob/main/"
