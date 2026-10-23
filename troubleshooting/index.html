@@ -1193,6 +1193,25 @@ plugin. <strong>Hover the dot</strong> to see the last error.</p>
 </tbody>
 </table>
 <p>Each plugin page has a <strong>When it fails</strong> section with its specifics.</p>
+<p>At startup, look for these WARNINGs in the log:</p>
+<table>
+<thead>
+<tr>
+<th>Log line</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>Plugin X is enabled but failed to load; keeping its series</code></td>
+<td>A user plugin you enabled has an import error or breaks the plugin contract (the lines just above give the traceback or the contract problem). It doesn't run, but its history and Home Assistant entities are kept; fix the file and restart.</td>
+</tr>
+<tr>
+<td><code>Config has a plugins.X entry but there is no plugin of that name</code></td>
+<td>Usually a typo in the plugin name under <code>plugins:</code>. The log lists the known names.</td>
+</tr>
+</tbody>
+</table>
 <h2 id="a-source-shows-blocked">A source shows <code>blocked</code><a class="headerlink" href="#a-source-shows-blocked" title="Permanent link">&para;</a></h2>
 <p><code>blocked</code> means the source answered <strong><code>403 Forbidden</code></strong>: it's refusing
 this client. That's a different problem from a broken plugin, so it gets

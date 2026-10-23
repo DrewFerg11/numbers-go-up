@@ -1409,6 +1409,21 @@ like every other plugin:</p>
 </code></pre></div>
 <p><code>enabled: true</code> is required explicitly -- absence, not <code>enabled: false</code>,
 is the off state every other plugin also uses.</p>
+<p>A few loading rules worth knowing while you develop:</p>
+<ul>
+<li>A plugin that raises on import (a syntax error, a missing dependency) or
+  fails the contract check is logged and skipped. If it is <code>enabled: true</code>,
+  startup also logs a WARNING (<code>enabled but failed to load; keeping its
+  series</code>) and does <strong>not</strong> retire its series, so a typo never removes the
+  plugin's Home Assistant entities. Only a plugin that is disabled or whose
+  file is gone is retired.</li>
+<li>Plugins are imported from their file path under a private module name
+  (<code>ngu_plugin_&lt;name&gt;</code>), so <code>from __future__ import annotations</code> with
+  <code>@dataclass</code> works. Don't rely on importing your plugin by its bare name.</li>
+<li>A name under <code>plugins:</code> that matches no plugin logs one WARNING listing
+  the known names (usually a typo), and <code>plugins.&lt;name&gt;:</code> with nothing
+  under it is read as an empty entry.</li>
+</ul>
 <h2 id="7-responsible-use">7. Responsible Use<a class="headerlink" href="#7-responsible-use" title="Permanent link">&para;</a></h2>
 <p>Every plugin must meet the numbered rules in <code>CONTRIBUTING.md</code>. The ones
 that bite most often when writing a new one:</p>
