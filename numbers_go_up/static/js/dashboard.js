@@ -131,12 +131,14 @@
     document.querySelectorAll(".tile.selected, .watchlist-row.selected").forEach(
       function (el) {
         el.classList.remove("selected");
+        el.removeAttribute("aria-current");
       }
     );
     if (!key) return;
     document.querySelectorAll('[data-key="' + CSS.escape(key) + '"]').forEach(
       function (el) {
         el.classList.add("selected");
+        if (el.classList.contains("tile")) el.setAttribute("aria-current", "true");
       }
     );
   }
@@ -144,11 +146,12 @@
   function buildTile(metric) {
     var node = tileTemplate.content.firstElementChild.cloneNode(true);
     node.dataset.key = metric.key;
-    // The index tile is a pure selector, not a link -- the watchlist row's
-    // metric name is the spec's link to the detail page (see buildRow);
-    // having both the tile and the row navigate would make the common
-    // "click a pinned tile" gesture leave the overview unexpectedly.
-    node.removeAttribute("href");
+    // The index tile is a pure selector -- the watchlist row's metric name
+    // is the spec's link to the detail page (see buildRow); having both
+    // navigate would make "click a pinned tile" leave the overview. The
+    // href stays (pointing back at this page) so the tile is focusable and
+    // Enter activates it; the click handler cancels the navigation.
+    node.href = "?m=" + encodeURIComponent(metric.key) + "&range=" + state.range;
     node.querySelector(".tile-plugin").textContent = metric.plugin.toUpperCase();
     node.querySelector(".tile-label").textContent = metric.label || metric.key;
     node.querySelector(".tile-value").textContent = Ngu.formatValue(metric.value);
@@ -189,11 +192,11 @@
       Ngu.formatValue(metric.high) + " / " + Ngu.formatValue(metric.low);
     node.querySelector(".row-updated").textContent = Ngu.relativeTime(metric.updated);
 
-    node.addEventListener("click", function () {
+    // Mouse-only convenience: the row isn't focusable (the name link is its
+    // one tab stop), so a click on the link itself just follows the link.
+    node.addEventListener("click", function (event) {
+      if (event.target.closest("a")) return;
       setSelectedKey(metric.key);
-    });
-    node.addEventListener("keydown", function (event) {
-      if (event.key === "Enter") setSelectedKey(metric.key);
     });
     return node;
   }
@@ -264,11 +267,14 @@
         }
 
         toggle.hidden = false;
+        toggle.dataset.fold = group.plugin;
+        toggle.setAttribute("aria-expanded", expanded ? "true" : "false");
         toggle.textContent = foldLabel();
         toggle.addEventListener("click", function () {
           expanded = !expanded;
           patternContainer.hidden = !expanded;
           toggle.textContent = foldLabel();
+          toggle.setAttribute("aria-expanded", expanded ? "true" : "false");
           try {
             localStorage.setItem(foldKey, expanded ? "1" : "0");
           } catch (e) {
@@ -348,17 +354,21 @@
 
     candidates.slice(0, 5).forEach(function (metric) {
       var li = document.createElement("li");
+      var button = document.createElement("button");
+      button.type = "button";
+      button.dataset.mover = metric.key;
       var label = document.createElement("span");
       label.textContent = metric.label || metric.key;
       var pct = document.createElement("span");
       pct.textContent =
         (metric.change_pct > 0 ? "+" : "") + metric.change_pct + "%";
       pct.className = "value-" + Ngu.directionOf(metric.change);
-      li.appendChild(label);
-      li.appendChild(pct);
-      li.addEventListener("click", function () {
+      button.appendChild(label);
+      button.appendChild(pct);
+      button.addEventListener("click", function () {
         setSelectedKey(metric.key);
       });
+      li.appendChild(button);
       moversList.appendChild(li);
     });
   }
@@ -454,7 +464,25 @@
       });
   }
 
+  // render() rebuilds the tiles, rows, fold toggles and movers, which
+  // destroys whatever has keyboard focus (it falls back to <body> every
+  // 60s). Note which of them was focused and refocus its replacement.
+  function focusedSelector() {
+    var el = document.activeElement;
+    if (!el || el === document.body) return null;
+    var tile = el.closest(".tile[data-key]");
+    if (tile) return '.tile[data-key="' + CSS.escape(tile.dataset.key) + '"]';
+    var row = el.closest(".watchlist-row[data-key]");
+    if (row && el.matches(".row-label")) {
+      return '.watchlist-row[data-key="' + CSS.escape(row.dataset.key) + '"] .row-label';
+    }
+    if (el.dataset.fold) return '.fold-toggle[data-fold="' + CSS.escape(el.dataset.fold) + '"]';
+    if (el.dataset.mover) return '[data-mover="' + CSS.escape(el.dataset.mover) + '"]';
+    return null;
+  }
+
   function render(data) {
+    var refocus = focusedSelector();
     var metricsByKey = {};
     data.metrics.forEach(function (m) {
       metricsByKey[m.key] = m;
@@ -471,6 +499,11 @@
     renderStatusLine(data.plugins);
     renderMovers(data.metrics);
     renderLatestChanges(data.recent_changes, metricsByKey);
+
+    if (refocus) {
+      var target = document.querySelector(refocus);
+      if (target) target.focus({ preventScroll: true });
+    }
 
     state.lastFetchedAt = Date.now();
     updateUpdatedLabel();
@@ -496,6 +529,7 @@
   function setRange(range) {
     state.range = range;
     Ngu.markRange(range);
+    document.getElementById("trend-header").textContent = range + " Trend";
     var url = new URL(window.location.href);
     url.searchParams.set("range", range);
     window.history.replaceState({}, "", url);

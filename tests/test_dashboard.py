@@ -117,18 +117,76 @@ def test_static_assets_are_cache_busted_with_the_package_version(tmp_path):
     assert f"/static/js/detail.js?v={dashboard.__version__}" in detail.text
 
 
-def test_index_tile_has_no_href_but_row_label_links_to_detail_page(tmp_path):
-    # The detail page (/m/{key}) now exists (this PR). Per spec, the
-    # watchlist row's metric name is a link to it; the index tile stays a
-    # pure selector (clicking a pinned tile shouldn't navigate away from
-    # the overview). This can't watch the client-side DOM directly (no JS
-    # test runner in this repo), so it pins the static asset's source --
-    # it fails loudly if a future edit drops the row link or adds a tile
-    # link back.
+def test_index_tile_selects_in_place_but_row_label_links_to_detail_page(tmp_path):
+    # The detail page (/m/{key}) exists; per spec, the watchlist row's
+    # metric name is a link to it, while the index tile is a selector
+    # (clicking a pinned tile shouldn't navigate away from the overview).
+    # The tile keeps an href so it is focusable and Enter-activatable, and
+    # its click handler cancels the navigation. This can't watch the
+    # client-side DOM directly (no JS test runner in this repo), so it pins
+    # the static asset's source.
+    js = (dashboard.STATIC_DIR / "js" / "dashboard.js").read_text(encoding="utf-8")
+    tile_start = js.index("function buildTile(metric)")
+    tile_body = js[tile_start : js.index("function buildRow(metric)")]
+
+    assert 'node.removeAttribute("href")' not in js
+    assert "node.href =" in tile_body
+    assert "event.preventDefault()" in tile_body
+    assert 'label.href = "/m/' in js
+
+
+def test_index_markup_is_keyboard_and_screen_reader_friendly(tmp_path):
+    client, _ = client_for(tmp_path)
+    html = client.get("/?range=1W").text
+
+    # The range switcher is a row of toggle buttons, not a tablist with no
+    # tabpanels; the nav landmark keeps its role.
+    for tab_attr in ('role="tablist"', 'role="tab"', "aria-selected"):
+        assert tab_attr not in html
+    assert '<nav class="range-switcher" aria-label="Time range">' in html
+    assert 'data-range="1W"\n      aria-pressed="true"' in html
+    assert 'data-range="1M"\n      aria-pressed="false"' in html
+    # The row is not a second tab stop beside its name link.
+    assert 'class="watchlist-row" tabindex' not in html
+    assert '<div class="watchlist-row">' in html
+
+
+def test_index_trend_header_is_updated_when_the_range_changes(tmp_path):
+    # S8: the header is server-rendered with the initial range, so
+    # setRange has to rewrite it or "1M Trend" stays after switching to 1W.
+    client, _ = client_for(tmp_path)
+    assert 'id="trend-header">1W Trend</span>' in client.get("/?range=1W").text
+
+    js = (dashboard.STATIC_DIR / "js" / "dashboard.js").read_text(encoding="utf-8")
+    set_range = js[js.index("function setRange(range)") :][:400]
+    assert 'getElementById("trend-header").textContent = range + " Trend"' in set_range
+
+
+def test_detail_range_switcher_uses_links_with_aria_current(tmp_path):
+    client, db_path = client_for(tmp_path)
+    now = int(time.time())
+    series_id = seed_series(db_path, "acme.widgets", now=now)
+    storage.record_sample(db_path, series_id, now, 5, DAY)
+
+    html = client.get("/m/acme.widgets?range=3M").text
+
+    assert 'role="tab' not in html
+    assert 'href="?range=3M" aria-current="page">3M</a>' in html
+    assert 'href="?range=1W">1W</a>' in html
+    assert "<button" not in html[html.index('class="range-tabs"') :][:600]
+
+
+def test_dashboard_js_keeps_focus_and_exposes_toggle_state(tmp_path):
     js = (dashboard.STATIC_DIR / "js" / "dashboard.js").read_text(encoding="utf-8")
 
-    assert 'node.removeAttribute("href")' in js
-    assert 'label.href = "/m/' in js
+    # Movers are real buttons, not click-only <li>s.
+    assert 'document.createElement("button")' in js
+    assert 'li.addEventListener("click"' not in js
+    # The fold toggle reports its state, and render() restores focus to the
+    # rebuilt control that had it before the 60s refresh.
+    assert js.count('toggle.setAttribute("aria-expanded"') == 2
+    assert "function focusedSelector()" in js
+    assert ".focus({ preventScroll: true })" in js
 
 
 def test_status_class_reads_the_server_computed_health_field(tmp_path):

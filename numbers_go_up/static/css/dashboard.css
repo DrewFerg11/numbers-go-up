@@ -174,9 +174,11 @@ a {
   font-size: 12px;
   font-weight: 600;
   cursor: pointer;
+  text-decoration: none;
 }
 
-.range-btn[aria-selected="true"] {
+.range-btn[aria-pressed="true"],
+.range-btn[aria-current="page"] {
   background: var(--bg-raised);
   color: var(--text);
   box-shadow: 0 0 0 1px var(--border);
@@ -363,8 +365,18 @@ a {
 .movers-panel li {
   display: flex;
   justify-content: space-between;
-  padding: 4px 0;
   font-size: 12px;
+}
+
+.movers-panel li button {
+  display: flex;
+  justify-content: space-between;
+  width: 100%;
+  padding: 4px 0;
+  border: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
   cursor: pointer;
 }
 
