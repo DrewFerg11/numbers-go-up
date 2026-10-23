@@ -25,6 +25,15 @@ import yaml
 ROOT = Path(__file__).resolve().parent.parent
 
 
+# Nav pages written by the generator scripts, so absent from a fresh checkout
+# (they are gitignored). main() still requires them: in CI the generators run
+# first, and a missing one means a generator failed. Offline unit tests pass
+# them as `generated` instead.
+GENERATED_PAGES = frozenset(
+    {"getting-started/config-reference.md", "plugins/metrics.md"}
+)
+
+
 class _Loader(yaml.SafeLoader):
     """SafeLoader that tolerates MkDocs' custom tags (`!ENV` and friends)."""
 
@@ -54,7 +63,9 @@ def _excluded(rel: str, patterns: list[str]) -> bool:
     return False
 
 
-def check(root: Path, site: Path | None = None) -> list[str]:
+def check(
+    root: Path, site: Path | None = None, generated: frozenset[str] = frozenset()
+) -> list[str]:
     config = yaml.load((root / "mkdocs.yml").read_text(), Loader=_Loader)
     docs = root / config.get("docs_dir", "docs")
     patterns = [
@@ -72,7 +83,7 @@ def check(root: Path, site: Path | None = None) -> list[str]:
     }
     for page in sorted(on_disk - in_nav):
         problems.append(f"docs/{page} is not in the nav in mkdocs.yml")
-    for page in sorted(in_nav - on_disk):
+    for page in sorted(in_nav - on_disk - generated):
         problems.append(f"nav lists {page}, which is not a docs page")
 
     if site is not None:

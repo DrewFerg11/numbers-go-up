@@ -28,7 +28,15 @@ def _tree(tmp_path: Path, extra: dict[str, str] | None = None) -> Path:
 
 
 def test_real_repo_passes():
-    assert check.check(check.ROOT) == []
+    # Generated pages are gitignored, so a fresh checkout lacks them; the
+    # docs build job runs the generators first and checks them for real.
+    assert check.check(check.ROOT, generated=check.GENERATED_PAGES) == []
+
+
+def test_missing_generated_page_is_reported_unless_allowed(tmp_path):
+    root = _tree(tmp_path)
+    (root / "docs" / "sub" / "other.md").unlink()
+    assert check.check(root, generated=frozenset({"sub/other.md"})) == []
 
 
 def test_clean_tree_passes(tmp_path):
