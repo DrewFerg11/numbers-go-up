@@ -775,3 +775,15 @@ class TestDiscoverFailures:
         assert "valid" in messages[0]
         # A name that is a real (if broken) plugin file is not "unknown".
         assert "plugins.broken_import" not in caplog.text
+
+    def test_configured_name_of_an_invalidly_named_file_is_not_called_unknown(
+        self, tmp_path, caplog
+    ):
+        (tmp_path / "bad-name.py").write_text("")
+        config = {"plugins": {"bad-name": {"enabled": True}}}
+
+        with caplog.at_level("WARNING"):
+            plugins.discover_with_failures(config, builtin_dir=tmp_path)
+
+        assert "is not a valid plugin name" in caplog.text
+        assert "no plugin of that name" not in caplog.text

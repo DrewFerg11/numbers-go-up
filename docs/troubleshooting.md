@@ -29,7 +29,7 @@ At startup, look for these WARNINGs in the log:
 
 | Log line | Meaning |
 |---|---|
-| `Plugin X is enabled but failed to load; keeping its series` | A user plugin you enabled has an import error or breaks the plugin contract (the traceback is just above). It doesn't run, but its history and Home Assistant entities are kept; fix the file and restart. |
+| `Plugin X is enabled but failed to load; keeping its series` | A user plugin you enabled has an import error or breaks the plugin contract (the lines just above give the traceback or the contract problem). It doesn't run, but its history and Home Assistant entities are kept; fix the file and restart. |
 | `Config has a plugins.X entry but there is no plugin of that name` | Usually a typo in the plugin name under `plugins:`. The log lists the known names. |
 
 ## A source shows `blocked`

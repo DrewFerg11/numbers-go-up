@@ -361,7 +361,9 @@ def validate_plugin_contract(
 
 
 def _discover_dir(
-    directory: Path | None, failed: set[str] | None = None
+    directory: Path | None,
+    failed: set[str] | None = None,
+    invalid_names: set[str] | None = None,
 ) -> dict[str, ModuleType]:
     """Import every non-underscore, validly-named ``*.py`` file in ``directory``.
 
@@ -374,7 +376,8 @@ def _discover_dir(
     without ever being imported.
 
     Stems whose import failed are added to ``failed`` when it is given, so
-    the caller can tell "broken" apart from "absent".
+    the caller can tell "broken" apart from "absent"; stems rejected as
+    invalid names go to ``invalid_names`` likewise (already warned about).
     """
     found: dict[str, ModuleType] = {}
     if directory is None or not directory.is_dir():
@@ -390,6 +393,8 @@ def _discover_dir(
                 path,
                 path.stem,
             )
+            if invalid_names is not None:
+                invalid_names.add(path.stem)
             continue
         module = load_plugin_from_path(path)
         if module is not None:
@@ -454,10 +459,13 @@ def discover_with_failures(
     if builtin_dir is None:
         builtin_dir = Path(__file__).parent
     import_failed: set[str] = set()
-    builtin_modules = _discover_dir(builtin_dir, import_failed)
+    invalid_names: set[str] = set()
+    builtin_modules = _discover_dir(builtin_dir, import_failed, invalid_names)
 
     user_dir = config.get("plugin_dir")
-    user_modules = _discover_dir(Path(user_dir), import_failed) if user_dir else {}
+    user_modules = (
+        _discover_dir(Path(user_dir), import_failed, invalid_names) if user_dir else {}
+    )
 
     combined: dict[str, tuple[ModuleType, str]] = {
         name: (module, "built-in") for name, module in builtin_modules.items()
@@ -577,7 +585,11 @@ def discover_with_failures(
             )
 
     known = loaded | import_failed | contract_failed
-    unknown = sorted(n for n in plugins_config if n not in known)
+    # An invalidly named file was already warned about; don't also call its
+    # configured name unknown, but don't list it as a known plugin either.
+    unknown = sorted(
+        n for n in plugins_config if n not in known and n not in invalid_names
+    )
     for name in unknown:
         logger.warning(
             "Config has a plugins.%s entry but there is no plugin of that "
