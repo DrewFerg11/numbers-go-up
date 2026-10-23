@@ -149,8 +149,11 @@ a {
     gap: 2px;
   }
 
+  /* Below ~345px the controls no longer fit; scroll inside the switcher
+     (rather than pushing the page sideways) so "More" stays reachable. */
   .range-switcher {
     max-width: 100%;
+    overflow-x: auto;
   }
 
   .range-btn {

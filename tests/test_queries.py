@@ -1,4 +1,5 @@
 import time
+from typing import get_args
 
 import pytest
 from fastapi import FastAPI, Request
@@ -295,3 +296,9 @@ def test_plugin_statuses_pending_when_never_polled(db_path):
     response = client.get("/probe")
 
     assert response.json()["plugins"][0]["status"] == "pending"
+
+
+def test_range_key_literal_matches_valid_ranges():
+    # RangeKey is hand-written (it feeds FastAPI's enum); VALID_RANGES is
+    # built from RANGE_HOURS. A range added to only one must fail here.
+    assert set(get_args(queries.RangeKey)) == set(queries.VALID_RANGES)

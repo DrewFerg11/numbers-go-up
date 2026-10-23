@@ -48,9 +48,9 @@ VALID_RANGES = (*RANGE_HOURS, "ALL")
 # The ranges shorter than a day: the dashboard's range switcher puts these
 # behind a compact "More" menu so the common ranges fit one row on a phone.
 SUB_DAY_RANGES = tuple(k for k, hours in RANGE_HOURS.items() if hours < 24)
-# Kept in sync with VALID_RANGES by construction (both are built from
-# RANGE_HOURS plus "ALL"), so FastAPI's enum in /docs and the runtime
-# VALID_RANGES tuple can never drift apart.
+# VALID_RANGES is built from RANGE_HOURS, but this Literal (FastAPI's enum in
+# /docs) is written out by hand -- tests/test_queries.py checks it matches
+# VALID_RANGES, so adding a range to only one of them fails CI.
 RangeKey = Literal["1H", "6H", "12H", "1D", "1W", "1M", "3M", "6M", "1Y", "ALL"]
 
 
