@@ -4,10 +4,25 @@ updates:
     directory: "/"
     schedule:
       interval: weekly
+    # requirements.txt is hash-locked and pydantic pins an exact
+    # pydantic-core (and fastapi/starlette move together), so these must
+    # land in one PR or the lock can't resolve.
+    groups:
+      web-stack:
+        patterns:
+          - "fastapi*"
+          - "starlette"
+          - "pydantic*"
+          - "uvicorn"
   - package-ecosystem: github-actions
     directory: "/"
     schedule:
       interval: weekly
+    # The init/autobuild/analyze sub-actions must run the same version.
+    groups:
+      codeql-action:
+        patterns:
+          - "github/codeql-action*"
   - package-ecosystem: docker
     directory: "/"
     schedule:
