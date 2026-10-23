@@ -18,11 +18,14 @@ rebuild is needed. All intervals are in seconds.
 
 ## Validation
 
-An unknown key in `poll`, `storage`, `server` or `dashboard`, or an unknown
-top-level section, **fails startup** with the offending key named (and a
+An unknown key in `poll`, `storage`, `server`, `dashboard`, `mqtt` or
+`milestones` (including inside a milestone rule), or an unknown top-level
+section, **fails startup** with the offending key named (and a
 "did you mean" suggestion for a misspelled section). So does a value of the
 wrong type, such as a quoted number. A typo like `mqqt:` stops the
-container instead of silently doing nothing.
+container instead of silently doing nothing. A `password:` under `mqtt:` is
+rejected with a pointer to the `NGU_MQTT_PASSWORD` environment variable; the
+broker password is never read from `config.yaml`.
 
 `NGU_CONFIG_STRICT=0` downgrades that failure to a warning and starts
 anyway. It's an escape hatch for getting a broken config booting while you

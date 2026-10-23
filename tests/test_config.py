@@ -6,6 +6,7 @@ import yaml
 from numbers_go_up.config import (
     EXAMPLE_CONFIG,
     EXAMPLE_CONFIG_FILENAME,
+    MQTT_KEYS,
     ConfigError,
     load_config,
 )
@@ -271,3 +272,91 @@ def test_dashboard_pinned_non_list_fails_startup(tmp_path):
 
     with pytest.raises(ConfigError, match="dashboard.pinned"):
         load_config(env=_env(tmp_path, NGU_CONFIG_FILE=str(config_file)))
+
+
+def _env_with_config(tmp_path, text):
+    config_dir = tmp_path / "config"
+    config_dir.mkdir(parents=True, exist_ok=True)
+    config_file = config_dir / "config.yaml"
+    config_file.write_text(text)
+    return _env(tmp_path, NGU_CONFIG_FILE=str(config_file))
+
+
+def test_unknown_mqtt_key_fails_startup_naming_it(tmp_path):
+    env = _env_with_config(tmp_path, "mqtt:\n  host: x\n  topc_prefix: a\n")
+
+    with pytest.raises(ConfigError) as exc_info:
+        load_config(env=env)
+
+    message = str(exc_info.value)
+    assert "mqtt.topc_prefix" in message
+    assert "topic_prefix" in message
+
+
+def test_mqtt_password_in_config_points_at_env_var_without_leaking_it(tmp_path):
+    env = _env_with_config(tmp_path, "mqtt:\n  host: x\n  password: hunter2\n")
+
+    with pytest.raises(ConfigError) as exc_info:
+        load_config(env=env)
+
+    message = str(exc_info.value)
+    assert "mqtt.password" in message
+    assert "NGU_MQTT_PASSWORD" in message
+    assert "hunter2" not in message
+
+
+def test_unknown_milestones_keys_fail_startup(tmp_path):
+    env = _env_with_config(
+        tmp_path,
+        "milestones:\n  webhook_url_env: X\n  rulez: []\n"
+        "  rules:\n    - metric: a.b\n      evry: 5\n",
+    )
+
+    with pytest.raises(ConfigError) as exc_info:
+        load_config(env=env)
+
+    message = str(exc_info.value)
+    assert "milestones.rulez" in message
+    assert "milestones.rules[0].evry" in message
+
+
+def test_config_strict_zero_downgrades_unknown_mqtt_and_milestones_keys(
+    tmp_path, caplog
+):
+    env = _env_with_config(
+        tmp_path,
+        "mqtt:\n  host: x\n  password: hunter2\nmilestones:\n  rulez: []\n",
+    )
+    env["NGU_CONFIG_STRICT"] = "0"
+
+    with caplog.at_level("WARNING"):
+        config = load_config(env=env)
+
+    assert config["mqtt"]["host"] == "x"
+    assert "mqtt.password" in caplog.text
+    assert "milestones.rulez" in caplog.text
+    assert "hunter2" not in caplog.text
+
+
+def test_example_config_loads_with_every_block_uncommented(tmp_path):
+    # Uncomment the mqtt and milestones blocks (header, keys and rules);
+    # prose comment lines inside them stay comments.
+    lines = EXAMPLE_CONFIG.splitlines()
+    out = []
+    active = False
+    for line in lines:
+        if line.startswith(("# mqtt:", "# milestones:")):
+            active = True
+        elif active and not line.startswith("#"):
+            active = False
+        if active and not line.lstrip("# ").startswith(
+            ("Password", "Webhook", "Each", "never")
+        ):
+            line = line[2:] if line.startswith("# ") else line
+        out.append(line)
+
+    config = load_config(env=_env_with_config(tmp_path, "\n".join(out)))
+
+    assert config["mqtt"]["host"]
+    assert config["milestones"]["rules"]
+    assert set(config["mqtt"]) == MQTT_KEYS
