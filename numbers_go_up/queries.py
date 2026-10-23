@@ -30,8 +30,9 @@ DEFAULT_UNHEALTHY_FAILURES = 3
 # sample, resolved by whoever calls range_start().
 #
 # 1H/6H/12H are here temporarily for testing -- more frequent checking while
-# the app is being shaken out. Revisit per issue #116 (button row vs.
-# dropdown) once that settles down.
+# the app is being shaken out. The dashboard keeps them out of the main
+# button row (see SUB_DAY_RANGES) so they can be dropped without a layout
+# change; see issue #120.
 RANGE_HOURS: dict[str, int] = {
     "1H": 1,
     "6H": 6,
@@ -40,13 +41,17 @@ RANGE_HOURS: dict[str, int] = {
     "1W": 24 * 7,
     "1M": 24 * 30,
     "3M": 24 * 90,
+    "6M": 24 * 180,
     "1Y": 24 * 365,
 }
 VALID_RANGES = (*RANGE_HOURS, "ALL")
-# Kept in sync with VALID_RANGES by construction (both are built from
-# RANGE_HOURS plus "ALL"), so FastAPI's enum in /docs and the runtime
-# VALID_RANGES tuple can never drift apart.
-RangeKey = Literal["1H", "6H", "12H", "1D", "1W", "1M", "3M", "1Y", "ALL"]
+# The ranges shorter than a day: the dashboard's range switcher puts these
+# behind a compact "More" menu so the common ranges fit one row on a phone.
+SUB_DAY_RANGES = tuple(k for k, hours in RANGE_HOURS.items() if hours < 24)
+# VALID_RANGES is built from RANGE_HOURS, but this Literal (FastAPI's enum in
+# /docs) is written out by hand -- tests/test_queries.py checks it matches
+# VALID_RANGES, so adding a range to only one of them fails CI.
+RangeKey = Literal["1H", "6H", "12H", "1D", "1W", "1M", "3M", "6M", "1Y", "ALL"]
 
 
 def iso(ts: int | float | None) -> str | None:

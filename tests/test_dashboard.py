@@ -305,6 +305,29 @@ def test_detail_range_switch_does_a_full_reload(tmp_path):
     assert "window.location.href" in set_range_body
 
 
+def test_index_range_switcher_keeps_sub_day_ranges_in_the_more_menu(tmp_path):
+    # Every range must be reachable, but only the common ones are buttons:
+    # the nine-button row clipped ALL off a 390px phone (#120).
+    client, _ = client_for(tmp_path)
+    for path in ("/?range=1M", "/?range=6H"):
+        html = client.get(path).text
+        row = html[html.index('class="range-tabs"') : html.index('class="range-more"')]
+        for key in ("1D", "1W", "1M", "3M", "6M", "1Y", "ALL"):
+            assert f'data-range="{key}"' in row
+        for key in queries.SUB_DAY_RANGES:
+            assert f'data-range="{key}"' not in row
+            assert f'<option value="{key}"' in html
+    assert '<option value="6H" selected>' in html
+    assert 'data-active="true"' in html
+
+
+def test_every_range_has_a_change_bar_bucket():
+    from numbers_go_up import api
+
+    assert set(api.BAR_BUCKET_SECONDS) == set(queries.VALID_RANGES)
+    assert api.BAR_BUCKET_SECONDS["6M"] == 86400
+
+
 def test_index_renders_with_every_plugin_failing(tmp_path):
     client, db_path = client_for(tmp_path, plugins_config={"acme": {"enabled": True}})
     now = int(time.time())
@@ -430,6 +453,7 @@ def test_overview_each_range_bound(tmp_path):
         "1W": 150,
         "1M": 100,
         "3M": 100,
+        "6M": 100,
         "1Y": 100,
     }
 

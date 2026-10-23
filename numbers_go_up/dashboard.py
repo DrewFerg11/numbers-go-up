@@ -20,7 +20,7 @@ from fastapi.templating import Jinja2Templates
 
 from numbers_go_up import __version__, queries, storage
 from numbers_go_up.plugins import is_pattern_key, resolve_metric
-from numbers_go_up.queries import VALID_RANGES, RangeKey
+from numbers_go_up.queries import SUB_DAY_RANGES, VALID_RANGES, RangeKey
 
 logger = logging.getLogger(__name__)
 
@@ -289,7 +289,8 @@ def dashboard_index(
         "index.html",
         {
             "range": range_key,
-            "ranges": VALID_RANGES,
+            "ranges": [r for r in VALID_RANGES if r not in SUB_DAY_RANGES],
+            "more_ranges": SUB_DAY_RANGES,
             "any_enabled": any_enabled,
         },
     )
@@ -415,7 +416,8 @@ def metric_detail(
         "detail.html",
         {
             "range": range_key,
-            "ranges": VALID_RANGES,
+            "ranges": [r for r in VALID_RANGES if r not in SUB_DAY_RANGES],
+            "more_ranges": SUB_DAY_RANGES,
             "metric": metric,
         },
     )

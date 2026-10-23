@@ -184,7 +184,7 @@ class IntegrationsResponse(BaseModel):
 MAX_HOURS = 8760
 
 # Change-bar bucket width in seconds, keyed by named range: 1H/6H->5m,
-# 12H->15m, 1D->1h, 1W->6h, 1M/3M->1d, 1Y/ALL->1w, per the big chart's
+# 12H->15m, 1D->1h, 1W->6h, 1M/3M/6M->1d, 1Y/ALL->1w, per the big chart's
 # change-bar spec.
 BAR_BUCKET_SECONDS = {
     "1H": 5 * 60,
@@ -194,6 +194,7 @@ BAR_BUCKET_SECONDS = {
     "1W": 6 * 3600,
     "1M": 86400,
     "3M": 86400,
+    "6M": 86400,
     "1Y": 7 * 86400,
     "ALL": 7 * 86400,
 }
