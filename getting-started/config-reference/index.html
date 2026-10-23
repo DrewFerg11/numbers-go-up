@@ -1047,7 +1047,8 @@ every key below is exactly what a running instance will accept.
 For a narrative walkthrough, start at
 <a href="../configuration/">Configuration</a>; this page is the complete table
 it links into, not a replacement for it.</p>
-<p>An unknown key anywhere in this schema fails startup (a typo'd
+<p>An unknown key anywhere in this schema, or inside <code>mqtt</code> or
+<code>milestones</code>, fails startup (a typo'd
 section or field name), and a value of the wrong type -- a quoted
 <code>"86400"</code> where an integer is required -- fails startup too rather
 than being coerced. Set <code>NGU_CONFIG_STRICT=0</code> to downgrade that to

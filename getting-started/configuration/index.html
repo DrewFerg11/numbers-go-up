@@ -1213,11 +1213,14 @@ meant to be safe to copy, share and back up. The full list is
 <a href="#environment-variables">below</a>.</p>
 </div>
 <h2 id="validation">Validation<a class="headerlink" href="#validation" title="Permanent link">&para;</a></h2>
-<p>An unknown key in <code>poll</code>, <code>storage</code>, <code>server</code> or <code>dashboard</code>, or an unknown
-top-level section, <strong>fails startup</strong> with the offending key named (and a
+<p>An unknown key in <code>poll</code>, <code>storage</code>, <code>server</code>, <code>dashboard</code>, <code>mqtt</code> or
+<code>milestones</code> (including inside a milestone rule), or an unknown top-level
+section, <strong>fails startup</strong> with the offending key named (and a
 "did you mean" suggestion for a misspelled section). So does a value of the
 wrong type, such as a quoted number. A typo like <code>mqqt:</code> stops the
-container instead of silently doing nothing.</p>
+container instead of silently doing nothing. A <code>password:</code> under <code>mqtt:</code> is
+rejected with a pointer to the <code>NGU_MQTT_PASSWORD</code> environment variable; the
+broker password is never read from <code>config.yaml</code>.</p>
 <p><code>NGU_CONFIG_STRICT=0</code> downgrades that failure to a warning and starts
 anyway. It's an escape hatch for getting a broken config booting while you
 fix it, not a setting to leave on, because it accepts exactly the typos the
