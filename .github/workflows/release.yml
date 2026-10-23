@@ -418,7 +418,12 @@ jobs:
           cache: pip
 
       - name: Install dependencies
-        run: pip install -e . -r requirements-dev.txt
+        # Hashed lock + editable install can't share one `pip install` call
+        # (hash-checking mode refuses a local path); install the lock, then
+        # the project itself with --no-deps. Same shape as ci-test.yml.
+        run: |
+          pip install -r requirements-dev.txt
+          pip install --no-deps -e .
 
       - id: stats
         name: Collect release stats
