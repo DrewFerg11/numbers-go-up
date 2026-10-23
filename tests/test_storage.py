@@ -1,5 +1,6 @@
 import contextlib
 import json
+import re
 import sqlite3
 import time
 from pathlib import Path
@@ -1744,8 +1745,12 @@ class TestRecentChanges:
                 )
             ]
 
-        assert not any(step.startswith("SCAN s") for step in plan), plan
-        assert any("SEARCH s USING PRIMARY KEY" in step for step in plan), plan
+        # SQLite 3.44 changed the wording ("SCAN TABLE samples AS s" ->
+        # "SCAN s"), so match both spellings.
+        scan_s = re.compile(r"^SCAN (TABLE samples AS )?s$")
+        search_s = re.compile(r"^SEARCH (TABLE samples AS )?s USING PRIMARY KEY")
+        assert not any(scan_s.match(step) for step in plan), plan
+        assert any(search_s.match(step) for step in plan), plan
 
     def test_stays_fast_with_many_series_and_years_of_history(self, db_path):
         # #94: the shape that actually grows with an install -- hundreds of
