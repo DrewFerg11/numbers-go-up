@@ -1147,7 +1147,7 @@ same key is what appears in the dashboard's URL as <code>/m/&lt;key&gt;</code> a
 <h2 id="the-range-vocabulary">The <code>range</code> vocabulary<a class="headerlink" href="#the-range-vocabulary" title="Permanent link">&para;</a></h2>
 <p><code>/api/stats/history</code> takes a <code>range</code> query parameter from a fixed vocabulary
 -- the same one the dashboard's range switcher uses: <code>1H</code>, <code>6H</code>, <code>12H</code>,
-<code>1D</code>, <code>1W</code>, <code>1M</code>, <code>3M</code>, <code>1Y</code>, and <code>ALL</code>. <code>/api/stats/delta</code> takes a plain
+<code>1D</code>, <code>1W</code>, <code>1M</code>, <code>3M</code>, <code>6M</code>, <code>1Y</code>, and <code>ALL</code>. <code>/api/stats/delta</code> takes a plain
 <code>hours</code> window instead (integer hours back from now, capped at 8760 --
 366 days). <code>ALL</code> has no fixed bound: each series starts at its own first
 sample.</p>

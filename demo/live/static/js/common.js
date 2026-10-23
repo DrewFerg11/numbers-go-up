@@ -79,7 +79,40 @@ window.Ngu = (function () {
     });
   }
 
+  // The range switcher is a button row plus a "More" <select> for the
+  // sub-day ranges (_range_switcher.html); both feed the same onSelect.
+  function markRange(range) {
+    document.querySelectorAll(".range-btn").forEach(function (btn) {
+      btn.setAttribute("aria-selected", btn.dataset.range === range ? "true" : "false");
+    });
+    var more = document.querySelector(".range-more");
+    if (more) {
+      more.value = Array.prototype.some.call(more.options, function (o) {
+        return o.value === range;
+      })
+        ? range
+        : "";
+      more.dataset.active = more.value ? "true" : "false";
+    }
+  }
+
+  function initRangeSwitcher(onSelect) {
+    document.querySelectorAll(".range-btn").forEach(function (btn) {
+      btn.addEventListener("click", function () {
+        onSelect(btn.dataset.range);
+      });
+    });
+    var more = document.querySelector(".range-more");
+    if (more) {
+      more.addEventListener("change", function () {
+        if (more.value) onSelect(more.value);
+      });
+    }
+  }
+
   return {
+    markRange: markRange,
+    initRangeSwitcher: initRangeSwitcher,
     formatValue: formatValue,
     directionOf: directionOf,
     formatChange: formatChange,

@@ -44,36 +44,46 @@
       <span class="brand-mark" aria-hidden="true">&#9650;</span>
       <span class="brand-name">numbers-go-up</span>
     </div>
-    <nav class="range-switcher" role="tablist" aria-label="Time range">
-      
-      <button type="button" class="range-btn" data-range="1H" role="tab"
-        aria-selected="false">1H</button>
-      
-      <button type="button" class="range-btn" data-range="6H" role="tab"
-        aria-selected="false">6H</button>
-      
-      <button type="button" class="range-btn" data-range="12H" role="tab"
-        aria-selected="false">12H</button>
-      
-      <button type="button" class="range-btn" data-range="1D" role="tab"
-        aria-selected="false">1D</button>
-      
-      <button type="button" class="range-btn" data-range="1W" role="tab"
-        aria-selected="false">1W</button>
-      
-      <button type="button" class="range-btn" data-range="1M" role="tab"
-        aria-selected="true">1M</button>
-      
-      <button type="button" class="range-btn" data-range="3M" role="tab"
-        aria-selected="false">3M</button>
-      
-      <button type="button" class="range-btn" data-range="1Y" role="tab"
-        aria-selected="false">1Y</button>
-      
-      <button type="button" class="range-btn" data-range="ALL" role="tab"
-        aria-selected="false">ALL</button>
-      
-    </nav>
+    
+<nav class="range-switcher" aria-label="Time range">
+  <div class="range-tabs" role="tablist">
+    
+    <button type="button" class="range-btn" data-range="1D" role="tab"
+      aria-selected="false">1D</button>
+    
+    <button type="button" class="range-btn" data-range="1W" role="tab"
+      aria-selected="false">1W</button>
+    
+    <button type="button" class="range-btn" data-range="1M" role="tab"
+      aria-selected="true">1M</button>
+    
+    <button type="button" class="range-btn" data-range="3M" role="tab"
+      aria-selected="false">3M</button>
+    
+    <button type="button" class="range-btn" data-range="6M" role="tab"
+      aria-selected="false">6M</button>
+    
+    <button type="button" class="range-btn" data-range="1Y" role="tab"
+      aria-selected="false">1Y</button>
+    
+    <button type="button" class="range-btn" data-range="ALL" role="tab"
+      aria-selected="false">ALL</button>
+    
+  </div>
+  
+  <select class="range-more" aria-label="Shorter time ranges"
+    data-active="false">
+    <option value="" selected>More</option>
+    
+    <option value="1H">1H</option>
+    
+    <option value="6H">6H</option>
+    
+    <option value="12H">12H</option>
+    
+  </select>
+  
+</nav>
     <div class="topbar-right">
       <span class="updated-label" id="updated-label">Updated &mdash;</span>
       <a class="api-link" href="/docs" title="API docs">API</a>
