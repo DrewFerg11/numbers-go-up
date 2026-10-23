@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="4 4 212 212" role="img" aria-label="numbers-go-up">
+  <defs>
+    <clipPath id="frame"><rect x="4" y="4" width="212" height="212" rx="46"/></clipPath>
+    <linearGradient id="base" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#040915"/>
+      <stop offset="60%" stop-color="#071528"/>
+      <stop offset="100%" stop-color="#0a2238"/>
+    </linearGradient>
+    <linearGradient id="band" x1="0%" y1="100%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#0d3a5e" stop-opacity="0.15"/>
+      <stop offset="100%" stop-color="#1b6a94" stop-opacity="0.55"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="183" cy="55" r="95" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#2ee6a0" stop-opacity="0.55"/>
+      <stop offset="45%" stop-color="#14a3a0" stop-opacity="0.2"/>
+      <stop offset="100%" stop-color="#14a3a0" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <g clip-path="url(#frame)">
+    <rect x="4" y="4" width="212" height="212" fill="url(#base)"/>
+    <path d="M4 96 C56 92 96 66 136 40 S196 12 216 8 L216 40 C196 46 170 64 134 84 S56 122 4 130 Z" fill="url(#band)"/>
+    <path d="M4 152 C60 146 100 122 140 96 S190 66 216 58 L216 90 C190 98 160 122 126 146 S56 176 4 186 Z" fill="url(#band)" opacity="0.85"/>
+    <rect x="4" y="4" width="212" height="212" fill="url(#glow)"/>
+  </g>
+
+  <g transform="translate(-11 -11) scale(1.1)">
+    <polyline points="35.5,171.5 45.5,171.5 45.5,159.5 67.5,159.5 67.5,153.5 79.5,153.5 79.5,135.5 105.5,135.5 105.5,99.5 137.5,99.5 137.5,90.5 173.5,90.5 173.5,71.5"
+              fill="none" stroke="#4ce585" stroke-width="15" stroke-linecap="butt" stroke-linejoin="miter"/>
+    <circle cx="35.5" cy="171.5" r="11" fill="#4ce585"/>
+    <polygon points="151.5,71.5 195.5,71.5 173.5,37.5" fill="#4ce585"/>
+  </g>
+</svg>
