@@ -31,7 +31,7 @@
         {% if not metric.active %}<span class="stale-chip">INACTIVE</span>{% endif %}
         {% if metric.stale %}<span class="stale-chip">STALE</span>{% endif %}
       </div>
-      {% include "_range_switcher.html" %}
+      {% with range_links = true %}{% include "_range_switcher.html" %}{% endwith %}
       {% if metric.url %}
       <a class="open-source-link" href="{{ metric.url }}" rel="noopener noreferrer">
         Open on {{ metric.plugin }} &#8599;
