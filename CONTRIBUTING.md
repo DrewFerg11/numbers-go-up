@@ -135,6 +135,40 @@ is derived from, and getting it wrong corrupts long-term statistics.
   the network it's a live test and CI doesn't run it.
 - `ruff` for linting. Keep it clean; CI fails otherwise.
 
+## Updating the locks
+
+Every install in CI and the Docker image comes from a hashed lock, compiled
+by `uv` (`pip install --require-hashes`). The `.in` files are the human-edited
+sources; the `.txt` files are generated, never hand-edited:
+
+| Lock | Source | Used by |
+|---|---|---|
+| `requirements.txt` | `pyproject.toml` `[project.dependencies]` | Dockerfile, every workflow |
+| `requirements-dev.txt` | `requirements-dev.in` (`-r requirements.txt` + ruff, pytest) | `ci-test`, `sources-canary`, release stats |
+| `ci-requirements.txt` | `ci-requirements.in` (setuptools-scm) | the build/authorize jobs that hold `packages: write` |
+| `docs/requirements.txt` | `docs/requirements.in` (mkdocs, material) | the docs workflows |
+
+```sh
+uv pip compile pyproject.toml --universal --generate-hashes --python-version 3.12 -o requirements.txt
+uv pip compile requirements-dev.in --universal --generate-hashes --python-version 3.12 -o requirements-dev.txt
+uv pip compile ci-requirements.in --universal --generate-hashes --python-version 3.12 -o ci-requirements.txt
+uv pip compile docs/requirements.in -c requirements.txt --universal --generate-hashes --python-version 3.12 -o docs/requirements.txt
+```
+
+(`requirements.txt` carries a hand-written header explaining the flags; keep
+it when regenerating.) Regenerate the later locks after the earlier ones:
+`requirements-dev.in` includes `requirements.txt`, so the dev lock repeats
+the runtime pins, and the docs lock is constrained to them (`-c`) so the
+docs build installs the same versions the image ships. `scripts/check_locks.py`
+runs in CI and fails if the dev lock's runtime pins differ from
+`requirements.txt`.
+
+Dependabot bumps one pin at a time, so a PR that changes a shared package
+(`requirements.txt` only) will fail that check or the install: regenerate the
+affected locks on its branch with the commands above and push the result.
+Don't re-add lines by hand; the point of the `.in` files is that `uv`
+emits everything, including `colorama` and the runtime pins in the dev lock.
+
 ## Pull requests
 
 - One PR per issue, roughly one acceptance-criterion cluster. If it's a week of

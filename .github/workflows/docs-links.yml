@@ -40,12 +40,14 @@ jobs:
         with:
           python-version: "3.x"
           cache: pip
-          cache-dependency-path: docs/requirements.txt
+          cache-dependency-path: |
+            requirements.txt
+            docs/requirements.txt
 
       - name: Install dependencies
         run: |
-          pip install -r docs/requirements.txt
-          pip install -e .
+          pip install --require-hashes -r requirements.txt -r docs/requirements.txt
+          pip install --no-deps -e .
 
       - name: Generate reference pages
         run: |

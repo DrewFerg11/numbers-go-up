@@ -1,0 +1,3 @@
+# Tools CI runs in jobs that hold a write-scoped token (packages: write /
+# contents: write), installed with --require-hashes. See CONTRIBUTING.md.
+setuptools-scm

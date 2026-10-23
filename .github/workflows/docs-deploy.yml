@@ -72,15 +72,18 @@ jobs:
         with:
           python-version: "3.x"
           cache: pip
-          cache-dependency-path: docs/requirements.txt
+          cache-dependency-path: |
+            requirements.txt
+            docs/requirements.txt
 
       - name: Install dependencies
-        # -e . in addition to the docs-only requirements: the OpenAPI export
-        # below imports the app itself, which docs/requirements.txt does
-        # not pull in.
+        # The OpenAPI export below imports the app itself, so install the
+        # hashed runtime lock too (the versions the image ships) plus the
+        # project with --no-deps -- a hashed lock and an unhashed
+        # requirement can't share one pip call, and -e . is the latter.
         run: |
-          pip install -r docs/requirements.txt
-          pip install -e .
+          pip install --require-hashes -r requirements.txt -r docs/requirements.txt
+          pip install --no-deps -e .
 
       - name: Export OpenAPI schema
         # Not gated on anything -- a bare `pip install -e .` import with no
@@ -123,7 +126,7 @@ jobs:
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: site/demo/live
-          key: demo-export-${{ hashFiles('numbers_go_up/**', 'scripts/demo/**', 'pyproject.toml', 'docs/requirements.txt') }}
+          key: demo-export-${{ hashFiles('numbers_go_up/**', 'scripts/demo/**', 'pyproject.toml', 'requirements.txt', 'docs/requirements.txt') }}
 
       - name: Build demo
         if: steps.demo-cache.outputs.cache-hit != 'true'

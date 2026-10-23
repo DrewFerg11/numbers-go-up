@@ -1,2 +1,6 @@
+# Runtime pins come from the hashed runtime lock, so uv emits them (hashed)
+# into requirements-dev.txt and the dev lock is self-contained: nothing
+# hand-added for Dependabot to drop.
+-r requirements.txt
 ruff
 pytest
