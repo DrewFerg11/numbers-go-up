@@ -6,6 +6,8 @@ import yaml
 from numbers_go_up.config import (
     EXAMPLE_CONFIG,
     EXAMPLE_CONFIG_FILENAME,
+    MILESTONES_KEYS,
+    MILESTONES_RULE_KEYS,
     MQTT_KEYS,
     ConfigError,
     load_config,
@@ -360,3 +362,23 @@ def test_example_config_loads_with_every_block_uncommented(tmp_path):
     assert config["mqtt"]["host"]
     assert config["milestones"]["rules"]
     assert set(config["mqtt"]) == MQTT_KEYS
+
+
+def test_known_key_sets_match_what_the_validators_read():
+    # config.py keeps its own copy of the accepted keys (it can't import
+    # mqtt.py/milestones.py without a cycle); this fails whichever side
+    # drifts, in whichever PR drifts.
+    import inspect
+    import re
+
+    from numbers_go_up import milestones, mqtt
+
+    def read_keys(func, var):
+        return set(re.findall(rf'\b{var}\.get\("(\w+)"', inspect.getsource(func)))
+
+    assert read_keys(mqtt.validate_mqtt_config, "raw") == MQTT_KEYS
+    assert read_keys(milestones.validate_milestones_config, "raw") == MILESTONES_KEYS
+    assert (
+        read_keys(milestones.validate_milestones_config, "rule_raw")
+        == MILESTONES_RULE_KEYS
+    )
