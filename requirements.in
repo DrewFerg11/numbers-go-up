@@ -1,0 +1,5 @@
+# Source for docs/requirements.txt, the hashed lock the docs workflows install
+# (see CONTRIBUTING.md for the regeneration command). Pinned so a docs build is
+# reproducible; Dependabot's pip ecosystem bumps them.
+mkdocs==1.6.1
+mkdocs-material==9.7.7
