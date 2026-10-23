@@ -63,7 +63,7 @@ jobs:
           fetch-depth: 0   # setuptools-scm needs full history + tags
 
       - name: Generate version file
-        run: pip install setuptools-scm && python -m setuptools_scm --force-write-version-files
+        run: pip install --require-hashes -r ci-requirements.txt && python -m setuptools_scm --force-write-version-files
 
       # GHCR requires lowercase image names; github.repository is mixed-case.
       - name: Resolve image name

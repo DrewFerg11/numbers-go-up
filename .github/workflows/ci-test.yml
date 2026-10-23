@@ -31,7 +31,7 @@ jobs:
           python-version: ${{ matrix.python-version }}
           cache: pip
       - name: Install dependencies
-        # requirements.txt (pulled in by requirements-dev.txt) is a hashed
+        # requirements-dev.txt (which carries the runtime pins too) is a hashed
         # lock -- pip's hash-checking mode, triggered once any requirement
         # in a single `install` call has a --hash, refuses to also resolve
         # an unhashed local path in that same call. Install the pinned
@@ -41,6 +41,8 @@ jobs:
         run: |
           pip install -r requirements-dev.txt
           pip install --no-deps -e .
+      - name: Check locks agree
+        run: python scripts/check_locks.py
       - name: Lint
         run: ruff check .
       - name: Format check
