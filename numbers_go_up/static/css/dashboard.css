@@ -429,6 +429,12 @@ a {
   background: color-mix(in srgb, var(--accent) 12%, transparent);
 }
 
+.tile:focus-visible,
+.movers-panel li button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
 .watchlist-row:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: -2px;

@@ -151,6 +151,7 @@
     // navigate would make "click a pinned tile" leave the overview. The
     // href stays (pointing back at this page) so the tile is focusable and
     // Enter activates it; the click handler cancels the navigation.
+    // (href is for focus/Enter only; see above.)
     node.href = "?m=" + encodeURIComponent(metric.key) + "&range=" + state.range;
     node.querySelector(".tile-plugin").textContent = metric.plugin.toUpperCase();
     node.querySelector(".tile-label").textContent = metric.label || metric.key;
