@@ -25,7 +25,9 @@ as a standing setting: left on, it silently accepts the exact class of
 typo (a misspelled section name, a quoted number) this validation exists
 to catch, which is why it defaults to on (strict) and has to be opted out
 of explicitly. ``mqtt``/``milestones``/``plugins`` stay loosely-typed
-dicts here; their own modules validate their contents.
+dicts here and their own modules validate their values, but unknown keys
+inside ``mqtt`` and ``milestones`` (including each milestone rule) fail
+the same way, with the same escape hatch.
 """
 
 from __future__ import annotations
@@ -56,6 +58,28 @@ ENV_DATA_DIR = "NGU_DATA_DIR"
 ENV_CONFIG_FILE = "NGU_CONFIG_FILE"
 ENV_PLUGIN_DIR = "NGU_PLUGIN_DIR"
 ENV_CONFIG_STRICT = "NGU_CONFIG_STRICT"
+
+# The keys the ``mqtt``/``milestones`` sections accept. Kept here (not in
+# mqtt.py/milestones.py, which import this module) so unknown-key checking
+# runs with the rest of config validation; those modules still validate
+# the values. A key added there must be added here, and to the example
+# config -- tests/test_config.py loads the example with every block
+# uncommented.
+MQTT_PASSWORD_ENV = "NGU_MQTT_PASSWORD"
+MQTT_KEYS = frozenset(
+    {
+        "host",
+        "port",
+        "username",
+        "tls",
+        "discovery_prefix",
+        "topic_prefix",
+        "include",
+        "exclude",
+    }
+)
+MILESTONES_KEYS = frozenset({"webhook_url_env", "rules"})
+MILESTONES_RULE_KEYS = frozenset({"metric", "every", "at"})
 
 DEFAULT_DATA_DIR = "/data"
 DEFAULT_CONFIG_FILE = "/config/config.yaml"
@@ -400,6 +424,65 @@ class Config(_Section):
             "milestones.py, not this schema."
         ),
     )
+
+    @field_validator("mqtt")
+    @classmethod
+    def _known_mqtt_keys(cls, value: dict[str, Any] | None) -> dict[str, Any] | None:
+        if value is not None:
+            message = _unknown_keys_message("mqtt", value, MQTT_KEYS)
+            if message:
+                raise ValueError(message)
+        return value
+
+    @field_validator("milestones")
+    @classmethod
+    def _known_milestones_keys(
+        cls, value: dict[str, Any] | None
+    ) -> dict[str, Any] | None:
+        return _check_milestones(value)
+
+
+def _unknown_keys_message(
+    section: str, raw: dict[str, Any], known: frozenset[str]
+) -> str | None:
+    """A message naming the unknown keys in ``raw`` (key names only, never
+    values -- a misplaced ``password:`` must not end up in the log), or
+    ``None`` if every key is known."""
+    unknown = sorted(str(key) for key in raw if key not in known)
+    if not unknown:
+        return None
+    parts = []
+    for key in unknown:
+        hint = ""
+        if section == "mqtt" and key == "password":
+            hint = (
+                " (the broker password is never read from config.yaml; set "
+                f"the {MQTT_PASSWORD_ENV} environment variable instead)"
+            )
+        else:
+            close = difflib.get_close_matches(key, sorted(known), n=1)
+            if close:
+                hint = f" (did you mean {close[0]!r}?)"
+        parts.append(f"{section}.{key}{hint}")
+    return "unknown key(s): " + ", ".join(parts)
+
+
+def _check_milestones(value: dict[str, Any] | None) -> dict[str, Any] | None:
+    if value is None:
+        return value
+    message = _unknown_keys_message("milestones", value, MILESTONES_KEYS)
+    rules = value.get("rules")
+    if isinstance(rules, list):
+        for i, rule in enumerate(rules):
+            if isinstance(rule, dict):
+                rule_message = _unknown_keys_message(
+                    f"milestones.rules[{i}]", rule, MILESTONES_RULE_KEYS
+                )
+                if rule_message:
+                    message = f"{message}; {rule_message}" if message else rule_message
+    if message:
+        raise ValueError(message)
+    return value
 
 
 def _format_validation_error(exc: ValidationError) -> str:
