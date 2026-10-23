@@ -99,6 +99,12 @@ jobs:
       - name: Generate metric catalogue
         run: python scripts/generate_metric_catalogue.py
 
+      # Nav coverage as a script rather than only mkdocs.yml's validation
+      # block, so it holds on any generator (Zensical ignores that block;
+      # issue #152). Runs after the generators: their pages must be in the nav.
+      - name: Check docs sources
+        run: python scripts/check_docs_sources.py
+
       - name: Build site
         # NGU_PREVIEW makes mkdocs.yml's extra.preview true, which adds a
         # noindex tag (overrides/main.html) so branch previews are never
@@ -111,7 +117,9 @@ jobs:
       # that is empty or lists the 404, a 404 whose links are relative, and
       # any third-party font or API reference creeping back in.
       - name: Check built site
-        run: python scripts/check_site.py site
+        run: |
+          python scripts/check_site.py site
+          python scripts/check_docs_sources.py site
 
       # Cached on a hash of everything the crawl can observe: the app
       # itself, and the two scripts that build and crawl it. A docs-only
