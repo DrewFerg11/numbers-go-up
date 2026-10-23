@@ -1,4 +1,5 @@
 import logging
+import sys
 from pathlib import Path
 from types import ModuleType
 from unittest.mock import patch
@@ -48,6 +49,20 @@ class TestLoadPluginFromPath:
             module = plugins.load_plugin_from_path(FIXTURES_DIR / "broken_import.py")
 
         assert module is None
+
+    def test_future_annotations_dataclass_plugin_imports(self):
+        module = plugins.load_plugin_from_path(FIXTURES_DIR / "dataclass_future.py")
+
+        assert module is not None
+        assert module.Reading(count=2).count == 2
+        # Registered under a private name, never the bare stem.
+        assert "ngu_plugin_dataclass_future" in sys.modules
+        assert "dataclass_future" not in sys.modules
+
+    def test_failed_import_is_not_left_in_sys_modules(self):
+        plugins.load_plugin_from_path(FIXTURES_DIR / "broken_import.py")
+
+        assert "ngu_plugin_broken_import" not in sys.modules
 
 
 class TestValidatePluginContract:
@@ -547,8 +562,9 @@ class TestDiscover:
         }
 
         # bad_kind is contract-invalid regardless of "enabled", so it's not
-        # in the result at all -- only valid.
-        assert found == {"valid": True}
+        # in the result at all -- only valid and the (unconfigured, so
+        # disabled) dataclass_future fixture.
+        assert found == {"valid": True, "dataclass_future": False}
 
     def test_discover_plugins_and_discover_plugin_names_agree_with_discover(self):
         config = _config(plugins_config={"valid": {"enabled": True}})
@@ -723,3 +739,39 @@ class TestResolveMetric:
             "mw.model.{id}.downloads",
             metrics["mw.model.{id}.downloads"],
         )
+
+
+class TestDiscoverFailures:
+    def test_enabled_plugins_that_fail_import_or_contract_are_reported(self, caplog):
+        config = {
+            "plugins": {
+                "broken_import": {"enabled": True},
+                "bad_prefix": {"enabled": True},
+                "no_collect": {"enabled": False},
+                "valid": {"enabled": True},
+            }
+        }
+
+        with caplog.at_level("WARNING"):
+            found, failed = plugins.discover_with_failures(
+                config, builtin_dir=FIXTURES_DIR
+            )
+
+        assert failed == {"broken_import", "bad_prefix"}
+        assert "valid" in {p.name for p in found}
+        assert "broken_import is enabled but failed to load" in caplog.text
+        assert "no_collect is enabled" not in caplog.text
+
+    def test_unknown_plugin_name_warns_once_listing_known_names(self, caplog):
+        config = {"plugins": {"vlid": {"enabled": True}, "broken_import": None}}
+
+        with caplog.at_level("WARNING"):
+            plugins.discover_with_failures(config, builtin_dir=FIXTURES_DIR)
+
+        messages = [
+            r.getMessage() for r in caplog.records if "plugins.vlid" in r.getMessage()
+        ]
+        assert len(messages) == 1
+        assert "valid" in messages[0]
+        # A name that is a real (if broken) plugin file is not "unknown".
+        assert "plugins.broken_import" not in caplog.text

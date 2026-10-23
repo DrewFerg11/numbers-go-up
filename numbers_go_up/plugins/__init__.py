@@ -34,6 +34,7 @@ import functools
 import importlib.util
 import logging
 import re
+import sys
 from pathlib import Path
 from types import ModuleType
 from typing import Any
@@ -45,6 +46,10 @@ logger = logging.getLogger(__name__)
 MIN_POLL_INTERVAL_SECONDS = 300
 # Stems that are not lowercase identifiers are rejected in ``_discover_dir``.
 _VALID_PLUGIN_NAME = re.compile(r"^[a-z][a-z0-9_]*$")
+
+# Plugins are imported from explicit file paths, never via sys.path; this
+# is the private ``sys.modules`` key each one is registered under.
+_PLUGIN_MODULE_PREFIX = "ngu_plugin_"
 
 # A per-plugin cap on distinct pattern-matched keys returned in one poll, so
 # a runaway listing (a paging bug, a source that starts returning every
@@ -202,17 +207,32 @@ def load_plugin_from_path(path: str | Path) -> ModuleType | None:
     Used by discovery, and directly by tests to load fixture plugins whose
     underscore-prefixed filenames normal discovery skips on purpose. A
     module that raises on import is logged and skipped, returning None.
+
+    The module is registered in ``sys.modules`` under a private
+    ``ngu_plugin_<stem>`` name for the duration of the import (and kept
+    afterwards): ``@dataclass`` on a class in a module using
+    ``from __future__ import annotations`` looks its own module up there
+    and fails without it. A private name, rather than the bare stem, so a
+    plugin can't shadow a real top-level module (a ``json.py`` plugin) and
+    ``sys.path`` stays untouched.
     """
     path = Path(path)
-    spec = importlib.util.spec_from_file_location(path.stem, path)
+    module_name = f"{_PLUGIN_MODULE_PREFIX}{path.stem}"
+    spec = importlib.util.spec_from_file_location(module_name, path)
     if spec is None or spec.loader is None:
         logger.warning("Plugin %s: could not build an import spec; skipping", path)
         return None
 
     module = importlib.util.module_from_spec(spec)
+    previous = sys.modules.get(module_name)
+    sys.modules[module_name] = module
     try:
         spec.loader.exec_module(module)
     except Exception:
+        if previous is None:
+            sys.modules.pop(module_name, None)
+        else:
+            sys.modules[module_name] = previous
         logger.exception("Plugin %s failed to import; skipping", path.stem)
         return None
     return module
@@ -340,7 +360,9 @@ def validate_plugin_contract(
     return metrics
 
 
-def _discover_dir(directory: Path | None) -> dict[str, ModuleType]:
+def _discover_dir(
+    directory: Path | None, failed: set[str] | None = None
+) -> dict[str, ModuleType]:
     """Import every non-underscore, validly-named ``*.py`` file in ``directory``.
 
     A missing or empty directory is not an error. Filenames starting with
@@ -350,6 +372,9 @@ def _discover_dir(directory: Path | None) -> dict[str, ModuleType]:
     plugin name and the prefix of its published metric keys, which must be
     stable and Home-Assistant-safe, so those files are logged and skipped
     without ever being imported.
+
+    Stems whose import failed are added to ``failed`` when it is given, so
+    the caller can tell "broken" apart from "absent".
     """
     found: dict[str, ModuleType] = {}
     if directory is None or not directory.is_dir():
@@ -369,6 +394,8 @@ def _discover_dir(directory: Path | None) -> dict[str, ModuleType]:
         module = load_plugin_from_path(path)
         if module is not None:
             found[path.stem] = module
+        elif failed is not None:
+            failed.add(path.stem)
     return found
 
 
@@ -384,7 +411,24 @@ def _is_valid_interval(value: Any) -> bool:
 def discover(
     config: dict[str, Any], builtin_dir: Path | None = None
 ) -> list[DiscoveredPlugin]:
+    """Discover and validate every plugin; see :func:`discover_with_failures`.
+
+    Returns only the plugins that loaded. Callers that retire data for
+    plugins that are gone must use :func:`discover_with_failures` instead.
+    """
+    return discover_with_failures(config, builtin_dir)[0]
+
+
+def discover_with_failures(
+    config: dict[str, Any], builtin_dir: Path | None = None
+) -> tuple[list[DiscoveredPlugin], set[str]]:
     """Discover and validate every plugin, enabled or not, in one pass.
+
+    Also returns the names of plugins configured ``enabled: true`` that
+    failed to import or failed the contract check. They are absent from
+    the list but are not "disabled or removed": a typo in a user plugin
+    must not look like deleting it (see ``main.lifespan``'s series
+    retirement).
 
     Discovers built-in plugins (``builtin_dir``, defaulting to this
     package's own directory) plus any in ``config["plugin_dir"]``; a user
@@ -409,10 +453,11 @@ def discover(
     """
     if builtin_dir is None:
         builtin_dir = Path(__file__).parent
-    builtin_modules = _discover_dir(builtin_dir)
+    import_failed: set[str] = set()
+    builtin_modules = _discover_dir(builtin_dir, import_failed)
 
     user_dir = config.get("plugin_dir")
-    user_modules = _discover_dir(Path(user_dir)) if user_dir else {}
+    user_modules = _discover_dir(Path(user_dir), import_failed) if user_dir else {}
 
     combined: dict[str, tuple[ModuleType, str]] = {
         name: (module, "built-in") for name, module in builtin_modules.items()
@@ -431,6 +476,12 @@ def discover(
     plugins_config = config.get("plugins") or {}
     default_interval = (config.get("poll") or {}).get("default_interval", 1800)
 
+    def configured_enabled(plugin_name: str) -> bool:
+        entry = plugins_config.get(plugin_name)
+        return isinstance(entry, dict) and bool(entry.get("enabled"))
+
+    failed_enabled: set[str] = set()
+    contract_failed: set[str] = set()
     discovered: list[DiscoveredPlugin] = []
     for name, (module, source) in sorted(combined.items()):
         # One malformed plugin's contract check must never take down
@@ -443,8 +494,10 @@ def discover(
             logger.exception(
                 "Plugin %s: contract check raised unexpectedly; skipping", name
             )
+            contract_failed.add(name)
             continue
         if metrics is None:
+            contract_failed.add(name)
             continue
 
         plugin_config = plugins_config.get(name) or {}
@@ -515,7 +568,25 @@ def discover(
             )
         )
 
-    return discovered
+    loaded = {p.name for p in discovered}
+    for name in sorted((import_failed | contract_failed) - loaded):
+        if configured_enabled(name):
+            failed_enabled.add(name)
+            logger.warning(
+                "Plugin %s is enabled but failed to load; keeping its series", name
+            )
+
+    known = loaded | import_failed | contract_failed
+    unknown = sorted(n for n in plugins_config if n not in known)
+    for name in unknown:
+        logger.warning(
+            "Config has a plugins.%s entry but there is no plugin of that "
+            "name (known plugins: %s); check the spelling",
+            name,
+            ", ".join(sorted(known)) or "none",
+        )
+
+    return discovered, failed_enabled
 
 
 def discover_plugins(
