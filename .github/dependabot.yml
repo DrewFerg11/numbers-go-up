@@ -9,6 +9,14 @@ updates:
     # land in one PR or the lock can't resolve.
     groups:
       web-stack:
+        applies-to: version-updates
+        patterns:
+          - "fastapi*"
+          - "starlette"
+          - "pydantic*"
+          - "uvicorn"
+      web-stack-security:
+        applies-to: security-updates
         patterns:
           - "fastapi*"
           - "starlette"
@@ -21,6 +29,11 @@ updates:
     # The init/autobuild/analyze sub-actions must run the same version.
     groups:
       codeql-action:
+        applies-to: version-updates
+        patterns:
+          - "github/codeql-action*"
+      codeql-action-security:
+        applies-to: security-updates
         patterns:
           - "github/codeql-action*"
   - package-ecosystem: docker
