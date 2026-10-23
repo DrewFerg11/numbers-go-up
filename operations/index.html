@@ -935,6 +935,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#database-size-and-speed" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Database size and speed
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#logs" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1226,6 +1237,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#database-size-and-speed" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Database size and speed
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#logs" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1367,6 +1389,102 @@ needs three capabilities to change ownership and switch users:</p>
 to start on NFS, SMB/CIFS, SSHFS or 9p. SQLite's locking is unreliable
 there, and that can silently corrupt the database. See the warning on the
 <a href="../getting-started/install/#2-create-the-folders">Install</a> page.</p>
+<h2 id="database-size-and-speed">Database size and speed<a class="headerlink" href="#database-size-and-speed" title="Permanent link">&para;</a></h2>
+<p>The whole history lives in one SQLite file, and it stays small because a
+sample is only written when a value changes (plus a daily heartbeat). These
+figures come from <code>benchmarks/schema_sizing.py</code> in the repository, which
+rebuilds four storage layouts from scratch and measures them: the original
+schema (<code>metrics</code> plus a secondary index) and the current one (a clustered
+<code>samples</code> table), each storing every poll or only changes.</p>
+<p>Simulated: 365 days x 48 polls per day x 20 series, with 8% of polls
+changing a value (seed 1), measured 2026-10-23 on a development
+container. Size is the file after <code>VACUUM</code>.</p>
+<table>
+<thead>
+<tr>
+<th>Candidate</th>
+<th style="text-align: right;">Sample rows</th>
+<th style="text-align: right;">Size</th>
+<th style="text-align: right;">Bytes/row</th>
+<th style="text-align: right;">latest, 1 series</th>
+<th style="text-align: right;">as-of 24h</th>
+<th style="text-align: right;">history 7d</th>
+<th style="text-align: right;">history 1y</th>
+<th style="text-align: right;">/api/stats/latest</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Original schema, every poll</td>
+<td style="text-align: right;">350,400</td>
+<td style="text-align: right;">31.0 MB</td>
+<td style="text-align: right;">88</td>
+<td style="text-align: right;">0.633 ms</td>
+<td style="text-align: right;">0.695 ms</td>
+<td style="text-align: right;">1.061 ms</td>
+<td style="text-align: right;">13.4 ms</td>
+<td style="text-align: right;">1.223 ms</td>
+</tr>
+<tr>
+<td>Original schema, on change</td>
+<td style="text-align: right;">28,644</td>
+<td style="text-align: right;">2.5 MB</td>
+<td style="text-align: right;">88</td>
+<td style="text-align: right;">0.647 ms</td>
+<td style="text-align: right;">0.746 ms</td>
+<td style="text-align: right;">0.848 ms</td>
+<td style="text-align: right;">1.978 ms</td>
+<td style="text-align: right;">1.281 ms</td>
+</tr>
+<tr>
+<td>Clustered schema, every poll</td>
+<td style="text-align: right;">350,400</td>
+<td style="text-align: right;">5.2 MB</td>
+<td style="text-align: right;">15</td>
+<td style="text-align: right;">0.393 ms</td>
+<td style="text-align: right;">0.395 ms</td>
+<td style="text-align: right;">0.632 ms</td>
+<td style="text-align: right;">13.1 ms</td>
+<td style="text-align: right;">2.206 ms</td>
+</tr>
+<tr>
+<td>Clustered schema, on change</td>
+<td style="text-align: right;">28,644</td>
+<td style="text-align: right;">0.5 MB</td>
+<td style="text-align: right;">16</td>
+<td style="text-align: right;">0.349 ms</td>
+<td style="text-align: right;">0.352 ms</td>
+<td style="text-align: right;">0.380 ms</td>
+<td style="text-align: right;">1.279 ms</td>
+<td style="text-align: right;">1.741 ms</td>
+</tr>
+</tbody>
+</table>
+<p>Reading it:</p>
+<ul>
+<li><strong>Clustering is the big win.</strong> The current schema is about 6x smaller than
+  the original at the same row count, because the sample table has no
+  secondary index and no repeated text key.</li>
+<li><strong>Store-on-change is another 10x.</strong> Twenty series for a year come to about
+  0.5 MB, which is where the README's "roughly 0.4 MB per year" comes from
+  (the earlier run measured 0.4 MB; the schema has since gained a few small
+  tables).</li>
+<li><strong>Reads are not a concern at this size.</strong> Fetching one series, or the
+  as-of lookups behind the deltas, takes well under a millisecond, and a
+  year of one series about a millisecond. The <code>/api/stats/latest</code> column
+  is the whole route handler for all 20 series, so it also counts the series
+  list and the run-ledger lookup; the original-schema rows time the same
+  per-series lookups without that extra work, so the two are not a
+  like-for-like comparison.</li>
+<li>Timings include opening a fresh connection for each call, as the app does,
+  and vary a little between runs and machines. Sizes and row counts are
+  reproducible exactly.</li>
+</ul>
+<p>To re-run it, or to try other sizes (<code>--days</code>, <code>--polls-per-day</code>,
+<code>--series</code>, <code>--change-rate</code>, <code>--seed</code>), see <code>benchmarks/README.md</code>. This is
+a model: it does not include the <code>plugin_runs</code> ledger, which is pruned after
+30 days (see <a href="#what-runs-automatically">Backups</a>), and it has not yet been
+compared against a long-running real deployment.</p>
 <h2 id="logs">Logs<a class="headerlink" href="#logs" title="Permanent link">&para;</a></h2>
 <p>The app logs only to the container's stdout/stderr; there are no log files
 inside it. The shipped <code>docker-compose.yml</code> already rotates them:</p>
