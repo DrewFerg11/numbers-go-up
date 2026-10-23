@@ -78,11 +78,7 @@
     window.location.href = url.toString();
   }
 
-  document.querySelectorAll(".range-btn").forEach(function (btn) {
-    btn.addEventListener("click", function () {
-      setRange(btn.dataset.range);
-    });
-  });
+  Ngu.initRangeSwitcher(setRange);
 
   var themeToggle = document.getElementById("theme-toggle");
 

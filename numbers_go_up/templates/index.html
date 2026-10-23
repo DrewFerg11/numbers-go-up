@@ -7,12 +7,7 @@
       <span class="brand-mark" aria-hidden="true">&#9650;</span>
       <span class="brand-name">numbers-go-up</span>
     </div>
-    <nav class="range-switcher" role="tablist" aria-label="Time range">
-      {% for r in ranges %}
-      <button type="button" class="range-btn" data-range="{{ r }}" role="tab"
-        aria-selected="{{ 'true' if r == range else 'false' }}">{{ r }}</button>
-      {% endfor %}
-    </nav>
+    {% include "_range_switcher.html" %}
     <div class="topbar-right">
       <span class="updated-label" id="updated-label">Updated &mdash;</span>
       <a class="api-link" href="/docs" title="API docs">API</a>

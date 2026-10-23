@@ -495,20 +495,14 @@
 
   function setRange(range) {
     state.range = range;
-    document.querySelectorAll(".range-btn").forEach(function (btn) {
-      btn.setAttribute("aria-selected", btn.dataset.range === range ? "true" : "false");
-    });
+    Ngu.markRange(range);
     var url = new URL(window.location.href);
     url.searchParams.set("range", range);
     window.history.replaceState({}, "", url);
     fetchOverview();
   }
 
-  document.querySelectorAll(".range-btn").forEach(function (btn) {
-    btn.addEventListener("click", function () {
-      setRange(btn.dataset.range);
-    });
-  });
+  Ngu.initRangeSwitcher(setRange);
 
   // --- Theme --------------------------------------------------------
 

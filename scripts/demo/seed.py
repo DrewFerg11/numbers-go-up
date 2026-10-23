@@ -42,7 +42,7 @@ DEFAULT_DB_PATH = Path(__file__).resolve().parent.parent.parent / "demo-seed.db"
 # budget went. The exported total lands at ~1.5 MB: closer to the target
 # than a shorter history would justify, and still an honest reflection of
 # what the real per-range overview payload (60-point spark per metric,
-# times 9 ranges) and the real static assets actually cost.
+# times 10 ranges) and the real static assets actually cost.
 DAYS_OF_HISTORY = 60
 STEPS_PER_DAY = 1
 HEARTBEAT_SECONDS = 86400  # matches the step cadence: every tick writes
