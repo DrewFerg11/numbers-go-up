@@ -117,6 +117,52 @@ to start on NFS, SMB/CIFS, SSHFS or 9p. SQLite's locking is unreliable
 there, and that can silently corrupt the database. See the warning on the
 [Install](getting-started/install.md#2-create-the-folders) page.
 
+## Database size and speed
+
+The whole history lives in one SQLite file, and it stays small because a
+sample is only written when a value changes (plus a daily heartbeat). These
+figures come from `benchmarks/schema_sizing.py` in the repository, which
+rebuilds four storage layouts from scratch and measures them: the original
+schema (`metrics` plus a secondary index) and the current one (a clustered
+`samples` table), each storing every poll or only changes.
+
+Simulated: 365 days x 48 polls per day x 20 series, with 8% of polls
+changing a value (seed 1), measured 2026-10-23 on a development
+container. Size is the file after `VACUUM`.
+
+| Candidate | Sample rows | Size | Bytes/row | latest, 1 series | as-of 24h | history 7d | history 1y | /api/stats/latest |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| Original schema, every poll | 350,400 | 31.0 MB | 88 | 0.633 ms | 0.695 ms | 1.061 ms | 13.4 ms | 1.223 ms |
+| Original schema, on change | 28,644 | 2.5 MB | 88 | 0.647 ms | 0.746 ms | 0.848 ms | 1.978 ms | 1.281 ms |
+| Clustered schema, every poll | 350,400 | 5.2 MB | 15 | 0.393 ms | 0.395 ms | 0.632 ms | 13.1 ms | 2.206 ms |
+| Clustered schema, on change | 28,644 | 0.5 MB | 16 | 0.349 ms | 0.352 ms | 0.380 ms | 1.279 ms | 1.741 ms |
+
+Reading it:
+
+- **Clustering is the big win.** The current schema is about 6x smaller than
+  the original at the same row count, because the sample table has no
+  secondary index and no repeated text key.
+- **Store-on-change is another 10x.** Twenty series for a year come to about
+  0.5 MB, which is where the README's "roughly 0.4 MB per year" comes from
+  (the earlier run measured 0.4 MB; the schema has since gained a few small
+  tables).
+- **Reads are not a concern at this size.** Fetching one series, or the
+  as-of lookups behind the deltas, takes well under a millisecond, and a
+  year of one series about a millisecond. The `/api/stats/latest` column
+  is the whole route handler for all 20 series, so it also counts the series
+  list and the run-ledger lookup; the original-schema rows time the same
+  per-series lookups without that extra work, so the two are not a
+  like-for-like comparison.
+- Timings include opening a fresh connection for each call, as the app does,
+  and vary a little between runs and machines. Sizes and row counts are
+  reproducible exactly.
+
+To re-run it, or to try other sizes (`--days`, `--polls-per-day`,
+`--series`, `--change-rate`, `--seed`), see `benchmarks/README.md`. This is
+a model: it does not include the `plugin_runs` ledger, which is pruned after
+30 days (see [Backups](#what-runs-automatically)), and it has not yet been
+compared against a long-running real deployment.
+
 ## Logs
 
 The app logs only to the container's stdout/stderr; there are no log files
