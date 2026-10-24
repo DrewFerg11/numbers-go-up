@@ -1,4 +1,6 @@
+import contextlib
 import json
+import re
 import sqlite3
 import time
 from pathlib import Path
@@ -1713,6 +1715,79 @@ class TestRecentChanges:
         # 100ms leaves generous CI headroom while still catching a
         # regression back to scanning the whole series on every call.
         assert elapsed < 0.1
+
+    def test_window_edge_change_uses_its_real_predecessor(self, db_path):
+        # The first in-window sample's predecessor is outside the window;
+        # the per-series anchor row must supply it so the change is real
+        # (and found in the first window, not only by a later retry).
+        series_id = self._series(db_path, "demo.a")
+        now = 100 * 86400
+        before = now - 8 * 86400  # outside the 7-day window
+        inside = now - 3600
+        storage.record_sample(db_path, series_id, before, 10, heartbeat_seconds=1)
+        storage.record_sample(db_path, series_id, inside, 14, heartbeat_seconds=1)
+
+        changes = storage.recent_changes(db_path, 1, now=now)
+
+        assert [(row["ts"], row["change"]) for row in changes] == [(inside, 4)]
+
+    def test_does_not_scan_the_samples_table(self, db_path):
+        # `samples` has no index on ts alone, so the windowed query has to
+        # be driven per series off the (series_id, ts) primary key. Pin the
+        # plan itself: a timing test can't tell a table scan from a seek
+        # until the table is huge.
+        with contextlib.closing(storage.connect(db_path)) as conn:
+            plan = [
+                row[3]
+                for row in conn.execute(
+                    "EXPLAIN QUERY PLAN " + storage._RECENT_CHANGES_SELECT,
+                    (0, 0, 10),
+                )
+            ]
+
+        # SQLite 3.44 changed the wording ("SCAN TABLE samples AS s" ->
+        # "SCAN s"), so match both spellings.
+        scan_s = re.compile(r"^SCAN (TABLE samples AS )?s$")
+        search_s = re.compile(r"^SEARCH (TABLE samples AS )?s USING PRIMARY KEY")
+        assert not any(scan_s.match(step) for step in plan), plan
+        assert any(search_s.match(step) for step in plan), plan
+
+    def test_stays_fast_with_many_series_and_years_of_history(self, db_path):
+        # #94: the shape that actually grows with an install -- hundreds of
+        # series, each with years of hourly heartbeats (~8.8k rows/series/
+        # year, #80) -- all older than the window that answers the call,
+        # plus one genuine recent change per series.
+        series_count = 100
+        now = 1000 * 86400
+        ids = [self._series(db_path, f"demo.k{i}") for i in range(series_count)]
+        with contextlib.closing(sqlite3.connect(str(db_path))) as conn:
+            conn.executemany(
+                "INSERT INTO samples (series_id, ts, value) VALUES (?, ?, ?)",
+                [
+                    (sid, ts, 5.0)
+                    for sid in ids
+                    for ts in range(now - 200 * 86400, now - 86400, 3600)
+                ],
+            )
+            conn.executemany(
+                "INSERT INTO samples (series_id, ts, value) VALUES (?, ?, ?)",
+                [(sid, now - 3600, 6.0) for sid in ids],
+            )
+            conn.commit()
+
+        changes = storage.recent_changes(db_path, 10, now=now)
+        assert len(changes) == 10
+        assert all(row["change"] == 1 for row in changes)
+
+        elapsed = min(
+            _time_it(lambda: storage.recent_changes(db_path, 10, now=now))
+            for _ in range(3)
+        )
+
+        # ~480k history rows. Generous bound for slow CI; the plan test
+        # above is the precise guard against a table scan coming back,
+        # since a scan this size is only ~2x slower than the seeks.
+        assert elapsed < 0.5
 
 
 class TestRecordedChanges:

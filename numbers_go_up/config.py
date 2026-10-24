@@ -410,6 +410,16 @@ class Config(_Section):
             "given `enabled: true` here."
         ),
     )
+
+    @field_validator("plugins", mode="before")
+    @classmethod
+    def _null_plugin_entry_is_empty(cls, value: Any) -> Any:
+        # `github:` with nothing under it (a header uncommented without its
+        # keys) is a null entry; discover() already treats that as {}.
+        if isinstance(value, dict):
+            return {k: ({} if v is None else v) for k, v in value.items()}
+        return value
+
     mqtt: dict[str, Any] | None = Field(
         None,
         description=(

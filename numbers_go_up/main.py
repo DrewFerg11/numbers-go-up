@@ -22,7 +22,7 @@ from numbers_go_up import (
 )
 from numbers_go_up.api import HealthResponse
 from numbers_go_up.config import load_config
-from numbers_go_up.plugins import LoadedPlugin, discover
+from numbers_go_up.plugins import LoadedPlugin, discover_with_failures
 
 ENV_LOG_LEVEL = "NGU_LOG_LEVEL"
 LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s: %(message)s"
@@ -108,7 +108,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # to mean three separate module objects per plugin (one per call site),
     # splitting a plugin's own module-level state across them and logging
     # every contract-violation warning three times.
-    all_plugins = discover(config)
+    all_plugins, failed_enabled = discover_with_failures(config)
     enabled_plugins = [
         LoadedPlugin(
             name=p.name,
@@ -142,7 +142,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # `active`; history is kept, and get_or_create_series reactivates a
     # series the moment its plugin polls again (re-enabled or reinstalled).
     retired = storage.retire_series_not_in(
-        config["storage"]["path"], (p.name for p in enabled_plugins)
+        config["storage"]["path"],
+        [p.name for p in enabled_plugins] + sorted(failed_enabled),
     )
     for plugin_name, count in retired.items():
         logger.info(
