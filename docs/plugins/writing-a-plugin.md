@@ -230,6 +230,21 @@ like every other plugin:
 `enabled: true` is required explicitly -- absence, not `enabled: false`,
 is the off state every other plugin also uses.
 
+A few loading rules worth knowing while you develop:
+
+- A plugin that raises on import (a syntax error, a missing dependency) or
+  fails the contract check is logged and skipped. If it is `enabled: true`,
+  startup also logs a WARNING (`enabled but failed to load; keeping its
+  series`) and does **not** retire its series, so a typo never removes the
+  plugin's Home Assistant entities. Only a plugin that is disabled or whose
+  file is gone is retired.
+- Plugins are imported from their file path under a private module name
+  (`ngu_plugin_<name>`), so `from __future__ import annotations` with
+  `@dataclass` works. Don't rely on importing your plugin by its bare name.
+- A name under `plugins:` that matches no plugin logs one WARNING listing
+  the known names (usually a typo), and `plugins.<name>:` with nothing
+  under it is read as an empty entry.
+
 ## 7. Responsible Use
 
 Every plugin must meet the numbered rules in `CONTRIBUTING.md`. The ones

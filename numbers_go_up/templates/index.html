@@ -51,7 +51,7 @@
     <section class="watchlist" id="watchlist" aria-label="All metrics">
       <div class="watchlist-header">
         <span class="col-metric">Metric</span>
-        <span class="col-trend">{{ range }} Trend</span>
+        <span class="col-trend" id="trend-header">{{ range }} Trend</span>
         <span class="col-last">Last</span>
         <span class="col-change">Change</span>
         <span class="col-highlow">High/Low</span>
@@ -88,7 +88,7 @@
 </template>
 
 <template id="row-template">
-  <div class="watchlist-row" tabindex="0">
+  <div class="watchlist-row">
     <div class="col-metric">
       <a class="row-label" href="#"></a>
       <span class="stale-chip" hidden>STALE</span>

@@ -1,10 +1,16 @@
 {# Shared by index.html and detail.html. The common ranges are a button row;
    the sub-day ones live in the "More" select so the row fits a phone (#120). #}
 <nav class="range-switcher" aria-label="Time range">
-  <div class="range-tabs" role="tablist">
+  <div class="range-tabs">
     {% for r in ranges %}
-    <button type="button" class="range-btn" data-range="{{ r }}" role="tab"
-      aria-selected="{{ 'true' if r == range else 'false' }}">{{ r }}</button>
+    {% if range_links %}
+    {# Detail page: a range change is a full navigation, so these are links. #}
+    <a class="range-btn" data-range="{{ r }}" href="?range={{ r }}"
+      {%- if r == range %} aria-current="page"{% endif %}>{{ r }}</a>
+    {% else %}
+    <button type="button" class="range-btn" data-range="{{ r }}"
+      aria-pressed="{{ 'true' if r == range else 'false' }}">{{ r }}</button>
+    {% endif %}
     {% endfor %}
   </div>
   {% if more_ranges %}

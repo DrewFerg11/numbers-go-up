@@ -1216,21 +1216,28 @@ def recorded_changes(
 # previous one came up short of `limit` real changes.
 _RECENT_CHANGES_WINDOWS_SECONDS = (7 * 86400, 30 * 86400, 90 * 86400, 365 * 86400)
 
+# CROSS JOIN pins SQLite's join order (metric_series outer, samples inner):
+# left to its own devices the planner scans `samples` and looks each row's
+# series up, which is the full-table scan this query exists to avoid.
 _RECENT_CHANGES_SELECT = """
     SELECT metric_key, ts, value, change FROM (
         SELECT
             ms.metric_key AS metric_key,
-            ms.active AS active,
             s.ts AS ts,
             s.value AS value,
             s.value - LAG(s.value) OVER (
                 PARTITION BY s.series_id ORDER BY s.ts
             ) AS change
-        FROM samples s
-        JOIN metric_series ms ON ms.id = s.series_id
-        {where_ts}
+        FROM metric_series ms
+        CROSS JOIN samples s ON s.series_id = ms.id
+            AND s.ts >= COALESCE(
+                (SELECT MAX(a.ts) FROM samples a
+                 WHERE a.series_id = ms.id AND a.ts <= ?),
+                ?
+            )
+        WHERE ms.active = 1
     )
-    WHERE active = 1 AND change IS NOT NULL AND change != 0
+    WHERE change IS NOT NULL AND change != 0
     ORDER BY ts DESC
     LIMIT ?
 """
@@ -1251,28 +1258,32 @@ def recent_changes(db_path: str | Path, limit: int, now: int) -> list[sqlite3.Ro
     only grows with the install's *lifetime*, not its request volume, so
     nothing surfaces it until a render suddenly takes seconds. Tries
     :data:`_RECENT_CHANGES_WINDOWS_SECONDS` in order, widest last, and
-    returns as soon as a window finds at least ``limit`` results. A change
-    right at a window's edge can have its predecessor sample fall just
-    outside that window (no per-series anchor row, unlike
-    :func:`recorded_changes`, which needs one to satisfy a *date-range*
-    contract) -- worst case that costs one extra retry at the next window,
-    never a wrong or truncated result, since the final, unbounded query is
-    always the last resort: this must never return fewer genuine changes
-    than actually exist.
+    returns as soon as a window finds at least ``limit`` results.
+
+    The query is driven from ``metric_series`` so each series' samples are
+    reached by a seek on ``samples``' ``(series_id, ts)`` primary key
+    (``samples`` has no index on ``ts`` alone, so filtering it directly
+    would still scan the whole table). Each series also contributes one
+    anchor row, its newest sample at or before the window start, so the
+    first in-window sample gets a change against its real predecessor
+    rather than being dropped as a series' first sample.
+
+    If even the widest window finds fewer than ``limit`` changes (a
+    low-activity install), the last resort is the same query with no lower
+    bound: it must never return fewer genuine changes than actually exist.
     """
     with contextlib.closing(connect(db_path)) as conn:
         conn.row_factory = sqlite3.Row
         for window_seconds in _RECENT_CHANGES_WINDOWS_SECONDS:
             since = now - window_seconds
             rows = conn.execute(
-                _RECENT_CHANGES_SELECT.format(where_ts="WHERE s.ts > ?"),
-                (since, limit),
+                _RECENT_CHANGES_SELECT, (since, since, limit)
             ).fetchall()
             if len(rows) >= limit:
                 return rows
-        return conn.execute(
-            _RECENT_CHANGES_SELECT.format(where_ts=""), (limit,)
-        ).fetchall()
+        # Nothing is older than -1, so the anchor is NULL and every
+        # sample qualifies.
+        return conn.execute(_RECENT_CHANGES_SELECT, (-1, -1, limit)).fetchall()
 
 
 def last_values_for_plugin(

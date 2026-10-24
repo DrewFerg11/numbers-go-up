@@ -25,6 +25,13 @@ The same information is in `GET /api/plugins`: `status`, `last_error`,
 
 Each plugin page has a **When it fails** section with its specifics.
 
+At startup, look for these WARNINGs in the log:
+
+| Log line | Meaning |
+|---|---|
+| `Plugin X is enabled but failed to load; keeping its series` | A user plugin you enabled has an import error or breaks the plugin contract (the lines just above give the traceback or the contract problem). It doesn't run, but its history and Home Assistant entities are kept; fix the file and restart. |
+| `Config has a plugins.X entry but there is no plugin of that name` | Usually a typo in the plugin name under `plugins:`. The log lists the known names. |
+
 ## A source shows `blocked`
 
 `blocked` means the source answered **`403 Forbidden`**: it's refusing
