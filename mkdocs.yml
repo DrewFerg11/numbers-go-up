@@ -96,7 +96,8 @@ extra:
 
 # By default MkDocs only logs a page missing from the nav at INFO. Raise it
 # (and broken nav entries) to warnings so --strict fails on them: that is
-# what enforces "every page is reachable from the nav".
+# what enforces "every page is reachable from the nav". Zensical ignores
+# this block, so scripts/check_docs_sources.py enforces it independently (#152).
 validation:
   nav:
     omitted_files: warn

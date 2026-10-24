@@ -143,6 +143,58 @@ def test_lifespan_retires_a_disabled_plugins_series_at_startup(tmp_path, monkeyp
     assert storage.get_any_series_by_key(str(db_path), "removed.old.count") is not None
 
 
+def _start_with_broken_user_plugin(tmp_path, monkeypatch, plugin_config):
+    from numbers_go_up import migrate, storage
+
+    data_dir = tmp_path / "data"
+    config_dir = tmp_path / "config"
+    plugin_dir = tmp_path / "plugins"
+    for d in (data_dir, config_dir, plugin_dir):
+        d.mkdir(parents=True)
+    (plugin_dir / "myplug.py").write_text("def collect(:\n")  # syntax error
+    (config_dir / "config.yaml").write_text(plugin_config)
+    monkeypatch.setenv("NGU_DATA_DIR", str(data_dir))
+    monkeypatch.setenv("NGU_CONFIG_FILE", str(config_dir / "config.yaml"))
+    monkeypatch.setenv("NGU_PLUGIN_DIR", str(plugin_dir))
+
+    db_path = str(data_dir / "stats.db")
+    migrate.run_migrations(db_path)
+    storage.get_or_create_series(
+        db_path, "myplug.count", "myplug", "cumulative", "L", "u", "i", 1000
+    )
+    with TestClient(app) as scoped_client:
+        assert scoped_client.get("/health").status_code == 200
+    return db_path
+
+
+def test_lifespan_keeps_series_of_an_enabled_plugin_that_fails_to_import(
+    tmp_path, monkeypatch, caplog
+):
+    # An enabled plugin with a typo must not look like a removed one:
+    # retiring its series would delete its Home Assistant entities.
+    from numbers_go_up import storage
+
+    with caplog.at_level("WARNING"):
+        db_path = _start_with_broken_user_plugin(
+            tmp_path, monkeypatch, "plugins:\n  myplug:\n    enabled: true\n"
+        )
+
+    assert storage.get_series_by_key(db_path, "myplug.count") is not None
+    assert "myplug is enabled but failed to load; keeping its series" in caplog.text
+
+
+def test_lifespan_still_retires_a_broken_plugin_that_is_not_enabled(
+    tmp_path, monkeypatch
+):
+    from numbers_go_up import storage
+
+    db_path = _start_with_broken_user_plugin(
+        tmp_path, monkeypatch, "plugins:\n  myplug:\n    enabled: false\n"
+    )
+
+    assert storage.get_series_by_key(db_path, "myplug.count") is None
+
+
 def test_service_starts_with_an_mqtt_broker_that_is_unreachable(tmp_path, monkeypatch):
     # No network access in tests: 127.0.0.1 on a port nothing listens on is
     # about as close to "unreachable broker" as this suite can get without

@@ -104,6 +104,17 @@ def test_zero_plugins_enabled_by_default(tmp_path):
     assert config["plugins"] == {}
 
 
+def test_null_plugin_entry_is_an_empty_mapping(tmp_path):
+    # `plugins:\n  github:\n` is what uncommenting a header leaves behind.
+    config_file = tmp_path / "config" / "config.yaml"
+    config_file.parent.mkdir()
+    config_file.write_text("plugins:\n  github:\n")
+
+    config = load_config(env=_env(tmp_path))
+
+    assert config["plugins"] == {"github": {}}
+
+
 def test_every_path_is_env_overridable(tmp_path):
     custom_data_dir = tmp_path / "somewhere-else"
     env = _env(tmp_path, NGU_DATA_DIR=str(custom_data_dir))
