@@ -1,38 +1,38 @@
 {
-  "generated_at": "2026-11-03T14:30:08Z",
+  "generated_at": "2026-11-04T14:44:59Z",
   "sources": [
     {
       "plugin": "abacus",
       "status": "ok",
-      "checked_at": "2026-11-03T14:29:53Z",
+      "checked_at": "2026-11-04T14:44:32Z",
       "exit_code": 0,
       "azure_ip_caveat": false
     },
     {
       "plugin": "github",
       "status": "ok",
-      "checked_at": "2026-11-03T14:29:49Z",
+      "checked_at": "2026-11-04T14:44:42Z",
       "exit_code": 0,
       "azure_ip_caveat": false
     },
     {
       "plugin": "makerworld",
       "status": "ok",
-      "checked_at": "2026-11-03T14:29:53Z",
+      "checked_at": "2026-11-04T14:44:32Z",
       "exit_code": 0,
       "azure_ip_caveat": true
     },
     {
       "plugin": "tiktok",
       "status": "ok",
-      "checked_at": "2026-11-03T14:29:50Z",
+      "checked_at": "2026-11-04T14:44:42Z",
       "exit_code": 0,
       "azure_ip_caveat": true
     },
     {
       "plugin": "youtube",
       "status": "ok",
-      "checked_at": "2026-11-03T14:29:54Z",
+      "checked_at": "2026-11-04T14:44:28Z",
       "exit_code": 0,
       "azure_ip_caveat": false
     }
